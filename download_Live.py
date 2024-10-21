@@ -7,12 +7,32 @@ import json
 import getUrls
 import YoutubeURL
 
-
+import threading
             
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
-    DownloadStream(info_dict, resolution, batch_size, max_workers).catchup()
+    
+    if resolution.lower() != "audio_only":        
+        
+        # Create runner function for each download format
+        def download_stream(info_dict, resolution, batch_size, max_workers):
+            DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers).catchup()
+
+        # Create threads for both downloads
+        if resolution.lower() != "audio_only":
+            video_thread = threading.Thread(target=download_stream, args=(info_dict, resolution, batch_size, max_workers))
+            audio_thread = threading.Thread(target=download_stream, args=(info_dict, "audio_only", batch_size, max_workers))
+
+            # Start both threads
+            video_thread.start()
+            audio_thread.start()
+
+            # Wait for both threads to finish
+            video_thread.join()
+            audio_thread.join()
+    else:
+        DownloadStream(info_dict, resolution, batch_size, max_workers).catchup()
 
 class DownloadStream:
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5):
