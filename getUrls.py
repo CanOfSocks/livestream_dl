@@ -22,6 +22,9 @@ class MyLogger:
     def debug(self, msg):
         #print(msg)
         pass
+    
+    def info(self, msg):
+        print(msg)
 
     def warning(self, msg):
         #print(msg)
@@ -39,13 +42,13 @@ def get_Video_Info(id):
     logger = MyLogger()
     
     ydl_opts = {
+        'wait_for_video': (1,300),
         'retries': 25,
-        'wait_for_video': (5, 1800),
         'skip_download': True,       
-        'quiet': True,
+#        'quiet': True,
         'no_warnings': True,
-        'extractor_args': 'youtube:player_client=web;skip=dash;formats=incomplete,duplicate',
-        'logger': logger
+#        'extractor_args': 'youtube:player_client=web;skip=dash;formats=incomplete,duplicate',
+#        'logger': logger
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -68,7 +71,5 @@ def get_image(url):
         base64_image = base64.b64encode(image_content).decode()
 
         return f"data:image/jpeg;base64,{base64_image}"
-
-
-print(YoutubeURL.Formats().getFormatURL(get_Video_Info('Ojz4jmLgNOI'), '1080p*'))       
+      
     

@@ -40,11 +40,13 @@ def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5
         DownloadStream(info_dict, resolution, batch_size, max_workers).catchup()
         
 def create_mp4(file_names, info_dict):
-    ffmpeg_builder = ['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats']
+    ffmpeg_builder = ['ffmpeg', '-y', 
+                      #'-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats'
+                      ]
     
     # Add input files
     for file in file_names:
-        input = ['-i', '"{0}"'.format(file)]
+        input = ['-i', file]
         ffmpeg_builder.extend(input)
     
     # Add faststart
@@ -59,10 +61,10 @@ def create_mp4(file_names, info_dict):
     ffmpeg_builder.extend(['-c', 'copy'])
         
     # Add metadata
-    #ffmpeg_builder.extend(['-metadata', "'DATE={0}'".format(info_dict.get("upload_date"))])
-    #ffmpeg_builder.extend(['-metadata', "'COMMENT={0}\n{1}'".format(info_dict.get("original_url"), info_dict.get("description"))])
-    #ffmpeg_builder.extend(['-metadata', "'TITLE={0}'".format(info_dict.get("fulltitle"))])
-    #ffmpeg_builder.extend(['-metadata', "'ARTIST={0}'".format(info_dict.get("channel"))])
+    ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
+    ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description"))])
+    ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
+    ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
     
     options = {
         'skip_download': True,
@@ -76,14 +78,16 @@ def create_mp4(file_names, info_dict):
     if not outputFile.endswith('.mp4'):
         outputFile = outputFile + '.mp4'  
         
-    ffmpeg_builder.append('"{0}"'.format(os.path.abspath(outputFile)))
+    ffmpeg_builder.append(os.path.abspath(outputFile))
     
     with open("{0}.ffmpeg.txt".format(info_dict.get('id')), 'w', encoding='utf-8') as f:
         f.write(" ".join(ffmpeg_builder))   
         
     print("Executing ffmpeg...")
     try:
-        result = subprocess.run(ffmpeg_builder, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+        print(result.stdout)
+        print(result.stderr)
     except subprocess.CalledProcessError as e:
         print(e)
         print(e.stderr)
