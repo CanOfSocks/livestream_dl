@@ -8,31 +8,90 @@ import getUrls
 import YoutubeURL
 
 import threading
-            
+
+import subprocess
+import os            
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
     
     if resolution.lower() != "audio_only":        
         
+        file_names = []
         # Create runner function for each download format
         def download_stream(info_dict, resolution, batch_size, max_workers):
-            DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers).catchup()
+            file_name = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers).catchup()
+            file_names.append(file_name)
+        # Create threads for both downloads        
+        video_thread = threading.Thread(target=download_stream, args=(info_dict, resolution, batch_size, max_workers), daemon=True)
+        audio_thread = threading.Thread(target=download_stream, args=(info_dict, "audio_only", batch_size, max_workers), daemon=True)
 
-        # Create threads for both downloads
-        if resolution.lower() != "audio_only":
-            video_thread = threading.Thread(target=download_stream, args=(info_dict, resolution, batch_size, max_workers))
-            audio_thread = threading.Thread(target=download_stream, args=(info_dict, "audio_only", batch_size, max_workers))
+        # Start both threads
+        video_thread.start()
+        audio_thread.start()
 
-            # Start both threads
-            video_thread.start()
-            audio_thread.start()
+        # Wait for both threads to finish
+        video_thread.join()
+        audio_thread.join()
 
-            # Wait for both threads to finish
-            video_thread.join()
-            audio_thread.join()
+        create_mp4(file_names, info_dict)
+        
     else:
         DownloadStream(info_dict, resolution, batch_size, max_workers).catchup()
+        
+def create_mp4(file_names, info_dict):
+    ffmpeg_builder = ['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats']
+    
+    # Add input files
+    for file in file_names:
+        input = ['-i', '"{0}"'.format(file)]
+        ffmpeg_builder.extend(input)
+    
+    # Add faststart
+    ffmpeg_builder.extend(['-movflags', 'faststart'])
+    
+    # Add mappings
+    for i in range(0, len(file_names)):
+        input = ['-map', str(i)]
+        ffmpeg_builder.extend(input)
+        
+    #Add Copy codec
+    ffmpeg_builder.extend(['-c', 'copy'])
+        
+    # Add metadata
+    #ffmpeg_builder.extend(['-metadata', "'DATE={0}'".format(info_dict.get("upload_date"))])
+    #ffmpeg_builder.extend(['-metadata', "'COMMENT={0}\n{1}'".format(info_dict.get("original_url"), info_dict.get("description"))])
+    #ffmpeg_builder.extend(['-metadata', "'TITLE={0}'".format(info_dict.get("fulltitle"))])
+    #ffmpeg_builder.extend(['-metadata', "'ARTIST={0}'".format(info_dict.get("channel"))])
+    
+    options = {
+        'skip_download': True,
+        
+        # Template, needs to have option
+        'outtmpl': '%(fulltitle)s (%(id)s)',     
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        outputFile = str(ydl.prepare_filename(info_dict))
+    
+    if not outputFile.endswith('.mp4'):
+        outputFile = outputFile + '.mp4'  
+        
+    ffmpeg_builder.append('"{0}"'.format(os.path.abspath(outputFile)))
+    
+    with open("{0}.ffmpeg.txt".format(info_dict.get('id')), 'w', encoding='utf-8') as f:
+        f.write(" ".join(ffmpeg_builder))   
+        
+    print("Executing ffmpeg...")
+    try:
+        result = subprocess.run(ffmpeg_builder, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    except subprocess.CalledProcessError as e:
+        print(e)
+        print(e.stderr)
+    except Exception as e:
+        print(e)
+    #for file in file_names:
+    #    os.remove(file)
+    
 
 class DownloadStream:
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5):
@@ -91,7 +150,9 @@ class DownloadStream:
             self.commit_batch(self.conn)
                 
             # To be removed once segment refresh is implemented
-            self.combine_segments_to_file(self.cursor,"{0}.{1}.ts".format(self.id,self.format))
+            file_name = "{0}.{1}.ts".format(self.id,self.format)
+            self.combine_segments_to_file(self.cursor,file_name)
+            return os.path.abspath(file_name)
     
     def get_Headers(self, url):
         # Send a GET request to a URL
