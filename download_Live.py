@@ -2,7 +2,7 @@ import yt_dlp
 import sqlite3
 import requests
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
 import json
 import getUrls
 import YoutubeURL
@@ -116,41 +116,48 @@ class DownloadStream:
         
         self.create_db(self.id, self.format)
         
-    def catchup(self):
         
-        try:
-            uncommitted_inserts = 0
-            # Use transaction for saving in chunks to reduce I/O
-            self.cursor.execute('BEGIN TRANSACTION')  
+    def catchup(self):      
+        # Get list of segments that don't exist within temp database
+        segments_to_download = []
+        self.already_downloaded = self.segment_exists_batch()
+        print(self.already_downloaded)
+        for seg_num in range(0, self.latest_sequence):
+            if seg_num not in self.already_downloaded:
+                segments_to_download.append(seg_num)
+                    
+        if len(segments_to_download) <= 0:
+            return 
+        
+        # Use transaction for saving in chunks to reduce I/O
+        self.cursor.execute('BEGIN TRANSACTION')
+        uncommitted_inserts = 0
+        # Multithreading for downloading segments
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_seg = {
+                executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                for seg_num in segments_to_download
+            }
 
-            for seg_num in range(0, self.latest_sequence):            
-                # Check if download is present within set
-                if seg_num not in self.already_downloaded:
-                    #Check if segments exists within temp database, add to set if it does
-                    if self.segment_exists(cursor=self.cursor, segment_order=seg_num):
-                        print("Segment {0} found in sql file".format(seg_num))
-                        self.already_downloaded.add(seg_num)
-                        continue
-                    else:
-                        url = "{0}&sq={1}".format(self.stream_url, seg_num)
-                        head_seg_num, segment_data = self.download_segment(url, seg_num)
-                        
-                        if head_seg_num > self.latest_sequence:
-                            print("More sements available: {0}, previously {1}".format(head_seg_num,self.latest_sequence))
-                            self.latest_sequence = head_seg_num
-                        
-                        if segment_data is not None:
-                            self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
-                            uncommitted_inserts = uncommitted_inserts + 1
+            for future in concurrent.futures.as_completed(future_to_seg):
+                head_seg_num, segment_data, seg_num = future.result()
+                
+                if head_seg_num > self.latest_sequence:
+                    print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))
+                    self.latest_sequence = head_seg_num
 
-                        if uncommitted_inserts >= self.batch_size:
-                            print("Writing segments to file...")
-                            self.commit_batch(self.conn)
-                            uncommitted_inserts = 0
-                            self.cursor.execute('BEGIN TRANSACTION')
+                if segment_data is not None:
+                    # Insert segment data in the main thread (database interaction)
+                    self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
+                    uncommitted_inserts += 1
+                    if uncommitted_inserts >= self.batch_size*self.max_workers:
+                        print("Writing segments to file...")
+                        self.commit_batch(self.conn)
+                        uncommitted_inserts = 0
+                        self.cursor.execute('BEGIN TRANSACTION')
                                 
             
-        finally:
+        #finally:
             self.commit_batch(self.conn)
                 
             # To be removed once segment refresh is implemented
@@ -189,6 +196,15 @@ class DownloadStream:
     def segment_exists(self, cursor, segment_order):
         cursor.execute('SELECT 1 FROM segments WHERE id = ?', (segment_order,))
         return cursor.fetchone() is not None
+    
+    def segment_exists_batch(self):
+        """
+        Queries the database to check if a batch of segment numbers are already downloaded.
+        Returns a set of existing segment numbers.
+        """
+        query = "SELECT id FROM segments"
+        self.cursor.execute(query)
+        return set(row[0] for row in self.cursor.fetchall())
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
@@ -197,9 +213,10 @@ class DownloadStream:
             print("Downloaded segment {0} to memory...".format(segment_order))
             
             #return latest header number and segmqnt content
-            return int(response.headers.get("X-Head-Seqnum", -1)), response.content  # Return segment order and data
+            return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order)  # Return segment order and data
         else:
-            return None, None
+            print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+            return -1, None, segment_order
 
     # Function to insert a single segment without committing
     def insert_single_segment(self, cursor, segment_order, segment_data):
