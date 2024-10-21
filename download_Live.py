@@ -71,12 +71,14 @@ def combine_segments_to_file(cursor, output_file):
             
 
 # Multithreaded function to download new segments with delayed commit after a batch
-def download_segments(id, resolution='best', batch_size=10, max_workers=5):
+def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
     latest_sequence = -1
     already_downloaded = set()
     uncommitted_inserts = 0
     
-    stream_url, format = YoutubeURL.Formats().getFormatURL(getUrls.get_Video_Info(id), resolution, return_format=True)
+    id = info_dict.get('id')
+    
+    stream_url, format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True)
     
     
     stream_url_info = get_Headers(stream_url)
@@ -122,6 +124,3 @@ def download_segments(id, resolution='best', batch_size=10, max_workers=5):
             
     combine_segments_to_file(cursor,"{0}.{1}.ts".format(id,format))
     return    
-
-
-download_segments('jGsi2eAU7MM')
