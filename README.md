@@ -10,4 +10,6 @@ While some components have been marked as added, testing of full functionalility
 - [ ] Poll for new segments (method tbd)
 - [ ] Merge video and audio to MP4
 - [ ] Test all formats where possible
-- [ ] Use threading option that supports killing properly (suggestions welcomed)
+- [ ] Use threading option that supports killing properly **(suggestions welcomed)**
+- [ ] Output format options
+- [ ] Additional resource downloads (thumbnail, info.json, description etc)
