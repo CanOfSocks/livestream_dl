@@ -1,5 +1,6 @@
 # livestream_dl
 Garbage youtube livestream downloader
+This program is in early development
 
 # To-Do
 While some components have been marked as added, testing of full functionalility may be required
