@@ -125,7 +125,7 @@ class DownloadStream:
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
             backoff_factor=2,
-            status_forcelist=[400, 401, 403, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+            status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
         )
         
         self.update_latest_segment()
@@ -153,7 +153,7 @@ class DownloadStream:
                 for seg_num in segments_to_download
             }
 
-            for future in concurrent.futures.as_completed(future_to_seg):
+            for future in concurrent.futures.as_completed(future_to_seg, timeout=5):
                 head_seg_num, segment_data, seg_num = future.result()
                 
                 if head_seg_num > self.latest_sequence:
@@ -239,7 +239,8 @@ class DownloadStream:
                     for seg_num in segments_to_download
                 }
                 
-                for future in concurrent.futures.as_completed(future_to_seg):
+                # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
+                for future in concurrent.futures.as_completed(future_to_seg, timeout=5):
                     head_seg_num, segment_data, seg_num = future.result()
                     
                     if head_seg_num > self.latest_sequence:
