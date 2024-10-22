@@ -95,8 +95,6 @@ def create_mp4(file_names, info_dict):
     print("Executing ffmpeg...")
     try:
         result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
-        print(result.stdout)
-        print(result.stderr)
     except subprocess.CalledProcessError as e:
         print(e)
         print(e.stderr)
@@ -204,7 +202,9 @@ class DownloadStream:
                     print("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                     
                     if wait > 20:
-                        print("Wait time for new fragment exceeded, exitting...")
+                        print("Wait time for new fragment exceeded, running final check for missed fragments...")
+                        self.catchup()
+                        print("Collected all available fragments, exitting...")
                         break    
                     # Temp counter to check when livestream is no longer available, will be accompanied by page refresh in future
                     elif wait > 10:
