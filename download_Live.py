@@ -210,12 +210,12 @@ class DownloadStream:
                     elif wait > 10:
                         print("No new fragments found... Getting new url")
                         info_dict, live_status = getUrls.get_Video_Info(self.id)
-                        if self.live_status == 'was_live':
+                        if self.live_status != 'is_live':
                             print("Livestream has ended, collecting any missing with existing url")
                             self.catchup()
                             break
-                        elif self.live_status == 'is_live' and live_status != 'was_live':
-                            print("Stream has finished, getting any remaining segments with new url if available")
+                        elif self.live_status == 'is_live' and live_status != 'is_live':
+                            print("Stream has finished ({0}), getting any remaining segments with new url if available".format(live_status))
                             self.live_status = live_status
                             stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                             if stream_url is not None:
