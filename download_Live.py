@@ -10,7 +10,10 @@ import YoutubeURL
 import threading
 
 import subprocess
-import os            
+import os  
+
+import time
+import queue          
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
@@ -20,8 +23,12 @@ def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5
         file_names = []
         # Create runner function for each download format
         def download_stream(info_dict, resolution, batch_size, max_workers):
-            file_name = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers).catchup()
+            downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
+            file_name = downloader.catchup()
+            file_name = downloader.live_dl()
             file_names.append(file_name)
+            downloader.combine_segments_to_file(file_name)
+            
         # Create threads for both downloads        
         video_thread = threading.Thread(target=download_stream, args=(info_dict, resolution, batch_size, max_workers), daemon=True)
         audio_thread = threading.Thread(target=download_stream, args=(info_dict, "audio_only", batch_size, max_workers), daemon=True)
@@ -41,7 +48,7 @@ def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5
         
 def create_mp4(file_names, info_dict):
     ffmpeg_builder = ['ffmpeg', '-y', 
-                      #'-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats'
+                      '-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats'
                       ]
     
     # Add input files
@@ -98,37 +105,37 @@ def create_mp4(file_names, info_dict):
     
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5):
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5):        
+        self.url_updated = time.time()
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
         self.max_workers = max_workers
         
         self.id = info_dict.get('id')
+        self.live_status = info_dict.get('live_status')
         
-        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True)
+        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
-        print("Getting stream headers")
-        stream_url_info = self.get_Headers(self.stream_url)
-        if stream_url_info.get("X-Head-Seqnum", -1) is not None:
-            self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
-            print("Latest sequence: {0}".format(self.latest_sequence))
+        self.file_name = "{0}.{1}.ts".format(self.id,self.format)      
+        self.temp_file = '{0}.{1}.temp'.format(self.id,self.format)
         
-        self.create_db(self.id, self.format)
+        self.update_latest_segment()
+        
+        self.conn, self.cursor = self.create_db(self.temp_file)
         
         
     def catchup(self):      
         # Get list of segments that don't exist within temp database
-        segments_to_download = []
+        
         self.already_downloaded = self.segment_exists_batch()
         print(self.already_downloaded)
-        for seg_num in range(0, self.latest_sequence):
-            if seg_num not in self.already_downloaded:
-                segments_to_download.append(seg_num)
+        
+        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded
                     
         if len(segments_to_download) <= 0:
             return 
-        
+        #try:
         # Use transaction for saving in chunks to reduce I/O
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0
@@ -159,38 +166,131 @@ class DownloadStream:
             
         #finally:
             self.commit_batch(self.conn)
+        return os.path.abspath(self.file_name)
                 
-            # To be removed once segment refresh is implemented
-            file_name = "{0}.{1}.ts".format(self.id,self.format)
-            self.combine_segments_to_file(self.cursor,file_name)
-            return os.path.abspath(file_name)
+    
+    def live_dl(self):
+        self.already_downloaded = self.segment_exists_batch()
+        wait = 0   
+        self.cursor.execute('BEGIN TRANSACTION')
+        uncommitted_inserts = 0     
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            while True:
+                
+                segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded
+                
+                # If no segments remain to download, don't bother updating and wait for segment download to refresh values
+                if len(segments_to_download) <= 0:
+                    print("Checking for more segments available for {0}".format(self.format))
+                    self.update_latest_segment()
+                    
+                # If still no fragments, wait.                   
+                if len(segments_to_download) <= 0:                    
+                    wait += 1
+                    print("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                    time.sleep(5)
+                    continue
+                
+                # Temp counter to check when livestream is no longer available, will be accompanied by page refresh in future
+                elif wait > 10:
+                    print("No new fragments found... Getting new url")
+                    info_dict, live_status = getUrls.get_Video_Info(self.id)
+                    if self.live_status == 'is_live' and live_status != 'is_live':
+                        print("Stream has finished, getting any remaining segments with new url if available")
+                        self.live_status = live_status
+                        stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                        if stream_url is not None:
+                            self.stream_url = stream_url  
+                        self.catchup()
+                        break
+                    elif live_status == 'is_live':
+                        print("Updating url to new url")
+                        self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                        continue   
+                elif wait > 20:
+                    print("Wait time for new fragment exceeded, exitting...")
+                    break
+                else:
+                    wait = 0
+                    
+                # Check if segments already exist within database (used to not create more connections). Needs fixing upstream
+                remove_set = set()
+                for seg_num in segments_to_download:
+                    if self.segment_exists(self.cursor, seg_num):
+                        self.already_downloaded.add(seg_num)
+                        remove_set.add(seg_num)
+                segments_to_download = segments_to_download - remove_set
+                                
+                future_to_seg = {
+                    executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                    for seg_num in segments_to_download
+                }
+                
+                for future in concurrent.futures.as_completed(future_to_seg):
+                    head_seg_num, segment_data, seg_num = future.result()
+                    
+                    if head_seg_num > self.latest_sequence:
+                        print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                        self.latest_sequence = head_seg_num
+
+                    if segment_data is not None:
+                        # Insert segment data in the main thread (database interaction)
+                        self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
+                        uncommitted_inserts += 1
+                        if uncommitted_inserts >= self.batch_size:
+                            print("Writing segments to file...")
+                            self.commit_batch(self.conn)
+                            uncommitted_inserts = 0
+                            self.cursor.execute('BEGIN TRANSACTION') 
+        
+        self.commit_batch(self.conn)
+        return os.path.abspath(self.file_name)    
+           
+    def get_live_segment(self, seg_num):
+        # Create new connection and cursor to check sqlite database within thread
+        single_conn, single_cursor = self.create_connection(self.temp_file)
+        if self.segment_exists(cursor=single_cursor, segment_order=seg_num):
+            self.already_downloaded.add(seg_num)
+            return -1, None, seg_num
+        else:
+            return self.download_segment("{0}&sq={1}".format(self.stream_url, seg_num), seg_num)
+    
+    def update_latest_segment(self):
+        stream_url_info = self.get_Headers(self.stream_url)
+        if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
+            self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
+            print("Latest sequence: {0}".format(self.latest_sequence))
     
     def get_Headers(self, url):
         # Send a GET request to a URL
         response = requests.get(url)
         if response.status_code == 200:
             # Print the response headers
-            print(json.dumps(dict(response.headers), indent=4))  
+            #print(json.dumps(dict(response.headers), indent=4))  
             return response.headers
         else:
             print("Error retrieving headers: {0}".format(response.status_code))
             print(json.dumps(dict(response.headers), indent=4))
     
 
-    def create_db(self, id, format=None):
+    def create_connection(self, file):
+        conn = sqlite3.connect(file)
+        cursor = conn.cursor()
+        return conn, cursor
+    
+    def create_db(self, temp_file):
         # Connect to SQLite database (or create it if it doesn't exist)
-        self.conn = sqlite3.connect('{0}.{1}.temp'.format(id,format))
-        self.cursor = self.conn.cursor()
+        conn, cursor = self.create_connection(temp_file)
 
         # Create the table where id represents the segment order
-        self.cursor.execute('''
+        cursor.execute('''
         CREATE TABLE IF NOT EXISTS segments (
             id INTEGER PRIMARY KEY, 
             segment_data BLOB
         )
         ''')
-        self.conn.commit()
-        return self.conn, self.cursor
+        conn.commit()
+        return conn, cursor
 
     # Function to check if a segment exists in the database
     def segment_exists(self, cursor, segment_order):
@@ -221,7 +321,7 @@ class DownloadStream:
     # Function to insert a single segment without committing
     def insert_single_segment(self, cursor, segment_order, segment_data):
         cursor.execute('''
-        INSERT INTO segments (id, segment_data) VALUES (?, ?)
+        INSERT OR IGNORE INTO segments (id, segment_data) VALUES (?, ?)
         ''', (segment_order, segment_data))
 
     # Function to commit after a batch of inserts
@@ -229,7 +329,9 @@ class DownloadStream:
         conn.commit()
 
     # Function to combine segments into a single file
-    def combine_segments_to_file(self, cursor, output_file):
+    def combine_segments_to_file(self, output_file, cursor=None):
+        if cursor is None:
+            cursor = self.cursor
         
         print("Writing segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:

@@ -55,8 +55,8 @@ def get_Video_Info(id):
         info_dict = ydl.extract_info(url, download=False)
         # Check if the video is private
         if not (info_dict.get('live_status') == 'is_live' or info_dict.get('live_status') == 'post_live'):
-            raise Exception("Video has been processed, please use yt-dlp directly")
-        return info_dict
+            print("Video has been processed, please use yt-dlp directly")
+        return info_dict, info_dict.get('live_status')
         
 
 def get_image(url):
