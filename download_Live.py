@@ -107,7 +107,7 @@ def create_mp4(file_names, info_dict):
     
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, force_merge=False):        
         self.url_updated = time.time()
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -130,7 +130,13 @@ class DownloadStream:
         
         self.update_latest_segment()
         
-        self.conn, self.cursor = self.create_db(self.temp_file)
+        # Force merge needs testing
+        if force_merge and os.path.exists(self.temp_file):
+            self.conn, self.cursor = self.create_connection(self.temp_file)
+            self.combine_segments_to_file(self.file_name, cursor=self.cursor)
+            return os.path.abspath(self.file_name)  
+        else:
+            self.conn, self.cursor = self.create_db(self.temp_file)
         
         
     def catchup(self):      
