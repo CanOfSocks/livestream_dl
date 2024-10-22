@@ -157,7 +157,7 @@ class DownloadStream:
                     # Insert segment data in the main thread (database interaction)
                     self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
                     uncommitted_inserts += 1
-                    if uncommitted_inserts >= self.batch_size*self.max_workers:
+                    if uncommitted_inserts >= max(self.batch_size,self.max_workers):
                         print("Writing segments to file...")
                         self.commit_batch(self.conn)
                         uncommitted_inserts = 0
