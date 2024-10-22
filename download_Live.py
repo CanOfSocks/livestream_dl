@@ -1,6 +1,9 @@
 import yt_dlp
 import sqlite3
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
 import time
 import concurrent.futures
 import json
@@ -12,12 +15,11 @@ import threading
 import subprocess
 import os  
 
-import time
 import queue          
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
-    
+     
     if resolution.lower() != "audio_only":        
         
         file_names = []
@@ -105,7 +107,7 @@ def create_mp4(file_names, info_dict):
     
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5):        
         self.url_updated = time.time()
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -120,6 +122,12 @@ class DownloadStream:
         self.file_name = "{0}.{1}.ts".format(self.id,self.format)      
         self.temp_file = '{0}.{1}.temp'.format(self.id,self.format)
         
+        self.retry_strategy = Retry(
+            total=fragment_retries,  # maximum number of retries
+            backoff_factor=2,
+            status_forcelist=[400, 401, 403, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+        )
+        
         self.update_latest_segment()
         
         self.conn, self.cursor = self.create_db(self.temp_file)
@@ -129,7 +137,6 @@ class DownloadStream:
         # Get list of segments that don't exist within temp database
         
         self.already_downloaded = self.segment_exists_batch()
-        print(self.already_downloaded)
         
         segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded
                     
@@ -185,31 +192,37 @@ class DownloadStream:
                     self.update_latest_segment()
                     
                 # If still no fragments, wait.                   
+                
                 if len(segments_to_download) <= 0:                    
                     wait += 1
                     print("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                    
+                    if wait > 20:
+                        print("Wait time for new fragment exceeded, exitting...")
+                        break    
+                    # Temp counter to check when livestream is no longer available, will be accompanied by page refresh in future
+                    elif wait > 10:
+                        print("No new fragments found... Getting new url")
+                        info_dict, live_status = getUrls.get_Video_Info(self.id)
+                        if self.live_status == 'was_live':
+                            print("Livestream has ended, collecting any missing with existing url")
+                            self.catchup()
+                            break
+                        elif self.live_status == 'is_live' and live_status != 'was_live':
+                            print("Stream has finished, getting any remaining segments with new url if available")
+                            self.live_status = live_status
+                            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                            if stream_url is not None:
+                                self.stream_url = stream_url  
+                            self.catchup()
+                            break
+                        elif live_status == 'is_live':
+                            print("Updating url to new url")
+                            self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                            continue   
+                    
                     time.sleep(5)
                     continue
-                
-                # Temp counter to check when livestream is no longer available, will be accompanied by page refresh in future
-                elif wait > 10:
-                    print("No new fragments found... Getting new url")
-                    info_dict, live_status = getUrls.get_Video_Info(self.id)
-                    if self.live_status == 'is_live' and live_status != 'is_live':
-                        print("Stream has finished, getting any remaining segments with new url if available")
-                        self.live_status = live_status
-                        stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
-                        if stream_url is not None:
-                            self.stream_url = stream_url  
-                        self.catchup()
-                        break
-                    elif live_status == 'is_live':
-                        print("Updating url to new url")
-                        self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
-                        continue   
-                elif wait > 20:
-                    print("Wait time for new fragment exceeded, exitting...")
-                    break
                 else:
                     wait = 0
                     
@@ -308,12 +321,22 @@ class DownloadStream:
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
-        response = requests.get(segment_url)  # Download segment from URL
+        # create an HTTP adapter with the retry strategy and mount it to the session
+        adapter = HTTPAdapter(max_retries=self.retry_strategy)
+        # create a new session object
+        session = requests.Session()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        response = session.get(segment_url)
         if response.status_code == 200:
             print("Downloaded segment {0} to memory...".format(segment_order))
             
             #return latest header number and segmqnt content
             return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order)  # Return segment order and data
+        elif response.status_code == 204:
+            print("Segment has no data, adding to downloaded list as to not reattempt")
+            self.already_downloaded.add(segment_order)
+            return -1, None, segment_order
         else:
             print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
             return -1, None, segment_order
