@@ -157,7 +157,7 @@ class DownloadStream:
                 for seg_num in segments_to_download
             }
 
-            for future in concurrent.futures.as_completed(future_to_seg, timeout=5):
+            for future in concurrent.futures.as_completed(future_to_seg):
                 head_seg_num, segment_data, seg_num = future.result()
                 
                 if head_seg_num > self.latest_sequence:
