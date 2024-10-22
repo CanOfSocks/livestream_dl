@@ -10,43 +10,56 @@ import json
 import getUrls
 import YoutubeURL
 
-import threading
-
 import subprocess
 import os  
 
-import queue          
+import signal
+
+
+def signal_handler(signum, frame):
+    print("KeyboardInterrupt detected, shutting down...")
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGINT, signal_handler)
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
-     
-    if resolution.lower() != "audio_only":        
-        
-        file_names = []
-        # Create runner function for each download format
-        def download_stream(info_dict, resolution, batch_size, max_workers):
-            downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
-            file_name = downloader.catchup()
-            file_name = downloader.live_dl()
-            file_names.append(file_name)
-            downloader.combine_segments_to_file(file_name)
+    try: 
+        if resolution.lower() != "audio_only":        
             
-        # Create threads for both downloads        
-        video_thread = threading.Thread(target=download_stream, args=(info_dict, resolution, batch_size, max_workers), daemon=True)
-        audio_thread = threading.Thread(target=download_stream, args=(info_dict, "audio_only", batch_size, max_workers), daemon=True)
+            file_names = []
 
-        # Start both threads
-        video_thread.start()
-        audio_thread.start()
+            # Create runner function for each download format
+            def download_stream(info_dict, resolution, batch_size, max_workers):
+                downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
+                file_name = downloader.catchup()
+                file_name = downloader.live_dl()
+                file_names.append(file_name)
+                downloader.combine_segments_to_file(file_name)
+                return file_name
 
-        # Wait for both threads to finish
-        video_thread.join()
-        audio_thread.join()
+            # Use ThreadPoolExecutor to run downloads concurrently
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit tasks for both video and audio downloads
+                video_future = executor.submit(download_stream, info_dict, resolution, batch_size, max_workers)
+                audio_future = executor.submit(download_stream, info_dict, "audio_only", batch_size, max_workers)
+                
+                        # Wait for both downloads to finish
+                futures = [video_future, audio_future]
+                
+                # Continuously check for completion or interruption
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()  # This will raise an exception if the future failed
 
-        create_mp4(file_names, info_dict)
-        
-    else:
-        DownloadStream(info_dict, resolution, batch_size, max_workers).catchup()
+            create_mp4(file_names, info_dict)
+            
+        else:
+            DownloadStream(info_dict, resolution, batch_size, max_workers).catchup()
+    except KeyboardInterrupt:
+        print("Process interrupted. Cleaning up...")
+        executor.shutdown(wait=False)  # Cancel all running tasks
+        # Optionally add more cleanup steps here if needed
+        print("All threads stopped")
         
 def create_mp4(file_names, info_dict):
     ffmpeg_builder = ['ffmpeg', '-y', 
@@ -248,7 +261,9 @@ class DownloadStream:
                 }
                 
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
-                for future in concurrent.futures.as_completed(future_to_seg, timeout=5):
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)               
+                
+                for future in done:
                     head_seg_num, segment_data, seg_num = future.result()
                     
                     # Remove from submitted segments in case it neeeds to be regrabbed
@@ -342,13 +357,11 @@ class DownloadStream:
         response = session.get(segment_url)
         if response.status_code == 200:
             print("Downloaded segment {0} to memory...".format(segment_order))
-            
             #return latest header number and segmqnt content
             return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order)  # Return segment order and data
         elif response.status_code == 204:
-            print("Segment has no data, adding to downloaded list as to not reattempt")
-            self.already_downloaded.add(segment_order)
-            return -1, None, segment_order
+            print("Segment {0} has no data")
+            return -1, bytes(), segment_order
         else:
             print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
             return -1, None, segment_order
