@@ -185,6 +185,7 @@ class DownloadStream:
         wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
+        submitted_segments = set()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             while True:
                 
@@ -243,11 +244,15 @@ class DownloadStream:
                 future_to_seg = {
                     executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
                     for seg_num in segments_to_download
+                    if seg_num not in submitted_segments and not submitted_segments.add(seg_num) # Check if segment has already been submitted to the future, if not add it as its being added (set.add returns None)
                 }
                 
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 for future in concurrent.futures.as_completed(future_to_seg, timeout=5):
                     head_seg_num, segment_data, seg_num = future.result()
+                    
+                    # Remove from submitted segments in case it neeeds to be regrabbed
+                    submitted_segments.remove(seg_num)
                     
                     if head_seg_num > self.latest_sequence:
                         print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
