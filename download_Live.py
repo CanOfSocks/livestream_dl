@@ -235,30 +235,35 @@ class DownloadStream:
                 
                 segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                 
-                # If no segments remain to download, don't bother updating and wait for segment download to refresh values
+                # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
                     print("Checking for more segments available for {0}".format(self.format))
                     self.update_latest_segment()
                     segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
                                     
-                # If still no fragments, wait.                                 
+                # If update has found no segments, wait.                                
                 if len(segments_to_download) <= 0:                    
                     wait += 1
                     print("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                     
+                    # If waited for new fragments hits 20 loops, assume stream is offline
                     if wait > 20:
                         print("Wait time for new fragment exceeded, running final check for missed fragments...")
                         self.catchup()
                         print("Collected all available fragments, exitting...")
                         break    
-                    # Temp counter to check when livestream is no longer available, will be accompanied by page refresh in future
+                    # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
                         print("No new fragments found... Getting new url")
                         info_dict, live_status = getUrls.get_Video_Info(self.id)
+                        
+                        # If status of downloader is not live, assume stream has ended
                         if self.live_status != 'is_live':
                             print("Livestream has ended, collecting any missing with existing url")
                             self.catchup()
                             break
+                        
+                        # If live has changed, use new URL to get any fragments that may be missing
                         elif self.live_status == 'is_live' and live_status != 'is_live':
                             print("Stream has finished ({0}), getting any remaining segments with new url if available".format(live_status))
                             self.live_status = live_status
@@ -267,6 +272,8 @@ class DownloadStream:
                                 self.stream_url = stream_url  
                             self.catchup()
                             break
+                        
+                        # If livestream is still live, use new url
                         elif live_status == 'is_live':
                             print("Updating url to new url")
                             self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
