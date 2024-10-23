@@ -71,10 +71,7 @@ class Formats:
             best.extend(self.video[key])
         self.video['best'] = best
         
-    def getFormatURL(self, info_json, resolution, return_format=False):
-        print("Resolution: {0}, Type: {1}".format(resolution, type(resolution)))        
-        # Check for specific format
-        
+    def getFormatURL(self, info_json, resolution, return_format=False):        
         if resolution in self.video['best'] or resolution in self.audio:
             resolution = str(resolution)
             for ytdlp_format in info_json['formats']:
