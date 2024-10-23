@@ -228,6 +228,7 @@ class DownloadStream:
             while True:
                 
                 if time.time() - self.url_updated >= 3600.0:
+                    info_dict, live_status = getUrls.get_Video_Info(self.id)
                     stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                     if stream_url is not None:
                         self.stream_url = stream_url
