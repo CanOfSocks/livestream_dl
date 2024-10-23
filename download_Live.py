@@ -190,6 +190,7 @@ class DownloadStream:
             
         #finally:
             self.commit_batch(self.conn)
+        print("Catchup for {0} completed".format(self.format))
         return os.path.abspath(self.file_name)
                 
     
@@ -261,7 +262,7 @@ class DownloadStream:
                 }
                 
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)               
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num = future.result()
@@ -356,7 +357,7 @@ class DownloadStream:
         session.mount("https://", adapter)
         response = session.get(segment_url)
         if response.status_code == 200:
-            print("Downloaded segment {0} to memory...".format(segment_order))
+            print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
             #return latest header number and segmqnt content
             return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order)  # Return segment order and data
         elif response.status_code == 204:
