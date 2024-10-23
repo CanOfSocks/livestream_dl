@@ -37,7 +37,24 @@ def download_stream(info_dict, resolution, batch_size, max_workers):
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
-        if resolution.lower() != "audio_only": 
+    
+        # For use of specificed format. Expects two values, but can work with more
+        if isinstance(resolution, tuple) or isinstance(resolution, list) or isinstance(resolution, set):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                file_names = [] 
+                futures = []
+                for format in resolution:
+                    new_future = executor.submit(download_stream, info_dict=info_dict, resolution=format, batch_size=batch_size, max_workers=max_workers)
+                    futures.append(new_future)
+                
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()  # This will raise an exception if the future failed
+                    logging.info("Result of thread: {0}".format(result))
+                    print("\033[31m{0}\033[0m".format(result))
+                    file_names.append(result)
+                create_mp4(file_names, info_dict)
+        elif resolution.lower() != "audio_only":
+            file_names = [] 
             try:
                 # Use ThreadPoolExecutor to run downloads concurrently
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -50,9 +67,10 @@ def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5
                     
                     # Continuously check for completion or interruption
                     for future in concurrent.futures.as_completed(futures):
-                        file_names = future.result()  # This will raise an exception if the future failed
-                        logging.info("result of thread: {0}".format(file_names))
-                        print("\033[31m{0}\033[0m".format(file_names))
+                        result = future.result()  # This will raise an exception if the future failed
+                        logging.info("result of thread: {0}".format(result))
+                        print("\033[31m{0}\033[0m".format(result))
+                        file_names.append(result)
             except KeyboardInterrupt:
                 global kill_all
                 kill_all = True
@@ -207,16 +225,15 @@ class DownloadStream:
         submitted_segments = set()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             while True:
-                
-                segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded
+                segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                 
                 # If no segments remain to download, don't bother updating and wait for segment download to refresh values
                 if len(segments_to_download) <= 0:
                     print("Checking for more segments available for {0}".format(self.format))
                     self.update_latest_segment()
-                    
-                # If still no fragments, wait.                   
-                
+                    segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
+                                    
+                # If still no fragments, wait.                                 
                 if len(segments_to_download) <= 0:                    
                     wait += 1
                     print("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
