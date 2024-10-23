@@ -222,9 +222,17 @@ class DownloadStream:
         wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
-        submitted_segments = set()
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            submitted_segments = set()
             while True:
+                
+                if time.time() - self.url_updated >= 3600.0:
+                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                    if stream_url is not None:
+                        self.stream_url = stream_url
+                        self.url_updated = time.time()
+                
                 segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                 
                 # If no segments remain to download, don't bother updating and wait for segment download to refresh values
