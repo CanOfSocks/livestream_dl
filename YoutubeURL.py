@@ -72,13 +72,18 @@ class Formats:
         self.video['best'] = best
         
     def getFormatURL(self, info_json, resolution, return_format=False):
-        resolution = str(resolution).lower()
-        
+        print("Resolution: {0}, Type: {1}".format(resolution, type(resolution)))        
         # Check for specific format
+        
         if resolution in self.video['best'] or resolution in self.audio:
+            resolution = str(resolution)
             for ytdlp_format in info_json['formats']:
-               if resolution == ytdlp_format['format_id']:
-                   return ytdlp_format['url']            
+                if resolution == ytdlp_format['format_id']:
+                    print(ytdlp_format['url'])
+                    if return_format:
+                        return ytdlp_format['url'], resolution
+                    else:
+                        return ytdlp_format['url']           
         elif resolution == "audio_only":
             for audio_format in self.audio:
                 audio_format = str(audio_format)
