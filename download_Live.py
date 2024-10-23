@@ -40,19 +40,22 @@ def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5
     
         # For use of specificed format. Expects two values, but can work with more
         if isinstance(resolution, tuple) or isinstance(resolution, list) or isinstance(resolution, set):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                file_names = [] 
-                futures = []
-                for format in resolution:
-                    new_future = executor.submit(download_stream, info_dict=info_dict, resolution=format, batch_size=batch_size, max_workers=max_workers)
-                    futures.append(new_future)
-                
-                for future in concurrent.futures.as_completed(futures):
-                    result = future.result()  # This will raise an exception if the future failed
-                    logging.info("Result of thread: {0}".format(result))
-                    print("\033[31m{0}\033[0m".format(result))
-                    file_names.append(result)
-                create_mp4(file_names, info_dict)
+            if len(resolution) == 1:
+                download_stream(info_dict=info_dict, resolution=resolution[0], batch_size=batch_size, max_workers=max_workers)
+            else:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    file_names = [] 
+                    futures = []
+                    for format in resolution:
+                        new_future = executor.submit(download_stream, info_dict=info_dict, resolution=format, batch_size=batch_size, max_workers=max_workers)
+                        futures.append(new_future)
+                    
+                    for future in concurrent.futures.as_completed(futures):
+                        result = future.result()  # This will raise an exception if the future failed
+                        logging.info("Result of thread: {0}".format(result))
+                        print("\033[31m{0}\033[0m".format(result))
+                        file_names.append(result)
+                    create_mp4(file_names, info_dict)
         elif resolution.lower() != "audio_only":
             file_names = [] 
             try:
@@ -156,7 +159,7 @@ class DownloadStream:
         self.temp_file = '{0}.{1}.temp'.format(self.id,self.format)
         
         self.retry_strategy = Retry(
-            total=fragment_retries,  # maximum number of retries
+            total=10,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
             
