@@ -348,7 +348,7 @@ class DownloadStream:
     
     def get_Headers(self, url):
         # Send a GET request to a URL
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         if response.status_code == 200:
             # Print the response headers
             #print(json.dumps(dict(response.headers), indent=4))  
