@@ -15,16 +15,18 @@ import os
 
 import signal
 
+import logging
 
-def signal_handler(signum, frame):
-    print("KeyboardInterrupt detected, shutting down...")
-    raise KeyboardInterrupt
+kill_all = False
 
-signal.signal(signal.SIGINT, signal_handler)
+logging.basicConfig(
+    filename='output.log',   # File where the logs will be stored
+    level=logging.INFO,      # Minimum level of messages to log (INFO or higher)
+    format='%(asctime)s - %(levelname)s - %(message)s',  # Log format
+)
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
-    try: 
         if resolution.lower() != "audio_only":        
             
             file_names = []
@@ -37,29 +39,32 @@ def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5
                 file_names.append(file_name)
                 downloader.combine_segments_to_file(file_name)
                 return file_name
-
-            # Use ThreadPoolExecutor to run downloads concurrently
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                # Submit tasks for both video and audio downloads
-                video_future = executor.submit(download_stream, info_dict, resolution, batch_size, max_workers)
-                audio_future = executor.submit(download_stream, info_dict, "audio_only", batch_size, max_workers)
-                
-                        # Wait for both downloads to finish
-                futures = [video_future, audio_future]
-                
-                # Continuously check for completion or interruption
-                for future in concurrent.futures.as_completed(futures):
-                    result = future.result()  # This will raise an exception if the future failed
+            try:
+                # Use ThreadPoolExecutor to run downloads concurrently
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    # Submit tasks for both video and audio downloads
+                    video_future = executor.submit(download_stream, info_dict, resolution, batch_size, max_workers)
+                    audio_future = executor.submit(download_stream, info_dict, "audio_only", batch_size, max_workers)
+                    
+                            # Wait for both downloads to finish
+                    futures = [video_future, audio_future]
+                    
+                    # Continuously check for completion or interruption
+                    for future in concurrent.futures.as_completed(futures):
+                        result = future.result()  # This will raise an exception if the future failed
+                        logging.info("result of thread: {0}".format(result))
+                        print("\033[31m{0}\033[0m".format(result))
+            except KeyboardInterrupt:
+                global kill_all
+                kill_all = True
+                for future in futures:
+                    future.cancel()
+                    executor.shutdown(wait=False)
 
             create_mp4(file_names, info_dict)
             
         else:
             DownloadStream(info_dict, resolution, batch_size, max_workers).catchup()
-    except KeyboardInterrupt:
-        print("Process interrupted. Cleaning up...")
-        executor.shutdown(wait=False)  # Cancel all running tasks
-        # Optionally add more cleanup steps here if needed
-        print("All threads stopped")
         
 def create_mp4(file_names, info_dict):
     ffmpeg_builder = ['ffmpeg', '-y', 
@@ -135,8 +140,9 @@ class DownloadStream:
         
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
-            backoff_factor=2,
+            backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+            
         )
         
         self.update_latest_segment()
@@ -297,6 +303,9 @@ class DownloadStream:
             return self.download_segment("{0}&sq={1}".format(self.stream_url, seg_num), seg_num)
     
     def update_latest_segment(self):
+        # Kill if keyboard interrupt is detected
+        if kill_all:
+            raise KeyboardInterrupt
         stream_url_info = self.get_Headers(self.stream_url)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
@@ -349,6 +358,9 @@ class DownloadStream:
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
+        # Kill if keyboard interrupt is detected
+        if kill_all:
+            raise KeyboardInterrupt
         # create an HTTP adapter with the retry strategy and mount it to the session
         adapter = HTTPAdapter(max_retries=self.retry_strategy)
         # create a new session object
@@ -382,7 +394,7 @@ class DownloadStream:
         if cursor is None:
             cursor = self.cursor
         
-        print("Writing segments to {0}".format(output_file))
+        print("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
             for segment in cursor:  # Cursor iterates over rows one by one
