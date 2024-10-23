@@ -402,7 +402,7 @@ class DownloadStream:
         session = requests.Session()
         session.mount("http://", adapter)
         session.mount("https://", adapter)
-        response = session.get(segment_url)
+        response = session.get(segment_url, timeout=30)
         if response.status_code == 200:
             print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
             #return latest header number and segmqnt content
