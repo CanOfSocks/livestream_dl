@@ -25,35 +25,34 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',  # Log format
 )
 
+# Create runner function for each download format
+def download_stream(info_dict, resolution, batch_size, max_workers):
+    file_names = []
+    downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
+    file_name = downloader.catchup()
+    file_name = downloader.live_dl()
+    file_names.append(file_name)
+    downloader.combine_segments_to_file(file_name)
+    return file_names
+
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
-        if resolution.lower() != "audio_only":        
-            
-            file_names = []
-
-            # Create runner function for each download format
-            def download_stream(info_dict, resolution, batch_size, max_workers):
-                downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
-                file_name = downloader.catchup()
-                file_name = downloader.live_dl()
-                file_names.append(file_name)
-                downloader.combine_segments_to_file(file_name)
-                return file_name
+        if resolution.lower() != "audio_only": 
             try:
                 # Use ThreadPoolExecutor to run downloads concurrently
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                     # Submit tasks for both video and audio downloads
-                    video_future = executor.submit(download_stream, info_dict, resolution, batch_size, max_workers)
-                    audio_future = executor.submit(download_stream, info_dict, "audio_only", batch_size, max_workers)
+                    video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
+                    audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=batch_size, max_workers=max_workers)
                     
                             # Wait for both downloads to finish
                     futures = [video_future, audio_future]
                     
                     # Continuously check for completion or interruption
                     for future in concurrent.futures.as_completed(futures):
-                        result = future.result()  # This will raise an exception if the future failed
-                        logging.info("result of thread: {0}".format(result))
-                        print("\033[31m{0}\033[0m".format(result))
+                        file_names = future.result()  # This will raise an exception if the future failed
+                        logging.info("result of thread: {0}".format(file_names))
+                        print("\033[31m{0}\033[0m".format(file_names))
             except KeyboardInterrupt:
                 global kill_all
                 kill_all = True
@@ -64,7 +63,7 @@ def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5
             create_mp4(file_names, info_dict)
             
         else:
-            DownloadStream(info_dict, resolution, batch_size, max_workers).catchup()
+            download_stream(info_dict=info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
         
 def create_mp4(file_names, info_dict):
     ffmpeg_builder = ['ffmpeg', '-y', 

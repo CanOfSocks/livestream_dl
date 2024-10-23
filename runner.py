@@ -8,4 +8,4 @@ def get_Video(id, resolution='best'):
     #if live_status == 'is_live' or live_status == 'was_live':
     download_Live.download_segments(info_dict, resolution, max_workers=5)
     
-get_Video('WKaqS7lEPrU', 'best')
+get_Video('WKaqS7lEPrU', 'audio_only')
