@@ -76,7 +76,6 @@ class Formats:
             resolution = str(resolution)
             for ytdlp_format in info_json['formats']:
                 if resolution == ytdlp_format['format_id']:
-                    print(ytdlp_format['url'])
                     if return_format:
                         return ytdlp_format['url'], resolution
                     else:

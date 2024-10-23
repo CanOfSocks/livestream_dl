@@ -347,15 +347,21 @@ class DownloadStream:
             print("Latest sequence: {0}".format(self.latest_sequence))
     
     def get_Headers(self, url):
-        # Send a GET request to a URL
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
-            # Print the response headers
-            #print(json.dumps(dict(response.headers), indent=4))  
-            return response.headers
-        else:
-            print("Error retrieving headers: {0}".format(response.status_code))
-            print(json.dumps(dict(response.headers), indent=4))
+        try:
+            # Send a GET request to a URL
+            response = requests.get(url, timeout=30)
+            if response.status_code == 200:
+                # Print the response headers
+                #print(json.dumps(dict(response.headers), indent=4))  
+                return response.headers
+            else:
+                print("Error retrieving headers: {0}".format(response.status_code))
+                print(json.dumps(dict(response.headers), indent=4))
+            
+        except requests.exceptions.Timeout as e:
+            logging.info("Timed out updating fragments: {0}".format(e))
+            print(e)
+            return -1, None
     
 
     def create_connection(self, file):
@@ -396,22 +402,27 @@ class DownloadStream:
         # Kill if keyboard interrupt is detected
         if kill_all:
             raise KeyboardInterrupt
-        # create an HTTP adapter with the retry strategy and mount it to the session
-        adapter = HTTPAdapter(max_retries=self.retry_strategy)
-        # create a new session object
-        session = requests.Session()
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        response = session.get(segment_url, timeout=30)
-        if response.status_code == 200:
-            print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
-            #return latest header number and segmqnt content
-            return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order)  # Return segment order and data
-        elif response.status_code == 204:
-            print("Segment {0} has no data")
-            return -1, bytes(), segment_order
-        else:
-            print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+        try:
+            # create an HTTP adapter with the retry strategy and mount it to the session
+            adapter = HTTPAdapter(max_retries=self.retry_strategy)
+            # create a new session object
+            session = requests.Session()
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            response = session.get(segment_url, timeout=30)
+            if response.status_code == 200:
+                print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
+                #return latest header number and segmqnt content
+                return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order)  # Return segment order and data
+            elif response.status_code == 204:
+                print("Segment {0} has no data")
+                return -1, bytes(), segment_order
+            else:
+                print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+                return -1, None, segment_order
+        except requests.exceptions.Timeout as e:
+            logging.info("Fragment timeout {1}: {0}".format(e, segment_order))
+            print(e)
             return -1, None, segment_order
 
     # Function to insert a single segment without committing
