@@ -15,3 +15,4 @@ While some components have been marked as added, testing of full functionalility
 - [ ] Output format options
 - [ ] Additional resource downloads (thumbnail, info.json, description etc)
 - [ ] Fix requests.exceptions.ChunkedEncodingError that appears occasionally
+- [ ] Explicit handling for 403 statuses for segment download
