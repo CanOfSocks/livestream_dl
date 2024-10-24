@@ -27,10 +27,14 @@ logging.basicConfig(
 
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size, max_workers):
-    downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
-    file_name = downloader.catchup()
-    file_name = downloader.live_dl()
-    downloader.combine_segments_to_file(file_name)
+    try:
+        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
+        file_name = downloader.catchup()
+        file_name = downloader.live_dl()
+        downloader.combine_segments_to_file(file_name)
+    finally:
+        # Explicitly close connection
+        downloader.close_connection()
     return file_name
 
 # Multithreaded function to download new segments with delayed commit after a batch
@@ -221,9 +225,13 @@ class DownloadStream:
                         self.cursor.execute('BEGIN TRANSACTION')
                         
                 # Remove future from dictionary to free memory
-                del future_to_seg[future]                
+                if future_to_seg[future]:
+                    del future_to_seg[future]                
+                print("Remaining futures: {0}".format(len(future_to_seg)))
             
         #finally:
+        
+            self.commit_batch(self.conn)
         self.commit_batch(self.conn)
         print("Catchup for {0} completed".format(self.format))
         return os.path.abspath(self.file_name)
@@ -313,6 +321,11 @@ class DownloadStream:
                     if seg_num not in submitted_segments and not submitted_segments.add(seg_num) # Check if segment has already been submitted to the future, if not add it as its being added (set.add returns None)
                 }
                 
+                for seg_num in segments_to_download:
+                    if seg_num not in submitted_segments:
+                        executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num)
+                        submitted_segments.add(seg_num)
+                
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
@@ -335,7 +348,7 @@ class DownloadStream:
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
-        
+            self.commit_batch(self.conn)
         self.commit_batch(self.conn)
         return os.path.abspath(self.file_name)    
            
@@ -382,6 +395,7 @@ class DownloadStream:
     def create_connection(self, file):
         conn = sqlite3.connect(file)
         cursor = conn.cursor()
+        
         
         # Database connection optimisation. Benefits will need to be tested
         if not self.database_in_memory:
@@ -466,6 +480,9 @@ class DownloadStream:
     # Function to commit after a batch of inserts
     def commit_batch(self, conn):
         conn.commit()
+        
+    def close_connection(self):
+        self.conn.close()
 
     # Function to combine segments into a single file
     def combine_segments_to_file(self, output_file, cursor=None):
@@ -476,4 +493,53 @@ class DownloadStream:
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
             for segment in cursor:  # Cursor iterates over rows one by one
-                f.write(segment[0])
+                segment_piece = segment[0]
+                cleaned_segment = self.remove_sidx(segment_piece)
+                f.write(cleaned_segment)
+    
+    ### Via ytarchive            
+    def get_atoms(self, data):
+        """
+        Get the name of top-level atoms along with their offset and length
+        In our case, data should be the first 5kb - 8kb of a fragment
+
+        :param data:
+        """
+        atoms = {}
+        ofs = 0
+
+        while True:
+            # We should be fine and not run into errors, but I do dumb things
+            try:
+                alen = int(data[ofs:ofs + 4].hex(), 16)
+                if alen > len(data):
+                    break
+
+                aname = data[ofs + 4:ofs + 8].decode()
+                atoms[aname] = {"ofs": ofs, "len": alen}
+                ofs += alen
+            except Exception:
+                break
+
+            if ofs + 8 >= len(data):
+                break
+
+        return atoms
+
+    ### Via ytarchive  
+    def remove_sidx(self, data):
+        """
+        Remove the sidx atom from a chunk of data
+
+        :param data:
+        """
+        atoms = self.get_atoms(data)
+        if not "sidx" in atoms:
+            return data
+
+        sidx = atoms["sidx"]
+        ofs = sidx["ofs"]
+        rlen = sidx["ofs"] + sidx["len"]
+        new_data = data[:ofs] + data[rlen:]
+
+        return new_data
