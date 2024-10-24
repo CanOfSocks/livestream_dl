@@ -215,7 +215,9 @@ class DownloadStream:
                         self.commit_batch(self.conn)
                         uncommitted_inserts = 0
                         self.cursor.execute('BEGIN TRANSACTION')
-                                
+                        
+                # Remove future from dictionary to free memory
+                del future_to_seg[future]                
             
         #finally:
         self.commit_batch(self.conn)
