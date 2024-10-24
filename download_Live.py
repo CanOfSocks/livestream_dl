@@ -42,7 +42,7 @@ def download_stream(info_dict, resolution, batch_size, max_workers):
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
-    
+    try:    
         # For use of specificed format. Expects two values, but can work with more
         if isinstance(resolution, tuple) or isinstance(resolution, list) or isinstance(resolution, set):
             if len(resolution) == 1:
@@ -63,33 +63,36 @@ def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5
                     create_mp4(file_names, info_dict)
         elif resolution.lower() != "audio_only":
             file_names = [] 
-            try:
-                # Use ThreadPoolExecutor to run downloads concurrently
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    # Submit tasks for both video and audio downloads
-                    video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
-                    audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=batch_size, max_workers=max_workers)
-                    
-                            # Wait for both downloads to finish
-                    futures = [video_future, audio_future]
-                    
-                    # Continuously check for completion or interruption
-                    for future in concurrent.futures.as_completed(futures):
-                        result = future.result()  # This will raise an exception if the future failed
-                        logging.info("result of thread: {0}".format(result))
-                        print("\033[31m{0}\033[0m".format(result))
-                        file_names.append(result)
-            except KeyboardInterrupt:
-                global kill_all
-                kill_all = True
-                for future in futures:
-                    future.cancel()
-                    executor.shutdown(wait=False)
+
+            # Use ThreadPoolExecutor to run downloads concurrently
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit tasks for both video and audio downloads
+                video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
+                audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=batch_size, max_workers=max_workers)
+                
+                        # Wait for both downloads to finish
+                futures = [video_future, audio_future]
+                
+                #done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
+                
+                #while 
+                # Continuously check for completion or interruption
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()  # This will raise an exception if the future failed
+                    logging.info("result of thread: {0}".format(result))
+                    print("\033[31m{0}\033[0m".format(result))
+                    file_names.append(result)
 
             create_mp4(file_names, info_dict)
             
         else:
             download_stream(info_dict=info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
+    except KeyboardInterrupt:
+        global kill_all
+        kill_all = True
+        for future in futures:
+            future.cancel()
+            executor.shutdown(wait=False)
         
 def create_mp4(file_names, info_dict):
     ffmpeg_builder = ['ffmpeg', '-y', 
@@ -176,6 +179,7 @@ class DownloadStream:
         )
         
         self.is_403 = False
+        self.estimated_segment_duration = 0
         
         self.update_latest_segment()
         self.url_checked = time.time()
@@ -262,6 +266,10 @@ class DownloadStream:
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             submitted_segments = set()
             future_to_seg = {}
+            
+            # Trackers for optimistic segment downloads 
+            optimistic = True
+            optimistic_seg = 0
             while True:               
                                                
                 segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
@@ -270,9 +278,20 @@ class DownloadStream:
                 
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
-                    print("Checking for more segments available for {0}".format(self.format))
-                    self.update_latest_segment()
-                    segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
+                    
+                    # Only attempt to grab optimistic segment once to ensure it does not cause a loop at the end of a stream
+                    if optimistic and optimistic_seg <= head_seg_num and (self.latest_sequence+1) not in submitted_segments:
+                        optimistic_seg = (self.latest_sequence+1)
+                        time.sleep(self.estimated_segment_duration)
+                        
+                        print("Adding segment {1} optimistically ({0})".format(self.format, optimistic_seg))
+                        segments_to_download.add(optimistic_seg)
+                        
+                    # If optimistic grab is not successful, revert back to using headers from base stream URL
+                    else:
+                        print("Checking for more segments available for {0}".format(self.format))
+                        self.update_latest_segment()
+                        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
                                     
                 # If update has found no segments, wait.                                
                 if len(segments_to_download) <= 0:                    
@@ -341,14 +360,24 @@ class DownloadStream:
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
                 for future in done:
-                    head_seg_num, segment_data, seg_num = future.result()
+                    head_seg_num, segment_data, seg_num, status, headers = future.result()
                     
                     # Remove from submitted segments in case it neeeds to be regrabbed
                     submitted_segments.remove(seg_num)
                     
+                    # If successful in downloading segments optimistically, continue doing so
+                    if seg_num > self.latest_sequence and status != 200:
+                        print("Unable to optimistically grab segment {1} for {0}".format(self.format, seg_num))
+                        optimistic = False
+                    else: 
+                        optimistic = True
+                    
                     if head_seg_num > self.latest_sequence:
                         print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
                         self.latest_sequence = head_seg_num
+                        
+                    if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
+                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
 
                     if segment_data is not None:
                         # Insert segment data in the main thread (database interaction)
@@ -465,6 +494,7 @@ class DownloadStream:
         if kill_all:
             raise KeyboardInterrupt
         try:
+            
             # create an HTTP adapter with the retry strategy and mount it to the session
             adapter = HTTPAdapter(max_retries=self.retry_strategy)
             # create a new session object
@@ -476,22 +506,22 @@ class DownloadStream:
                 print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
                 self.is_403 = False
                 #return latest header number and segmqnt content
-                return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order)  # Return segment order and data
+                return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
             elif response.status_code == 204:
                 print("Segment {0} has no data")
                 self.is_403 = False
-                return -1, bytes(), segment_order
+                return -1, bytes(), segment_order, response.status_code, response.headers
             elif response.status_code == 403:
                 print("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
-                return -1, None, segment_order
+                return -1, None, segment_order, response.status_code, response.headers
             else:
                 print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
-                return -1, None, segment_order
+                return -1, None, segment_order, response.status_code
         except requests.exceptions.Timeout as e:
             logging.info("Fragment timeout {1}: {0}".format(e, segment_order))
             print(e)
-            return -1, None, segment_order
+            return -1, None, segment_order, response.status_code, response.headers
 
     # Function to insert a single segment without committing
     def insert_single_segment(self, cursor, segment_order, segment_data):
