@@ -141,7 +141,7 @@ def create_mp4(file_names, info_dict):
     
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, force_merge=False):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=10, force_merge=False, database_in_memory=False):        
         self.url_updated = time.time()
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -153,11 +153,14 @@ class DownloadStream:
         
         self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
-        self.file_name = "{0}.{1}.ts".format(self.id,self.format)      
-        self.temp_file = '{0}.{1}.temp'.format(self.id,self.format)
+        self.file_name = "{0}.{1}.ts".format(self.id,self.format)     
+        if database_in_memory:
+            self.temp_file = ':memory:'
+        else:
+            self.temp_file = '{0}.{1}.temp'.format(self.id,self.format)
         
         self.retry_strategy = Retry(
-            total=10,  # maximum number of retries
+            total=fragment_retries,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
             
@@ -371,6 +374,7 @@ class DownloadStream:
         # Connect to SQLite database (or create it if it doesn't exist)
         conn, cursor = self.create_connection(temp_file)
 
+        
         # Create the table where id represents the segment order
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS segments (
