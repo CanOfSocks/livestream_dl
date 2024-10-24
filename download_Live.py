@@ -29,7 +29,10 @@ logging.basicConfig(
 def download_stream(info_dict, resolution, batch_size, max_workers):
     try:
         downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
-        file_name = downloader.catchup()
+        #file_name = downloader.catchup()
+        #time.sleep(0.5)
+        print(downloader.stream_url)
+        print(downloader.get_Headers("{0}&sq={1}".format(downloader.stream_url, 1)))
         file_name = downloader.live_dl()
         downloader.combine_segments_to_file(file_name)
     finally:
@@ -146,7 +149,7 @@ def create_mp4(file_names, info_dict):
 
 class DownloadStream:
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=10, force_merge=False, database_in_memory=False):        
-        self.url_updated = time.time()
+        
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
@@ -175,7 +178,7 @@ class DownloadStream:
         self.is_403 = False
         
         self.update_latest_segment()
-        
+        self.url_checked = time.time()
         # Force merge needs testing
         if force_merge and os.path.exists(self.temp_file) and not self.database_in_memory:
             self.conn, self.cursor = self.create_connection(self.temp_file)
@@ -225,27 +228,32 @@ class DownloadStream:
                         self.cursor.execute('BEGIN TRANSACTION')
                         
                 # Remove future from dictionary to free memory
-                if future_to_seg[future]:
-                    del future_to_seg[future]                
-                print("Remaining futures: {0}".format(len(future_to_seg)))
+                del future_to_seg[future]                
+                #print("Remaining futures ({1}): {0}".format(len(future_to_seg), self.format))
             
         #finally:
         
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
-        print("Catchup for {0} completed".format(self.format))
+        print("\033[31mCatchup for {0} completed\033[0m".format(self.format))
         return os.path.abspath(self.file_name)
     
-    def refresh_Check(self):            
-        if time.time() - self.url_updated >= 3600.0 or self.is_403:
+    def refresh_Check(self):    
+        #print("Refresh check ({0})".format(self.format))        
+        if time.time() - self.url_checked >= 3600.0 or self.is_403:
             print("Refreshing URL for {0}".format(self.format))
             info_dict, live_status = getUrls.get_Video_Info(self.id)
             stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
             if stream_url is not None:
                 self.stream_url = stream_url
-                self.url_updated = time.time()
+            if live_status is not None:
+                self.live_status = live_status
+            
+            self.url_checked = time.time()
                 
     def live_dl(self):
+        
+        print("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
         self.already_downloaded = self.segment_exists_batch()
         wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
@@ -253,10 +261,12 @@ class DownloadStream:
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             submitted_segments = set()
+            future_to_seg = {}
             while True:               
-                self.refresh_Check()
-                                
+                                               
                 segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
+                
+                self.refresh_Check()
                 
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
@@ -314,17 +324,18 @@ class DownloadStream:
                         self.already_downloaded.add(seg_num)
                         remove_set.add(seg_num)
                 segments_to_download = segments_to_download - remove_set
-                                
-                future_to_seg = {
-                    executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
-                    for seg_num in segments_to_download
-                    if seg_num not in submitted_segments and not submitted_segments.add(seg_num) # Check if segment has already been submitted to the future, if not add it as its being added (set.add returns None)
-                }
-                
-                for seg_num in segments_to_download:
-                    if seg_num not in submitted_segments:
-                        executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num)
-                        submitted_segments.add(seg_num)
+
+                # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
+                future_to_seg.update(
+                    {
+                        executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                        for seg_num in segments_to_download
+                        if seg_num not in submitted_segments and not submitted_segments.add(seg_num)
+                    }
+                )
+
+                # Merge the new futures into the existing `future_to_seg`, remove existing to free up space
+
                 
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
@@ -343,11 +354,20 @@ class DownloadStream:
                         # Insert segment data in the main thread (database interaction)
                         self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
                         uncommitted_inserts += 1
-                        if uncommitted_inserts >= self.batch_size:
+                        
+                        # If finished threads exceeds batch size, commit the whole batch of threads at once. 
+                        # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
+                        if uncommitted_inserts >= max(self.batch_size, len(done)):
                             print("Writing segments to file...")
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
+                    #print("Remaining futures ({2}) for live: {0}, finished {1}".format(len(not_done), len(done), self.format))
+                    
+                    # Remove completed threads to free RAM
+                    del future_to_seg[future]
+                # IDK, it seems to do better if something exists outside the for loop
+                pass
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
         return os.path.abspath(self.file_name)    
@@ -382,14 +402,16 @@ class DownloadStream:
             elif response.status_code == 403:
                 print("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
+                return None
             else:
                 print("Error retrieving headers: {0}".format(response.status_code))
                 print(json.dumps(dict(response.headers), indent=4))
+                return None
             
         except requests.exceptions.Timeout as e:
             logging.info("Timed out updating fragments: {0}".format(e))
             print(e)
-            return -1, None
+            return None
     
 
     def create_connection(self, file):
@@ -494,6 +516,7 @@ class DownloadStream:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
             for segment in cursor:  # Cursor iterates over rows one by one
                 segment_piece = segment[0]
+                # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
                 f.write(cleaned_segment)
     
