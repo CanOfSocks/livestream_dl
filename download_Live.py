@@ -27,13 +27,11 @@ logging.basicConfig(
 
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size, max_workers):
-    file_names = []
     downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
     file_name = downloader.catchup()
     file_name = downloader.live_dl()
-    file_names.append(file_name)
     downloader.combine_segments_to_file(file_name)
-    return file_names
+    return file_name
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
@@ -127,6 +125,7 @@ def create_mp4(file_names, info_dict):
         
     ffmpeg_builder.append(os.path.abspath(outputFile))
     
+    
     with open("{0}.ffmpeg.txt".format(info_dict.get('id')), 'w', encoding='utf-8') as f:
         f.write(" ".join(ffmpeg_builder))   
         
@@ -136,8 +135,7 @@ def create_mp4(file_names, info_dict):
     except subprocess.CalledProcessError as e:
         print(e)
         print(e.stderr)
-    except Exception as e:
-        print(e)
+
     #for file in file_names:
     #    os.remove(file)
     
@@ -215,7 +213,7 @@ class DownloadStream:
                                 
             
         #finally:
-            self.commit_batch(self.conn)
+        self.commit_batch(self.conn)
         print("Catchup for {0} completed".format(self.format))
         return os.path.abspath(self.file_name)
                 
