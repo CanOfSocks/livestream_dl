@@ -168,6 +168,8 @@ class DownloadStream:
             
         )
         
+        self.is_403 = False
+        
         self.update_latest_segment()
         
         # Force merge needs testing
@@ -202,6 +204,8 @@ class DownloadStream:
             for future in concurrent.futures.as_completed(future_to_seg):
                 head_seg_num, segment_data, seg_num = future.result()
                 
+                self.refresh_Check()
+                
                 if head_seg_num > self.latest_sequence:
                     print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))
                     self.latest_sequence = head_seg_num
@@ -223,8 +227,16 @@ class DownloadStream:
         self.commit_batch(self.conn)
         print("Catchup for {0} completed".format(self.format))
         return os.path.abspath(self.file_name)
-                
     
+    def refresh_Check(self):            
+        if time.time() - self.url_updated >= 3600.0 or self.is_403:
+            print("Refreshing URL for {0}".format(self.format))
+            info_dict, live_status = getUrls.get_Video_Info(self.id)
+            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+            if stream_url is not None:
+                self.stream_url = stream_url
+                self.url_updated = time.time()
+                
     def live_dl(self):
         self.already_downloaded = self.segment_exists_batch()
         wait = 0   
@@ -233,15 +245,9 @@ class DownloadStream:
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             submitted_segments = set()
-            while True:
-                
-                if time.time() - self.url_updated >= 3600.0:
-                    info_dict, live_status = getUrls.get_Video_Info(self.id)
-                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
-                    if stream_url is not None:
-                        self.stream_url = stream_url
-                        self.url_updated = time.time()
-                
+            while True:               
+                self.refresh_Check()
+                                
                 segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                 
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
@@ -356,9 +362,13 @@ class DownloadStream:
             # Send a GET request to a URL
             response = requests.get(url, timeout=30)
             if response.status_code == 200:
+                self.is_403 = False
                 # Print the response headers
                 #print(json.dumps(dict(response.headers), indent=4))  
                 return response.headers
+            elif response.status_code == 403:
+                print("Received 403 error, marking for URL refresh...")
+                self.is_403 = True
             else:
                 print("Error retrieving headers: {0}".format(response.status_code))
                 print(json.dumps(dict(response.headers), indent=4))
@@ -428,11 +438,17 @@ class DownloadStream:
             response = session.get(segment_url, timeout=30)
             if response.status_code == 200:
                 print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
+                self.is_403 = False
                 #return latest header number and segmqnt content
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order)  # Return segment order and data
             elif response.status_code == 204:
                 print("Segment {0} has no data")
+                self.is_403 = False
                 return -1, bytes(), segment_order
+            elif response.status_code == 403:
+                print("Received 403 error, marking for URL refresh...")
+                self.is_403 = True
+                return -1, None, segment_order
             else:
                 print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
                 return -1, None, segment_order
