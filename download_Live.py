@@ -153,8 +153,10 @@ class DownloadStream:
         
         self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
+        self.database_in_memory = database_in_memory
+        
         self.file_name = "{0}.{1}.ts".format(self.id,self.format)     
-        if database_in_memory:
+        if self.database_in_memory:
             self.temp_file = ':memory:'
         else:
             self.temp_file = '{0}.{1}.temp'.format(self.id,self.format)
@@ -169,7 +171,7 @@ class DownloadStream:
         self.update_latest_segment()
         
         # Force merge needs testing
-        if force_merge and os.path.exists(self.temp_file):
+        if force_merge and os.path.exists(self.temp_file) and not self.database_in_memory:
             self.conn, self.cursor = self.create_connection(self.temp_file)
             self.combine_segments_to_file(self.file_name, cursor=self.cursor)
             return os.path.abspath(self.file_name)  
@@ -368,6 +370,16 @@ class DownloadStream:
     def create_connection(self, file):
         conn = sqlite3.connect(file)
         cursor = conn.cursor()
+        
+        # Database connection optimisation. Benefits will need to be tested
+        if not self.database_in_memory:
+            # Set the journal mode to WAL
+            cursor.execute('PRAGMA journal_mode = WAL;')        
+            # Set the synchronous mode to NORMAL
+            cursor.execute('PRAGMA synchronous = NORMAL;')
+            # Increase page size to help with large blobs
+            cursor.execute('pragma page_size = 32768;')
+        
         return conn, cursor
     
     def create_db(self, temp_file):
