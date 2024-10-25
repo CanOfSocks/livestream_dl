@@ -534,9 +534,11 @@ class DownloadStream:
             print(e)
             return -1, None, segment_order, response.status_code, response.headers
         except requests.exceptions.RetryError as e:
+            """
             if response.status_code == 204:
                 self.is_403 = False
                 return -1, bytes(), segment_order, response.status_code, response.headers
+            """
             logging.info("Timed out updating fragments: {0}".format(e))
             print(e)
             return -1, None, segment_order, response.status_code, response.headers
