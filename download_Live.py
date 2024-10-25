@@ -211,29 +211,33 @@ class DownloadStream:
                 executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
                 for seg_num in segments_to_download
             }
+            
+            while True:
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
+                for future in done:
+                    head_seg_num, segment_data, seg_num = future.result()
+                    
+                    self.refresh_Check()
+                    
+                    if head_seg_num > self.latest_sequence:
+                        print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))
+                        self.latest_sequence = head_seg_num
 
-            for future in concurrent.futures.as_completed(future_to_seg):
-                head_seg_num, segment_data, seg_num = future.result()
-                
-                self.refresh_Check()
-                
-                if head_seg_num > self.latest_sequence:
-                    print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))
-                    self.latest_sequence = head_seg_num
-
-                if segment_data is not None:
-                    # Insert segment data in the main thread (database interaction)
-                    self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
-                    uncommitted_inserts += 1
-                    if uncommitted_inserts >= max(self.batch_size,self.max_workers):
-                        print("Writing segments to file...")
-                        self.commit_batch(self.conn)
-                        uncommitted_inserts = 0
-                        self.cursor.execute('BEGIN TRANSACTION')
-                        
-                # Remove future from dictionary to free memory
-                del future_to_seg[future]                
-                #print("Remaining futures ({1}): {0}".format(len(future_to_seg), self.format))
+                    if segment_data is not None:
+                        # Insert segment data in the main thread (database interaction)
+                        self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
+                        uncommitted_inserts += 1
+                        if uncommitted_inserts >= max(self.batch_size,len(done)):
+                            print("Writing segments to file...")
+                            self.commit_batch(self.conn)
+                            uncommitted_inserts = 0
+                            self.cursor.execute('BEGIN TRANSACTION')
+                            
+                    # Remove future from dictionary to free memory
+                    del future_to_seg[future]                
+                    #print("Remaining futures ({1}): {0}".format(len(future_to_seg), self.format))
+                if len(not_done) == 0 and len(future_to_seg) == 0:
+                    break
             
         #finally:
         
