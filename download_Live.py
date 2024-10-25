@@ -516,10 +516,12 @@ class DownloadStream:
                 self.is_403 = False
                 #return latest header number and segmqnt content
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
+                """
             elif response.status_code == 204:
                 print("Segment {0} has no data")
                 self.is_403 = False
                 return -1, bytes(), segment_order, response.status_code, response.headers
+                """
             elif response.status_code == 403:
                 print("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
