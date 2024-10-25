@@ -246,7 +246,7 @@ class DownloadStream:
         #print("Refresh check ({0})".format(self.format))        
         if time.time() - self.url_checked >= 3600.0 or self.is_403:
             print("Refreshing URL for {0}".format(self.format))
-            info_dict, live_status = getUrls.get_Video_Info(self.id)
+            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
             stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
             if stream_url is not None:
                 self.stream_url = stream_url
@@ -280,7 +280,7 @@ class DownloadStream:
                 if len(segments_to_download) <= 0:
                     
                     # Only attempt to grab optimistic segment once to ensure it does not cause a loop at the end of a stream
-                    if optimistic and optimistic_seg <= head_seg_num and (self.latest_sequence+1) not in submitted_segments:
+                    if optimistic and optimistic_seg <= self.latest_sequence and (self.latest_sequence+1) not in submitted_segments:
                         optimistic_seg = (self.latest_sequence+1)
                         time.sleep(self.estimated_segment_duration)
                         
@@ -292,7 +292,7 @@ class DownloadStream:
                         print("Checking for more segments available for {0}".format(self.format))
                         self.update_latest_segment()
                         segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
-                                    
+                        
                 # If update has found no segments, wait.                                
                 if len(segments_to_download) <= 0:                    
                     wait += 1
@@ -307,7 +307,7 @@ class DownloadStream:
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
                         print("No new fragments found... Getting new url")
-                        info_dict, live_status = getUrls.get_Video_Info(self.id)
+                        info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
                         
                         # If status of downloader is not live, assume stream has ended
                         if self.live_status != 'is_live':
@@ -441,6 +441,10 @@ class DownloadStream:
             logging.info("Timed out updating fragments: {0}".format(e))
             print(e)
             return None
+        except requests.exceptions.RetryError as e:
+            logging.info("Exceeded timeouts updating fragments: {0}".format(e))
+            print(e)
+            return None
     
 
     def create_connection(self, file):
@@ -520,6 +524,13 @@ class DownloadStream:
                 return -1, None, segment_order, response.status_code
         except requests.exceptions.Timeout as e:
             logging.info("Fragment timeout {1}: {0}".format(e, segment_order))
+            print(e)
+            return -1, None, segment_order, response.status_code, response.headers
+        except requests.exceptions.RetryError as e:
+            if response.status_code == 204:
+                self.is_403 = False
+                return -1, bytes(), segment_order, response.status_code, response.headers
+            logging.info("Timed out updating fragments: {0}".format(e))
             print(e)
             return -1, None, segment_order, response.status_code, response.headers
 

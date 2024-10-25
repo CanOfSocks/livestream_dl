@@ -36,13 +36,13 @@ class MyLogger:
         print(msg)
         pass
             
-def get_Video_Info(id):
+def get_Video_Info(id, wait=True):
     url = "https://www.youtube.com/watch?v={0}".format(id)
     
     logger = MyLogger()
     
     ydl_opts = {
-        'wait_for_video': (1,300),
+        
         'retries': 25,
         'skip_download': True,       
 #        'quiet': True,
@@ -50,6 +50,9 @@ def get_Video_Info(id):
 #        'extractor_args': 'youtube:player_client=web;skip=dash;formats=incomplete,duplicate',
 #        'logger': logger
     }
+    
+    if wait == True:
+        ydl_opts['wait_for_video'] = (1,300)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info_dict = ydl.extract_info(url, download=False)
