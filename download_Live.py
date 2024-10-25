@@ -428,7 +428,8 @@ class DownloadStream:
         try:
             # Send a GET request to a URL
             response = requests.get(url, timeout=30)
-            if response.status_code == 200:
+            # 200 and 204 responses appear to have valid headers so far
+            if response.status_code == 200 or response.status_code == 204:
                 self.is_403 = False
                 # Print the response headers
                 #print(json.dumps(dict(response.headers), indent=4))  
@@ -444,10 +445,6 @@ class DownloadStream:
             
         except requests.exceptions.Timeout as e:
             logging.info("Timed out updating fragments: {0}".format(e))
-            print(e)
-            return None
-        except requests.exceptions.RetryError as e:
-            logging.info("Exceeded timeouts updating fragments: {0}".format(e))
             print(e)
             return None
     
@@ -528,7 +525,7 @@ class DownloadStream:
                 return -1, None, segment_order, response.status_code, response.headers
             else:
                 print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
-                return -1, None, segment_order, response.status_code
+                return -1, None, segment_order, response.status_code, response.headers
         except requests.exceptions.Timeout as e:
             logging.info("Fragment timeout {1}: {0}".format(e, segment_order))
             print(e)
