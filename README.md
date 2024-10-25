@@ -17,3 +17,4 @@ While some components have been marked as added, testing of full functionalility
 - [ ] Fix requests.exceptions.ChunkedEncodingError that appears occasionally
 - [ ] Explicit handling for 403 statuses for segment download
 - [ ] Print estimated and current file size for downloads
+- [ ] Recreate catchup function to work like live_dl function to stop stalling
