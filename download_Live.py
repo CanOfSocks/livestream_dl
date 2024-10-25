@@ -236,7 +236,8 @@ class DownloadStream:
                     # Remove future from dictionary to free memory
                     del future_to_seg[future]                
                     #print("Remaining futures ({1}): {0}".format(len(future_to_seg), self.format))
-                if len(not_done) == 0 and len(future_to_seg) == 0:
+                # Loop until all threads have finished
+                if len(not_done) == 0:
                     break
             
         #finally:
@@ -316,7 +317,7 @@ class DownloadStream:
                         # If status of downloader is not live, assume stream has ended
                         if self.live_status != 'is_live':
                             print("Livestream has ended, collecting any missing with existing url")
-                            self.catchup()
+                            #self.catchup()
                             break
                         
                         # If live has changed, use new URL to get any fragments that may be missing
@@ -326,7 +327,7 @@ class DownloadStream:
                             stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                             if stream_url is not None:
                                 self.stream_url = stream_url  
-                            self.catchup()
+                            #self.catchup()
                             break
                         
                         # If livestream is still live, use new url
