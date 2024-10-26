@@ -31,9 +31,10 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
         downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder)
         #file_name = downloader.catchup()
         #time.sleep(0.5)
-        #print(downloader.stream_url)
-        #print(downloader.get_Headers("{0}&sq={1}".format(downloader.stream_url, 1)))
-
+        print(downloader.stream_url)
+        print(downloader.get_Headers("{0}&sq={1}".format(downloader.stream_url, 1)))
+        print("Content type: {0}/{1}".format(downloader.type, downloader.ext))
+        
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -41,11 +42,11 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
     finally:
         # Explicitly close connection
         downloader.close_connection()
-    return downloader
+    return file_name, downloader.type
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', options={}):
-    futures = []
+    futures = set()
     file_names = {}
        
     print(json.dumps(options, indent=4))
@@ -53,32 +54,17 @@ def download_segments(info_dict, resolution='best', options={}):
     with concurrent.futures.ThreadPoolExecutor() as executor:  
         try: 
             # Download auxiliary files (thumbnail, info,json etc)
-            auxiliary_thread = executor.submit(download_auxiliary_files, info_dict, options)
-            futures.append(auxiliary_thread)
-            for future in concurrent.futures.as_completed(futures):
-                print(json.dumps(future.result(), indent=4))
-                file_names.update(future.result())
+            auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
+            futures.add(auxiliary_thread)
             
             # For use of specificed format. Expects two values, but can work with more
-            if isinstance(resolution, tuple) or isinstance(resolution, list) or isinstance(resolution, set):
-                if len(resolution) == 1:
-                    executor.submit(download_stream, info_dict=info_dict, resolution=resolution[0], batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
-                                    keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
-                else:
+            if isinstance(resolution, tuple) or isinstance(resolution, list) or isinstance(resolution, set):                    
+                for format in resolution:
+                    new_future = executor.submit(download_stream, info_dict=info_dict, resolution=format, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                                keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
+                    futures.add(new_future)
                     
-                    for format in resolution:
-                        new_future = executor.submit(download_stream, info_dict=info_dict, resolution=format, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
-                                    keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
-                        futures.append(new_future)
-                    
-                    for future in concurrent.futures.as_completed(futures):
-                        result = future.result()  # This will raise an exception if the future failed
-                        logging.info("Result of thread: {0}".format(result))
-                        print("\033[31m{0}\033[0m".format(result))
-                        file_names[result.format] = os.path.abspath(result.merged_file_name)
-                    create_mp4(file_names, info_dict)
-            elif resolution.lower() != "audio_only":
-                
+            elif resolution.lower() != "audio_only":                
                 # Submit tasks for both video and audio downloads
                 video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
                                     keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
@@ -86,26 +72,38 @@ def download_segments(info_dict, resolution='best', options={}):
                                     keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
                 
                         # Wait for both downloads to finish
-                futures.extend([video_future, audio_future])
+                futures.add(video_future)
+                futures.add(audio_future)
+                            
+            elif resolution.lower() == "audio_only":
+                futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None)))
                 
-                #done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
-                
-                while True:
-                    done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
-                    # Continuously check for completion or interruption
-                    for future in done:
-                        result = future.result()  # This will raise an exception if the future failed
-                        logging.info("result of thread: {0}".format(result))
-                        print("\033[31m{0}\033[0m".format(result))
-                        file_names[result.format] = os.path.abspath(result.merged_file_name)
-                    if len(not_done) <= 0:
-                        break
-                    else:
-                        time.sleep(0.9)
-
-                file_names = create_mp4(file_names, info_dict)                
-            else:
-                executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None))
+            while True:
+                done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
+                # Continuously check for completion or interruption
+                for future in done:
+                    result, type = future.result()  # This will raise an exception if the future failed
+                    logging.info("result of thread: {0}".format(result))
+                    print("\033[31m{0}\033[0m".format(result))
+                    
+                    if type == 'auxiliary':
+                        file_names.update(result)
+                    elif str(type).lower() == 'video':
+                        file_names['video'] = result
+                    elif str(type).lower() == 'audio':
+                        file_names['audio'] = result                    
+                    
+                    futures.remove(future)
+                    
+                if len(not_done) <= 0:
+                    break
+                else:
+                    time.sleep(0.9)
+            
+            if options.get('merge') or not options.get('no_merge'):
+                create_mp4(file_names, info_dict, options={})
+            
+            
         except KeyboardInterrupt:
             global kill_all
             kill_all = True
@@ -129,7 +127,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
     if options.get('write_info_json'):
         info_file = "{0}.info.json".format(base_output)
         with open(info_file, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(options, indent=4))
+            f.write(json.dumps(info_dict, indent=4))
         created_files['info_json'] = info_file
     
     if options.get('write_description'):
@@ -159,30 +157,50 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
             f.write(response.content)
         created_files['thumbnail'] = thumb_file      
     
-    return created_files
+    return created_files, 'auxiliary'
     
         
 def create_mp4(file_names, info_dict, options={}):
+    
+    index = 0
+    thumbnail = None
+    video = None
+    audio = None
+    ext = options.get('ext', None)
+    
     ffmpeg_builder = ['ffmpeg', '-y', 
                       '-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats'
                       ]
     
     if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
         input = ['-i', os.path.abspath(file_names.get('thumbnail')), '-seekable', '0', '-thread_queue_size', '1024']
+        thumbnail = index
+        index += 1
     
     # Add input files
-    for file in file_names:
-        if str(file_names[file]).endswith('.ts'):
-            input = ['-i', file_names[file], '-seekable', '0', '-thread_queue_size', '1024']
-            ffmpeg_builder.extend(input)
-    
+    if file_names.get('video'):        
+        input = ['-i', file_names[file], '-seekable', '0', '-thread_queue_size', '1024']
+        ffmpeg_builder.extend(input)
+        video = index
+        index += 1
+            
+    if file_names.get('audio'):
+        input = ['-i', file_names[file], '-seekable', '0', '-thread_queue_size', '1024']
+        ffmpeg_builder.extend(input)
+        audio = index
+        index += 1
+        if video is None and ext is None:
+            ext = 'ogg'
     # Add faststart
     ffmpeg_builder.extend(['-movflags', 'faststart'])
     
     # Add mappings
-    for i in range(0, len(file_names)):
+    for i in range(0, len(index)):
         input = ['-map', str(i)]
         ffmpeg_builder.extend(input)
+        
+    if thumbnail is not None:
+        ffmpeg_builder.extend(['-disposition:v:{0}'.format(thumbnail), 'attached_pic'])
         
     #Add Copy codec
     ffmpeg_builder.extend(['-c', 'copy'])
@@ -198,9 +216,10 @@ def create_mp4(file_names, info_dict, options={}):
     else:
         base_output = info_dict.get('id')
     
-    
-    if not outputFile.endswith('.mp4'):
-        outputFile = base_output + '.mp4'  
+    if ext is None:
+        ext = info_dict.get('ext', 'mp4')
+    if not outputFile.endswith(ext):
+        outputFile = base_output + ext  
         
     ffmpeg_builder.append(os.path.abspath(outputFile))
     
@@ -264,6 +283,9 @@ class DownloadStream:
         
         self.is_403 = False
         self.estimated_segment_duration = 0
+        
+        self.type = None
+        self.ext = None        
         
         self.update_latest_segment()
         self.url_checked = time.time()
@@ -392,9 +414,7 @@ class DownloadStream:
                     
                     # If waited for new fragments hits 20 loops, assume stream is offline
                     if wait > 20:
-                        print("Wait time for new fragment exceeded, running final check for missed fragments...")
-                        self.catchup()
-                        print("Collected all available fragments, exitting...")
+                        print("Wait time for new fragment exceeded, ending download...")
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
@@ -409,7 +429,7 @@ class DownloadStream:
                         
                         # If live has changed, use new URL to get any fragments that may be missing
                         elif self.live_status == 'is_live' and live_status != 'is_live':
-                            print("Stream has finished ({0}), getting any remaining segments with new url if available".format(live_status))
+                            print("Stream has finished ({0})".format(live_status))
                             self.live_status = live_status
                             stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                             if stream_url is not None:
@@ -510,6 +530,9 @@ class DownloadStream:
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
             print("Latest sequence: {0}".format(self.latest_sequence))
+            
+        if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
+            self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
     
     def get_Headers(self, url):
         try:
@@ -615,11 +638,11 @@ class DownloadStream:
             print(e)
             return -1, None, segment_order, response.status_code, response.headers
         except requests.exceptions.RetryError as e:
-            """
+            
             if response.status_code == 204:
                 self.is_403 = False
-                return -1, bytes(), segment_order, response.status_code, response.headers
-            """
+                return -1, None, segment_order, response.status_code, response.headers
+            
             logging.info("Timed out updating fragments: {0}".format(e))
             print("Timed out updating fragments: {0}".format(e))
             return -1, None, segment_order, response.status_code, response.headers

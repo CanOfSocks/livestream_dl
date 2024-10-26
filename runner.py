@@ -30,13 +30,13 @@ if __name__ == "__main__":
     # Add a required positional argument 'ID'
     parser.add_argument('ID', type=str, help='The video ID (required)')
     
-    parser.add_argument('--resolution', type=str, default='best', dest='resolution', help="Desired resolution. Can be best, audio_only or specific resolution.")
+    parser.add_argument('--resolution', type=str, default='best', dest='resolution', help="Desired resolution. Can be best, audio_only or specific resolution. Default: best")
     
     parser.add_argument('--formats', type=int, nargs='*', dest='resolution', help="Specify specific formats to download. Overrides resolution. Use with --no-merge if not using a video and audio format")
     
-    parser.add_argument('--threads', type=int, default=1, help="Number of download threads per format. This will be 2x for an video and audio download")
+    parser.add_argument('--threads', type=int, default=1, help="Number of download threads per format. This will be 2x for an video and audio download. Default: 1")
     
-    parser.add_argument('--batch-size', type=int, default=1, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances.")
+    parser.add_argument('--batch-size', type=int, default=5, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances. Default: 5")
     
     parser.add_argument('--no-merge', action='store_false', dest='merge', help="Don't merge video")
 

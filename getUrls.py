@@ -62,6 +62,7 @@ def get_Video_Info(id, wait=True, cookies=None):
         # Check if the video is private
         if not (info_dict.get('live_status') == 'is_live' or info_dict.get('live_status') == 'post_live'):
             print("Video has been processed, please use yt-dlp directly")
+            raise ValueError("Video has been processed, please use yt-dlp directly")
         
       
     return info_dict, info_dict.get('live_status')
