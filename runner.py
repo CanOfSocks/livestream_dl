@@ -75,11 +75,11 @@ if __name__ == "__main__":
     
     # For testing
     
-    args['threads'] = 5
-    args['batch_size'] = 5
-    args['write_thumbnail'] = True
-    args['write_description'] = True
-    args['write_info_json'] = True
+    options['threads'] = 5
+    options['batch_size'] = 5
+    options['write_thumbnail'] = True
+    options['write_description'] = True
+    options['write_info_json'] = True
     
     
     main(id=id, resolution=resolution, options=options)
