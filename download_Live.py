@@ -13,7 +13,7 @@ import YoutubeURL
 import subprocess
 import os  
 
-import signal
+import shutil
 
 import logging
 
@@ -26,83 +26,155 @@ logging.basicConfig(
 )
 
 # Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size, max_workers):
+def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, keep_database=False):
     try:
-        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
+        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder)
         #file_name = downloader.catchup()
         #time.sleep(0.5)
-        print(downloader.stream_url)
-        print(downloader.get_Headers("{0}&sq={1}".format(downloader.stream_url, 1)))
-        file_name = downloader.live_dl()
-        downloader.combine_segments_to_file(file_name)
+        #print(downloader.stream_url)
+        #print(downloader.get_Headers("{0}&sq={1}".format(downloader.stream_url, 1)))
+
+        downloader.live_dl()
+        file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
+        if not keep_database:
+            downloader.delete_temp_database()
     finally:
         # Explicitly close connection
         downloader.close_connection()
-    return file_name
+    return downloader
 
 # Multithreaded function to download new segments with delayed commit after a batch
-def download_segments(info_dict, resolution='best', batch_size=10, max_workers=5):
-    try:    
-        # For use of specificed format. Expects two values, but can work with more
-        if isinstance(resolution, tuple) or isinstance(resolution, list) or isinstance(resolution, set):
-            if len(resolution) == 1:
-                download_stream(info_dict=info_dict, resolution=resolution[0], batch_size=batch_size, max_workers=max_workers)
-            else:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    file_names = [] 
-                    futures = []
+def download_segments(info_dict, resolution='best', options={}):
+    futures = []
+    file_names = {}
+       
+    print(json.dumps(options, indent=4))
+    
+    with concurrent.futures.ThreadPoolExecutor() as executor:  
+        try: 
+            # Download auxiliary files (thumbnail, info,json etc)
+            auxiliary_thread = executor.submit(download_auxiliary_files, info_dict, options)
+            futures.append(auxiliary_thread)
+            for future in concurrent.futures.as_completed(futures):
+                print(json.dumps(future.result(), indent=4))
+                file_names.update(future.result())
+            
+            # For use of specificed format. Expects two values, but can work with more
+            if isinstance(resolution, tuple) or isinstance(resolution, list) or isinstance(resolution, set):
+                if len(resolution) == 1:
+                    executor.submit(download_stream, info_dict=info_dict, resolution=resolution[0], batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                                    keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
+                else:
+                    
                     for format in resolution:
-                        new_future = executor.submit(download_stream, info_dict=info_dict, resolution=format, batch_size=batch_size, max_workers=max_workers)
+                        new_future = executor.submit(download_stream, info_dict=info_dict, resolution=format, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                                    keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
                         futures.append(new_future)
                     
                     for future in concurrent.futures.as_completed(futures):
                         result = future.result()  # This will raise an exception if the future failed
                         logging.info("Result of thread: {0}".format(result))
                         print("\033[31m{0}\033[0m".format(result))
-                        file_names.append(result)
+                        file_names[result.format] = os.path.abspath(result.merged_file_name)
                     create_mp4(file_names, info_dict)
-        elif resolution.lower() != "audio_only":
-            file_names = [] 
-
-            # Use ThreadPoolExecutor to run downloads concurrently
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            elif resolution.lower() != "audio_only":
+                
                 # Submit tasks for both video and audio downloads
-                video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
-                audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=batch_size, max_workers=max_workers)
+                video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                                    keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
+                audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                                    keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
                 
                         # Wait for both downloads to finish
-                futures = [video_future, audio_future]
+                futures.extend([video_future, audio_future])
                 
                 #done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
                 
-                #while 
-                # Continuously check for completion or interruption
-                for future in concurrent.futures.as_completed(futures):
-                    result = future.result()  # This will raise an exception if the future failed
-                    logging.info("result of thread: {0}".format(result))
-                    print("\033[31m{0}\033[0m".format(result))
-                    file_names.append(result)
+                while True:
+                    done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
+                    # Continuously check for completion or interruption
+                    for future in done:
+                        result = future.result()  # This will raise an exception if the future failed
+                        logging.info("result of thread: {0}".format(result))
+                        print("\033[31m{0}\033[0m".format(result))
+                        file_names[result.format] = os.path.abspath(result.merged_file_name)
+                    if len(not_done) <= 0:
+                        break
+                    else:
+                        time.sleep(0.9)
 
-            create_mp4(file_names, info_dict)
-            
-        else:
-            download_stream(info_dict=info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers)
-    except KeyboardInterrupt:
-        global kill_all
-        kill_all = True
-        for future in futures:
-            future.cancel()
-            executor.shutdown(wait=False)
+                file_names = create_mp4(file_names, info_dict)                
+            else:
+                executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None))
+        except KeyboardInterrupt:
+            global kill_all
+            kill_all = True
+            print("Keyboard interrupt detected")
+            time.sleep(0.5)
+            """
+            for future in futures:
+                future.cancel()
+                executor.shutdown(wait=False)
+                """
+    #move_to_final(info_dict, options, file_names)
+
+def download_auxiliary_files(info_dict, options, thumbnail=None):
+    if options.get("temp_folder"):
+        base_output = os.path.join(options.get("temp_folder"), info_dict.get('id'))
+    else:
+        base_output = info_dict.get('id')
+    
+    created_files = {}
+    
+    if options.get('write_info_json'):
+        info_file = "{0}.info.json".format(base_output)
+        with open(info_file, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(options, indent=4))
+        created_files['info_json'] = info_file
+    
+    if options.get('write_description'):
+        desc_file = "{0}.description".format(base_output)
+        with open(desc_file, 'w', encoding='utf-8') as f:
+            f.write(info_dict.get('description', ""))    
+        created_files['description'] = desc_file
+    
+    if options.get('write_thumbnail') or options.get("embed_thumbnail") and info_dict.get('thumbnail'):
+        # Filter URLs ending with '.jpg' and sort by preference in descending order
+        jpg_urls = [item for item in info_dict['thumbnails'] if item['url'].endswith('.jpg')]
+        highest_preference_jpg = max(jpg_urls, key=lambda x: x['preference']).get('url')
+        print("Best url: {0}".format(highest_preference_jpg))
+        thumb_file = "{0}.jpg".format(base_output)
+        retry_strategy = Retry(
+                total=5,  # maximum number of retries
+                backoff_factor=1, 
+                status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+            )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        # create a new session object
+        session = requests.Session()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        response = session.get(highest_preference_jpg, timeout=30)
+        with open(thumb_file, 'wb') as f:
+            f.write(response.content)
+        created_files['thumbnail'] = thumb_file      
+    
+    return created_files
+    
         
-def create_mp4(file_names, info_dict):
+def create_mp4(file_names, info_dict, options={}):
     ffmpeg_builder = ['ffmpeg', '-y', 
                       '-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats'
                       ]
     
+    if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
+        input = ['-i', os.path.abspath(file_names.get('thumbnail')), '-seekable', '0', '-thread_queue_size', '1024']
+    
     # Add input files
     for file in file_names:
-        input = ['-i', file]
-        ffmpeg_builder.extend(input)
+        if str(file_names[file]).endswith('.ts'):
+            input = ['-i', file_names[file], '-seekable', '0', '-thread_queue_size', '1024']
+            ffmpeg_builder.extend(input)
     
     # Add faststart
     ffmpeg_builder.extend(['-movflags', 'faststart'])
@@ -121,17 +193,14 @@ def create_mp4(file_names, info_dict):
     ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
     ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
     
-    options = {
-        'skip_download': True,
-        
-        # Template, needs to have option
-        'outtmpl': '%(fulltitle)s (%(id)s)',     
-    }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        outputFile = str(ydl.prepare_filename(info_dict))
+    if options.get("temp_folder"):
+        base_output = os.path.join(options.get("temp_folder"), info_dict.get('id'))
+    else:
+        base_output = info_dict.get('id')
+    
     
     if not outputFile.endswith('.mp4'):
-        outputFile = outputFile + '.mp4'  
+        outputFile = base_output + '.mp4'  
         
     ffmpeg_builder.append(os.path.abspath(outputFile))
     
@@ -146,12 +215,20 @@ def create_mp4(file_names, info_dict):
         print(e)
         print(e.stderr)
 
+    file_names['merged'] = outputFile
+    
+    if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
+        for file in file_names:
+            if str(file_names[file]).endswith('.ts'):
+                os.remove(file_names[file])
+                del file_names[file]
+    
+    return file_names
     #for file in file_names:
     #    os.remove(file)
-    
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=10, force_merge=False, database_in_memory=False):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=10, folder=None, database_in_memory=False):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -165,18 +242,25 @@ class DownloadStream:
         
         self.database_in_memory = database_in_memory
         
-        self.file_name = "{0}.{1}.ts".format(self.id,self.format)     
+        self.merged_file_name = "{0}.{1}.ts".format(self.id,self.format)     
         if self.database_in_memory:
-            self.temp_file = ':memory:'
+            self.temp_db_file = ':memory:'
         else:
-            self.temp_file = '{0}.{1}.temp'.format(self.id,self.format)
+            self.temp_db_file = '{0}.{1}.temp'.format(self.id,self.format)
+        
+        self.folder = folder    
+        if self.folder:
+            os.makedirs(folder)
+            self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
+            if not self.database_in_memory:
+                self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
         
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
-            
         )
+        
         
         self.is_403 = False
         self.estimated_segment_duration = 0
@@ -184,14 +268,17 @@ class DownloadStream:
         self.update_latest_segment()
         self.url_checked = time.time()
         # Force merge needs testing
-        if force_merge and os.path.exists(self.temp_file) and not self.database_in_memory:
-            self.conn, self.cursor = self.create_connection(self.temp_file)
-            self.combine_segments_to_file(self.file_name, cursor=self.cursor)
-            return os.path.abspath(self.file_name)  
+        """
+        if force_merge and os.path.exists(self.temp_db_file) and not self.database_in_memory:
+            self.conn, self.cursor = self.create_connection(self.temp_db_file)
+            self.combine_segments_to_file(self.merged_file_name, cursor=self.cursor)
+            return os.path.abspath(self.merged_file_name)  
         else:
-            self.conn, self.cursor = self.create_db(self.temp_file)
+            self.conn, self.cursor = self.create_db(self.temp_db_file)
         
-        
+        """   
+        self.conn, self.cursor = self.create_db(self.temp_db_file)    
+    """
     def catchup(self):      
         # Get list of segments that don't exist within temp database
         
@@ -245,8 +332,8 @@ class DownloadStream:
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
         print("\033[31mCatchup for {0} completed\033[0m".format(self.format))
-        return os.path.abspath(self.file_name)
-    
+        return os.path.abspath(self.merged_file_name)
+    """    
     def refresh_Check(self):    
         #print("Refresh check ({0})".format(self.format))        
         if time.time() - self.url_checked >= 3600.0 or self.is_403:
@@ -276,7 +363,7 @@ class DownloadStream:
             optimistic = True
             optimistic_seg = 0
             while True:               
-                                               
+                self.check_kill()
                 segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                 
                 self.refresh_Check()
@@ -404,11 +491,11 @@ class DownloadStream:
                 pass
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
-        return os.path.abspath(self.file_name)    
+        return True
            
     def get_live_segment(self, seg_num):
         # Create new connection and cursor to check sqlite database within thread
-        single_conn, single_cursor = self.create_connection(self.temp_file)
+        single_conn, single_cursor = self.create_connection(self.temp_db_file)
         if self.segment_exists(cursor=single_cursor, segment_order=seg_num):
             self.already_downloaded.add(seg_num)
             return -1, None, seg_num
@@ -417,8 +504,8 @@ class DownloadStream:
     
     def update_latest_segment(self):
         # Kill if keyboard interrupt is detected
-        if kill_all:
-            raise KeyboardInterrupt
+        self.check_kill()
+        
         stream_url_info = self.get_Headers(self.stream_url)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
@@ -496,11 +583,8 @@ class DownloadStream:
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
-        # Kill if keyboard interrupt is detected
-        if kill_all:
-            raise KeyboardInterrupt
+        self.check_kill()
         try:
-            
             # create an HTTP adapter with the retry strategy and mount it to the session
             adapter = HTTPAdapter(max_retries=self.retry_strategy)
             # create a new session object
@@ -537,7 +621,7 @@ class DownloadStream:
                 return -1, bytes(), segment_order, response.status_code, response.headers
             """
             logging.info("Timed out updating fragments: {0}".format(e))
-            print(e)
+            print("Timed out updating fragments: {0}".format(e))
             return -1, None, segment_order, response.status_code, response.headers
 
     # Function to insert a single segment without committing
@@ -566,6 +650,7 @@ class DownloadStream:
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
                 f.write(cleaned_segment)
+        return output_file
     
     ### Via ytarchive            
     def get_atoms(self, data):
@@ -613,3 +698,22 @@ class DownloadStream:
         new_data = data[:ofs] + data[rlen:]
 
         return new_data
+    
+    def check_kill(self):
+        # Kill if keyboard interrupt is detected
+        if kill_all:
+            print("Kill command detected, ending thread")
+            raise KeyboardInterrupt("Kill command executed")
+        
+    def delete_temp_database(self):
+        self.close_connection()
+        os.remove(self.temp_db_file)
+        
+    def delete_ts_file(self):
+        os.remove(self.merged_file_name)
+        
+    def remove_folder(self):
+        if self.folder:
+            self.delete_temp_database()
+            self.delete_ts_file()
+            os.remove(self.folder)

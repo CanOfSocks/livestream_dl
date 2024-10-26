@@ -36,15 +36,16 @@ class MyLogger:
         print(msg)
         pass
             
-def get_Video_Info(id, wait=True):
-    url = "https://www.youtube.com/watch?v={0}".format(id)
-    
+def get_Video_Info(id, wait=True, cookies=None):
+    #url = "https://www.youtube.com/watch?v={0}".format(id)
+    url = str(id)
     logger = MyLogger()
     
     ydl_opts = {
         
         'retries': 25,
-        'skip_download': True,       
+        'skip_download': True,
+        'cookiefile': cookies,
 #        'quiet': True,
         'no_warnings': True,
 #        'extractor_args': 'youtube:player_client=web;skip=dash;formats=incomplete,duplicate',
@@ -54,25 +55,13 @@ def get_Video_Info(id, wait=True):
     if wait == True:
         ydl_opts['wait_for_video'] = (1,300)
 
+    info_dict = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info_dict = ydl.extract_info(url, download=False)
+        info_dict = ydl.sanitize_info(info_dict)
         # Check if the video is private
         if not (info_dict.get('live_status') == 'is_live' or info_dict.get('live_status') == 'post_live'):
             print("Video has been processed, please use yt-dlp directly")
-        return info_dict, info_dict.get('live_status')
         
-
-def get_image(url):
-    response = requests.get(url)
-
-    # Check if the request was successful
-    if response.status_code == 200:
-        # Get the content of the response
-        image_content = response.content
-
-        # Convert the image content to a base64 string
-        base64_image = base64.b64encode(image_content).decode()
-
-        return f"data:image/jpeg;base64,{base64_image}"
       
-    
+    return info_dict, info_dict.get('live_status')
