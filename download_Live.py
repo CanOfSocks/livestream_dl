@@ -638,10 +638,26 @@ class DownloadStream:
             print(e)
             return -1, None, segment_order, response.status_code, response.headers
         except requests.exceptions.RetryError as e:
-            logging.info("Timed out updating fragments: {0}".format(e))
-            print("Timed out updating fragments: {0}".format(e))
+            logging.info("Retries exceeded downloading fragment: {0}".format(e))
+            print("Retries exceeded downloading fragment: {0}".format(e))
             return -1, None, segment_order, None, None
-
+        except requests.exceptions.ChunkedEncodingError as e:
+            logging.info("No data in request for fragment: {0}".format(e))
+            print("No data in request for fragment: {0}".format(e))
+            return -1, None, segment_order, None, None
+        except requests.exceptions.ConnectionError as e:
+            logging.info("Connection error downloading fragment: {0}".format(e))
+            print("Connection error downloading fragment: {0}".format(e))
+            return -1, None, segment_order, None, None
+        except requests.exceptions.Timeout as e:
+            logging.info("Timeout while retrieving downloading fragment: {0}".format(e))
+            print("Timeout while retrieving downloading fragment: {0}".format(e))
+            return -1, None, segment_order, None, None
+        except requests.exceptions.HTTPError as e:
+            logging.info("HTTP error downloading fragment: {0}".format(e))
+            print("HTTP error downloading fragment: {0}".format(e))
+            return -1, None, segment_order, None, None
+            
     # Function to insert a single segment without committing
     def insert_single_segment(self, cursor, segment_order, segment_data):
         cursor.execute('''
