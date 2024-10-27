@@ -657,6 +657,10 @@ class DownloadStream:
             logging.info("HTTP error downloading fragment: {0}".format(e))
             print("HTTP error downloading fragment: {0}".format(e))
             return -1, None, segment_order, None, None
+        except Exception as e:
+            logging.info("Unknown error downloading fragment: {0}".format(e))
+            print("Unknown error downloading fragment: {0}".format(e))
+            return -1, None, segment_order, None, None
             
     # Function to insert a single segment without committing
     def insert_single_segment(self, cursor, segment_order, segment_data):
