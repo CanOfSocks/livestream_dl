@@ -291,7 +291,7 @@ class DownloadStream:
         
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
-            backoff_factor=0.5, 
+            backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
         )
         
@@ -422,7 +422,8 @@ class DownloadStream:
                         try:
                             info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
                         except Exception as e:
-                            pass
+                            logging.info("Error refreshing URL: {0}".format(e))
+                            print("Error refreshing URL: {0}".format(e))
                         
                         # If status of downloader is not live, assume stream has ended
                         if self.live_status != 'is_live':
