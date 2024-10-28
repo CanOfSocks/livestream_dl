@@ -304,73 +304,9 @@ class DownloadStream:
         
         self.update_latest_segment()
         self.url_checked = time.time()
-        # Force merge needs testing
-        """
-        if force_merge and os.path.exists(self.temp_db_file) and not self.database_in_memory:
-            self.conn, self.cursor = self.create_connection(self.temp_db_file)
-            self.combine_segments_to_file(self.merged_file_name, cursor=self.cursor)
-            return os.path.abspath(self.merged_file_name)  
-        else:
-            self.conn, self.cursor = self.create_db(self.temp_db_file)
-        
-        """   
-        self.conn, self.cursor = self.create_db(self.temp_db_file)    
-    """
-    def catchup(self):      
-        # Get list of segments that don't exist within temp database
-        
-        self.already_downloaded = self.segment_exists_batch()
-        
-        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded
-                    
-        if len(segments_to_download) <= 0:
-            return 
-        #try:
-        # Use transaction for saving in chunks to reduce I/O
-        self.cursor.execute('BEGIN TRANSACTION')
-        uncommitted_inserts = 0
-        # Multithreading for downloading segments
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_seg = {
-                executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
-                for seg_num in segments_to_download
-            }
-            
-            while True:
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
-                for future in done:
-                    head_seg_num, segment_data, seg_num = future.result()
-                    
-                    self.refresh_Check()
-                    
-                    if head_seg_num > self.latest_sequence:
-                        print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))
-                        self.latest_sequence = head_seg_num
 
-                    if segment_data is not None:
-                        # Insert segment data in the main thread (database interaction)
-                        self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
-                        uncommitted_inserts += 1
-                        if uncommitted_inserts >= max(self.batch_size,len(done)):
-                            print("Writing segments to file...")
-                            self.commit_batch(self.conn)
-                            uncommitted_inserts = 0
-                            self.cursor.execute('BEGIN TRANSACTION')
-                            
-                    # Remove future from dictionary to free memory
-                    del future_to_seg[future]                
-                    #print("Remaining futures ({1}): {0}".format(len(future_to_seg), self.format))
-                # Loop until all threads have finished
-                if len(not_done) == 0:
-                    break
-            
-        #finally:
-        
-            self.commit_batch(self.conn)
-        self.commit_batch(self.conn)
-        print("\033[31mCatchup for {0} completed\033[0m".format(self.format))
-        return os.path.abspath(self.merged_file_name)
-    """    
+        self.conn, self.cursor = self.create_db(self.temp_db_file)    
+
     def refresh_Check(self):    
         #print("Refresh check ({0})".format(self.format))        
         if time.time() - self.url_checked >= 3600.0 or self.is_403:
