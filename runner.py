@@ -28,11 +28,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download an video by ID")
 
     # Add a required positional argument 'ID'
-    parser.add_argument('ID', type=str, help='The video ID (required)')
+    parser.add_argument('ID', type=str, nargs='?', default=None, help='The video URL or ID')
     
-    parser.add_argument('--resolution', type=str, default='best', dest='resolution', help="Desired resolution. Can be best, audio_only or specific resolution. Default: best")
+    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="Desired resolution. Can be best, audio_only or specific resolution. Default: best")
     
-    parser.add_argument('--formats', type=int, nargs='*', dest='resolution', help="Specify specific formats to download. Overrides resolution. Use with --no-merge if not using a video and audio format")
+    parser.add_argument('--video-format', type=int, help="Specify specific video format. Resolution will be ignored if used")
+    
+    parser.add_argument('--audio-format', type=int, help="Specify specific audio format. Resolution will be ignored if used")
     
     parser.add_argument('--threads', type=int, default=1, help="Number of download threads per format. This will be 2x for an video and audio download. Default: 1")
     
@@ -69,9 +71,17 @@ if __name__ == "__main__":
     
 
     # Access the 'ID' value
-    id = args.ID
-    resolution = args.resolution
     options = vars(args)
+    
+    if options.get('ID', None) is None:
+        options['ID'] = str(input("Please enter a video URL: ")).strip()
+
+
+    if options.get('resolution', None) is None:
+        options['resolution'] = str(input("Please enter resolution: ")).strip()
+        
+    id = options.get('ID')
+    resolution = options.get('resolution')
     
     # For testing
     
