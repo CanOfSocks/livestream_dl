@@ -1,8 +1,8 @@
 import yt_dlp
 import sqlite3
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
+from requests.adapters import HTTPAdapter, Retry
+#from urllib3.util import Retry
 
 import time
 import concurrent.futures
@@ -259,7 +259,7 @@ def create_mp4(file_names, info_dict, options={}):
     #    os.remove(file)
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=10, folder=None, database_in_memory=False):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, database_in_memory=False):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -290,8 +290,8 @@ class DownloadStream:
                 self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
         
         self.retry_strategy = Retry(
-            total=5,  # maximum number of retries
-            backoff_factor=1, 
+            total=fragment_retries,  # maximum number of retries
+            backoff_factor=0.5, 
             status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
         )
         
@@ -340,6 +340,7 @@ class DownloadStream:
             optimistic_seg = 0
             while True:     
                 self.check_kill()
+                self.refresh_Check()
                         
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
@@ -351,7 +352,7 @@ class DownloadStream:
                     submitted_segments.remove(seg_num)
                     
                     # If successful in downloading segments optimistically, continue doing so
-                    if seg_num > self.latest_sequence and status != 200:
+                    if seg_num >= self.latest_sequence and status != 200:
                         print("Unable to optimistically grab segment {1} for {0}".format(self.format, seg_num))
                         optimistic = False
                     else: 
@@ -383,9 +384,7 @@ class DownloadStream:
                       
                 
                 segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
-                
-                self.refresh_Check()
-                
+                                
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
                     
@@ -410,37 +409,42 @@ class DownloadStream:
                     print("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                     
                     # Wait for all but last future to finish. Currently unsure of why the last future remains? Maybe something to do with the optimistic method?
-                    if len(submitted_segments) <= 1:
-                        # If waited for new fragments hits 20 loops, assume stream is offline
-                        if wait > 20:
-                            print("Wait time for new fragment exceeded, ending download...")
-                            break    
-                        # If over 10 wait loops have been executed, get page for new URL and update status if necessary
-                        elif wait > 10:
-                            print("No new fragments found... Getting new url")
+                    if len(submitted_segments) <= 3:
+                        print(future_to_seg)
+                        
+                    # If waited for new fragments hits 20 loops, assume stream is offline
+                    if wait > 20:
+                        print("Wait time for new fragment exceeded, ending download...")
+                        break    
+                    # If over 10 wait loops have been executed, get page for new URL and update status if necessary
+                    elif wait > 10:
+                        print("No new fragments found... Getting new url")
+                        try:
                             info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
-                            
-                            # If status of downloader is not live, assume stream has ended
-                            if self.live_status != 'is_live':
-                                print("Livestream has ended, commiting any remaining segments")
-                                #self.catchup()
-                                break
-                            
-                            # If live has changed, use new URL to get any fragments that may be missing
-                            elif self.live_status == 'is_live' and live_status != 'is_live':
-                                print("Stream has finished ({0})".format(live_status))
-                                self.live_status = live_status
-                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
-                                if stream_url is not None:
-                                    self.stream_url = stream_url  
-                                #self.catchup()
-                                break
-                            
-                            # If livestream is still live, use new url
-                            elif live_status == 'is_live':
-                                print("Updating url to new url")
-                                self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
-                                continue   
+                        except Exception as e:
+                            pass
+                        
+                        # If status of downloader is not live, assume stream has ended
+                        if self.live_status != 'is_live':
+                            print("Livestream has ended, commiting any remaining segments")
+                            #self.catchup()
+                            break
+                        
+                        # If live has changed, use new URL to get any fragments that may be missing
+                        elif self.live_status == 'is_live' and live_status != 'is_live':
+                            print("Stream has finished ({0})".format(live_status))
+                            self.live_status = live_status
+                            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                            if stream_url is not None:
+                                self.stream_url = stream_url  
+                            #self.catchup()
+                            break
+                        
+                        # If livestream is still live, use new url
+                        elif live_status == 'is_live':
+                            print("Updating url to new url")
+                            self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                            continue   
                         
                         time.sleep(5)
                         continue
@@ -469,8 +473,8 @@ class DownloadStream:
                 pass
             
             # Cancel any remaining threads
-            for future in future_to_seg:
-                future.cancel()
+#            for future in future_to_seg:
+#                future.cancel()
                 
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
@@ -603,7 +607,13 @@ class DownloadStream:
         except requests.exceptions.RetryError as e:
             logging.info("Retries exceeded downloading fragment: {0}".format(e))
             print("Retries exceeded downloading fragment: {0}".format(e))
-            return -1, None, segment_order, None, None
+            if "(Caused by ResponseError('too many 204 error responses')" in str(e):
+                return -1, bytes(), segment_order, None, None
+            elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
+                self.is_403 = True
+                return -1, None, segment_order, None, None
+            else:
+                return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
             logging.info("No data in request for fragment: {0}".format(e))
             print("No data in request for fragment: {0}".format(e))
@@ -627,9 +637,18 @@ class DownloadStream:
             
     # Function to insert a single segment without committing
     def insert_single_segment(self, cursor, segment_order, segment_data):
+
         cursor.execute('''
-        INSERT OR IGNORE INTO segments (id, segment_data) VALUES (?, ?)
+            INSERT INTO segments (id, segment_data) 
+            VALUES (?, ?) 
+            ON CONFLICT(id) 
+            DO UPDATE SET segment_data = CASE 
+                WHEN LENGTH(excluded.segment_data) > LENGTH(segments.segment_data) 
+                THEN excluded.segment_data 
+                ELSE segments.segment_data 
+            END;
         ''', (segment_order, segment_data))
+
 
     # Function to commit after a batch of inserts
     def commit_batch(self, conn):
