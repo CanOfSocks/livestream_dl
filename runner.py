@@ -48,7 +48,7 @@ if __name__ == "__main__":
 
     parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files")
     
-    parser.add_argument('--output', type=str, default="%(title)s", help="Path for output files")
+    parser.add_argument('--output', type=str, default="%(title)s (%(id)s)", help="Path for output files")
     
     parser.add_argument('--write-thumbnail', action='store_true', help="Write thumbnail to file")
     

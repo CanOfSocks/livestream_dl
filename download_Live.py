@@ -26,9 +26,9 @@ logging.basicConfig(
 )
 
 # Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, keep_database=False):
+def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False):
     try:
-        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder)
+        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name)
         #file_name = downloader.catchup()
         #time.sleep(0.5)
         print(downloader.stream_url)
@@ -50,6 +50,16 @@ def download_segments(info_dict, resolution='best', options={}):
     file_names = {}
        
     print(json.dumps(options, indent=4))
+    outputFile = output_filename(info_dict=info_dict, options=options)
+    file_name = None
+    
+    # Requires testing
+    if options.get('temp_folder') is not None and options.get('temp_folder') != os.path.dirname(outputFile):
+        download_folder = options.get('temp_folder')
+    else:
+        download_folder, file_name = os.path.split(outputFile)
+    if download_folder:    
+        os.makedirs(download_folder, exist_ok=True)
     
     with concurrent.futures.ThreadPoolExecutor() as executor:  
         try: 
@@ -64,7 +74,7 @@ def download_segments(info_dict, resolution='best', options={}):
                     if int(options.get('video_format')) not in format_parser.video.get('best'):    
                         raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
                     else:
-                        video_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                        video_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                     keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
                         futures.add(video_future)
                 
@@ -72,15 +82,15 @@ def download_segments(info_dict, resolution='best', options={}):
                     if int(options.get('audio_format')) not in format_parser.audio: 
                         raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
                     else:
-                        audio_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                        audio_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                     keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
                         futures.add(audio_future)                        
                     
             elif resolution.lower() != "audio_only":                
                 # Submit tasks for both video and audio downloads
-                video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                     keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
-                audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None), 
+                audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                     keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
                 
                         # Wait for both downloads to finish
@@ -88,7 +98,7 @@ def download_segments(info_dict, resolution='best', options={}):
                 futures.add(audio_future)
                             
             elif resolution.lower() == "audio_only":
-                futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=options.get("temp_folder", None)))
+                futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name))
                 
             while True:
                 done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
@@ -127,6 +137,46 @@ def download_segments(info_dict, resolution='best', options={}):
                 executor.shutdown(wait=False)
                 """
     #move_to_final(info_dict, options, file_names)
+    
+def output_filename(info_dict, options):
+    outputFile = str(yt_dlp.YoutubeDL().prepare_filename(info_dict, outtmpl=options.get('output')))
+    return outputFile
+
+def move_to_final(options, outputFile, file_names):
+    if os.path.dirname(outputFile):
+        os.makedirs(os.path.dirname(outputFile), exist_ok=True)
+    
+    if file_names.get('thumbnail'):
+        print("Moving {0} to {1}".format(file_names.get('thumbnail'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('thumbnail'))[1])))
+        shutil.move(file_names.get('thumbnail'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('thumbnail'))[1]))
+        
+    if file_names.get('info_json'):
+        print("Moving {0} to {1}".format(file_names.get('info_json'), "{0}.info.json".format(outputFile)))
+        shutil.move(file_names.get('info_json'), "{0}.info.json".format(outputFile))
+        
+    if file_names.get('description'):
+        print("Moving {0} to {1}".format(file_names.get('description'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('description'))[1])))
+        shutil.move(file_names.get('description'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('description'))[1]))
+        
+    if file_names.get('video'):
+        print("Moving {0} to {1}".format(file_names.get('video'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('video'))[1])))
+        shutil.move(file_names.get('video'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('video'))[1]))
+        
+    if file_names.get('audio'):
+        print("Moving {0} to {1}".format(file_names.get('audio'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('audio'))[1])))
+        shutil.move(file_names.get('audio'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('audio'))[1]))
+        
+    if file_names.get('merged'):
+        print("Moving {0} to {1}".format(file_names.get('merged'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('merged'))[1])))
+        shutil.move(file_names.get('thumbnail'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('merged'))[1]))
+        
+    try:
+        os.rmdir(options.get('temp_folder'))
+    except Exception as e:
+        print("Error removing temp folder: {0}".format(e))
+        
+    print("Finished moving files from temporary directory to output destination")
+    
 
 def download_auxiliary_files(info_dict, options, thumbnail=None):
     if options.get("temp_folder"):
@@ -173,7 +223,6 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
     
         
 def create_mp4(file_names, info_dict, options={}):
-    
     index = 0
     thumbnail = None
     video = None
@@ -191,13 +240,13 @@ def create_mp4(file_names, info_dict, options={}):
     
     # Add input files
     if file_names.get('video'):        
-        input = ['-i', file_names[file], '-seekable', '0', '-thread_queue_size', '1024']
+        input = ['-i', os.path.abspath(file_names.get('video')), '-seekable', '0', '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         video = index
         index += 1
             
     if file_names.get('audio'):
-        input = ['-i', file_names[file], '-seekable', '0', '-thread_queue_size', '1024']
+        input = ['-i', os.path.abspath(file_names.get('audio')), '-seekable', '0', '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         audio = index
         index += 1
@@ -207,7 +256,7 @@ def create_mp4(file_names, info_dict, options={}):
     ffmpeg_builder.extend(['-movflags', 'faststart'])
     
     # Add mappings
-    for i in range(0, len(index)):
+    for i in range(0, index):
         input = ['-map', str(i)]
         ffmpeg_builder.extend(input)
         
@@ -259,7 +308,7 @@ def create_mp4(file_names, info_dict, options={}):
     #    os.remove(file)
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, database_in_memory=False):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -276,15 +325,18 @@ class DownloadStream:
         
         self.database_in_memory = database_in_memory
         
-        self.merged_file_name = "{0}.{1}.ts".format(self.id,self.format)     
+        if file_name is None:
+            file_name = self.id        
+        
+        self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)     
         if self.database_in_memory:
             self.temp_db_file = ':memory:'
         else:
-            self.temp_db_file = '{0}.{1}.temp'.format(self.id,self.format)
+            self.temp_db_file = '{0}.{1}.temp'.format(file_name, self.format)
         
         self.folder = folder    
         if self.folder:
-            os.makedirs(folder)
+            os.makedirs(folder, exist_ok=True)
             self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
             if not self.database_in_memory:
                 self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
@@ -313,13 +365,14 @@ class DownloadStream:
             print("Refreshing URL for {0}".format(self.format))
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                if stream_url is not None:
+                    self.stream_url = stream_url
+                if live_status is not None:
+                    self.live_status = live_status
             except Exception as e:
                 print(e)
-            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
-            if stream_url is not None:
-                self.stream_url = stream_url
-            if live_status is not None:
-                self.live_status = live_status
+            
             
             self.url_checked = time.time()
                 
