@@ -292,19 +292,20 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
         f.write(" ".join(ffmpeg_builder))   
         
     print("Executing ffmpeg...")
-    try:
-        result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
-    except subprocess.CalledProcessError as e:
-        print(e)
-        print(e.stderr)
+
+    result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+
 
     file_names['merged'] = outputFile
     
+    # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
-        for file in file_names:
-            if str(file_names[file]).endswith('.ts'):
-                os.remove(file_names[file])
-                del file_names[file]
+        if file_names.get('video'): 
+            os.remove(file_names.get('video'))
+            del file_names['video']
+        if file_names.get('audio'): 
+            os.remove(file_names.get('audio'))
+            del file_names['audio']
     
     return file_names
     #for file in file_names:
