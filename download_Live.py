@@ -123,7 +123,10 @@ def download_segments(info_dict, resolution='best', options={}):
                     time.sleep(0.9)
             
             if options.get('merge') or not options.get('no_merge'):
-                create_mp4(file_names, info_dict, options={})
+                create_mp4(file_names, info_dict, outputFile, options={})
+                
+            if options.get('temp_folder') is not None:
+                move_to_final(options=options, outputFile=outputFile, file_names=file_names)
             
             
         except KeyboardInterrupt:
@@ -222,7 +225,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
     return created_files, 'auxiliary'
     
         
-def create_mp4(file_names, info_dict, options={}):
+def create_mp4(file_names, info_dict, outputFile, options={}):
     index = 0
     thumbnail = None
     video = None
