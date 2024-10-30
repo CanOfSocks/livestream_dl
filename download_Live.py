@@ -126,7 +126,7 @@ def download_segments(info_dict, resolution='best', options={}):
                     time.sleep(0.9)
             
             if options.get('merge') or not options.get('no_merge'):
-                create_mp4(file_names, info_dict, outputFile, options={})
+                create_mp4(file_names=file_names, info_dict=info_dict, outputFile=outputFile, options=options)
                 
             if options.get('temp_folder') is not None:
                 move_to_final(options=options, outputFile=outputFile, file_names=file_names)
@@ -234,6 +234,7 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
     video = None
     audio = None
     ext = options.get('ext', None)
+
     
     ffmpeg_builder = ['ffmpeg', '-y', 
                       '-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats'
@@ -285,6 +286,8 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
     
     if ext is None:
         ext = info_dict.get('ext', '.mp4')
+    if ext is not None and not str(ext).startswith("."):
+        ext = "." + ext
     if not outputFile.endswith(ext):
         outputFile = base_output + ext  
         
@@ -294,8 +297,8 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
     with open("{0}.ffmpeg.txt".format(info_dict.get('id')), 'w', encoding='utf-8') as f:
         f.write(" ".join(ffmpeg_builder))   
         
-    print("Executing ffmpeg...")
-
+    print("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
+    
     result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
 
     file_names['merged'] = outputFile
@@ -679,7 +682,7 @@ class DownloadStream:
         except requests.exceptions.ChunkedEncodingError as e:
             logging.info("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             print("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, 204, None
+            return -1, bytes(), segment_order, None, None
         except requests.exceptions.ConnectionError as e:
             logging.info("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             print("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
