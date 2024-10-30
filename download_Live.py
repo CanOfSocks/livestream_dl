@@ -25,6 +25,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',  # Log format
 )
 
+# File name dictionary
+#file_names = {}
+
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False):
     try:
@@ -151,7 +154,7 @@ def move_to_final(options, outputFile, file_names):
     
     if file_names.get('thumbnail'):
         print("Moving {0} to {1}".format(file_names.get('thumbnail'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('thumbnail'))[1])))
-        shutil.move(file_names.get('thumbnail'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('thumbnail'))[1]))
+        shutil.move(file_names.get('thumbnail'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('thumbnail'))[1]))
         
     if file_names.get('info_json'):
         print("Moving {0} to {1}".format(file_names.get('info_json'), "{0}.info.json".format(outputFile)))
@@ -159,19 +162,19 @@ def move_to_final(options, outputFile, file_names):
         
     if file_names.get('description'):
         print("Moving {0} to {1}".format(file_names.get('description'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('description'))[1])))
-        shutil.move(file_names.get('description'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('description'))[1]))
+        shutil.move(file_names.get('description'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('description'))[1]))
         
     if file_names.get('video'):
         print("Moving {0} to {1}".format(file_names.get('video'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('video'))[1])))
-        shutil.move(file_names.get('video'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('video'))[1]))
+        shutil.move(file_names.get('video'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('video'))[1]))
         
     if file_names.get('audio'):
         print("Moving {0} to {1}".format(file_names.get('audio'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('audio'))[1])))
-        shutil.move(file_names.get('audio'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('audio'))[1]))
+        shutil.move(file_names.get('audio'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('audio'))[1]))
         
     if file_names.get('merged'):
         print("Moving {0} to {1}".format(file_names.get('merged'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('merged'))[1])))
-        shutil.move(file_names.get('thumbnail'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('merged'))[1]))
+        shutil.move(file_names.get('merged'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('merged'))[1]))
         
     try:
         os.rmdir(options.get('temp_folder'))
@@ -254,7 +257,7 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
         audio = index
         index += 1
         if video is None and ext is None:
-            ext = 'ogg'
+            ext = '.ogg'
     # Add faststart
     ffmpeg_builder.extend(['-movflags', 'faststart'])
     
@@ -281,7 +284,7 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
         base_output = info_dict.get('id')
     
     if ext is None:
-        ext = info_dict.get('ext', 'mp4')
+        ext = info_dict.get('ext', '.mp4')
     if not outputFile.endswith(ext):
         outputFile = base_output + ext  
         
@@ -294,7 +297,6 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
     print("Executing ffmpeg...")
 
     result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
-
 
     file_names['merged'] = outputFile
     
@@ -409,7 +411,7 @@ class DownloadStream:
                     submitted_segments.remove(seg_num)
                     
                     # If successful in downloading segments optimistically, continue doing so
-                    if seg_num >= self.latest_sequence and status != 200:
+                    if seg_num >= self.latest_sequence and (status is None or status != 200):
                         print("Unable to optimistically grab segment {1} for {0}".format(self.format, seg_num))
                         optimistic = False
                     else: 
@@ -448,7 +450,9 @@ class DownloadStream:
                     # Only attempt to grab optimistic segment once to ensure it does not cause a loop at the end of a stream
                     if optimistic and optimistic_seg <= self.latest_sequence and (self.latest_sequence+1) not in submitted_segments:
                         optimistic_seg = (self.latest_sequence+1)
-                        time.sleep(self.estimated_segment_duration)
+                        
+                        # Wait estimated fragment time +0.1s to make sure it would exist
+                        time.sleep(self.estimated_segment_duration + 0.1)
                         
                         print("Adding segment {1} optimistically ({0})".format(self.format, optimistic_seg))
                         segments_to_download.add(optimistic_seg)
@@ -504,8 +508,8 @@ class DownloadStream:
                             self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
                             continue   
                         
-                        time.sleep(5)
-                        continue
+                    time.sleep(5)
+                    continue
                 else:
                     wait = 0
                     
@@ -666,31 +670,31 @@ class DownloadStream:
             logging.info("Retries exceeded downloading fragment: {0}".format(e))
             print("Retries exceeded downloading fragment: {0}".format(e))
             if "(Caused by ResponseError('too many 204 error responses')" in str(e):
-                return -1, bytes(), segment_order, None, None
+                return -1, bytes(), segment_order, 204, None
             elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
                 self.is_403 = True
-                return -1, None, segment_order, None, None
+                return -1, None, segment_order, 403, None
             else:
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
-            logging.info("No data in request for fragment: {0}".format(e))
-            print("No data in request for fragment: {0}".format(e))
-            return -1, None, segment_order, None, None
+            logging.info("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            return -1, None, segment_order, 204, None
         except requests.exceptions.ConnectionError as e:
-            logging.info("Connection error downloading fragment: {0}".format(e))
-            print("Connection error downloading fragment: {0}".format(e))
+            logging.info("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.Timeout as e:
-            logging.info("Timeout while retrieving downloading fragment: {0}".format(e))
-            print("Timeout while retrieving downloading fragment: {0}".format(e))
+            logging.info("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.HTTPError as e:
-            logging.info("HTTP error downloading fragment: {0}".format(e))
-            print("HTTP error downloading fragment: {0}".format(e))
+            logging.info("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except Exception as e:
-            logging.info("Unknown error downloading fragment: {0}".format(e))
-            print("Unknown error downloading fragment: {0}".format(e))
+            logging.info("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
     # Function to insert a single segment without committing
