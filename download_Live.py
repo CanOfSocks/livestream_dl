@@ -136,8 +136,8 @@ def download_segments(info_dict, resolution='best', options={}):
             if options.get('merge') or not options.get('no_merge'):
                 create_mp4(file_names=file_names, info_dict=info_dict, outputFile=outputFile, options=options)
                 
-            #if options.get('temp_folder') is not None:
-            #    move_to_final(options=options, outputFile=outputFile, file_names=file_names)
+            if options.get('temp_folder') is not None:
+                move_to_final(options=options, outputFile=outputFile, file_names=file_names)
             
             
         except KeyboardInterrupt:
@@ -287,19 +287,19 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
                       ]
     
     if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
-        input = ['-i', "{0}.{1}".format(file_names.get('thumbnail').abs_path, file_names.get('thumbnail').ext), '-seekable', '0', '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('thumbnail').abs_path, file_names.get('thumbnail').ext), '-thread_queue_size', '1024']
         thumbnail = index
         index += 1
     
     # Add input files
     if file_names.get('video'):        
-        input = ['-i', "{0}.{1}".format(file_names.get('video').abs_path, file_names.get('video').ext), '-seekable', '0', '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('video').abs_path, file_names.get('video').ext), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         video = index
         index += 1
             
     if file_names.get('audio'):
-        input = ['-i', "{0}.{1}".format(file_names.get('audio').abs_path, file_names.get('audio').ext), '-seekable', '0', '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('audio').abs_path, file_names.get('audio').ext), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         audio = index
         index += 1
@@ -353,10 +353,10 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
     # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
         if file_names.get('video'): 
-            os.remove(file_names.get('video'))
+            os.remove("{0}.{1}".format(file_names.get('video').path, file_names.get('video').ext))
             del file_names['video']
         if file_names.get('audio'): 
-            os.remove(file_names.get('audio'))
+            os.remove("{0}.{1}".format(file_names.get('audio').path, file_names.get('audio').ext))
             del file_names['audio']
     
     return file_names
