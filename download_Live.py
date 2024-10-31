@@ -136,8 +136,8 @@ def download_segments(info_dict, resolution='best', options={}):
             if options.get('merge') or not options.get('no_merge'):
                 create_mp4(file_names=file_names, info_dict=info_dict, outputFile=outputFile, options=options)
                 
-            if options.get('temp_folder') is not None:
-                move_to_final(options=options, outputFile=outputFile, file_names=file_names)
+            #if options.get('temp_folder') is not None:
+            #    move_to_final(options=options, outputFile=outputFile, file_names=file_names)
             
             
         except KeyboardInterrupt:
@@ -159,48 +159,68 @@ def output_filename(info_dict, options):
 def move_to_final(options, outputFile, file_names):
     if os.path.dirname(outputFile):
         os.makedirs(os.path.dirname(outputFile), exist_ok=True)
+    try:
+        if file_names.get('thumbnail'):
+            thumbnail = file_names.get('thumbnail')
+            thumb_output = "{0}.{1}".format(outputFile, thumbnail.ext)
+            print("Moving {0} to {1}".format("{0}.{1}".format(thumbnail.path, thumbnail.ext), thumb_output))
+            shutil.move("{0}.{1}".format(thumbnail.path, thumbnail.ext), thumb_output)
+    except Exception as e:
+        print("unable to move thumbnail: {0}".format(e))
     
-    if file_names.get('thumbnail'):
-        thumbnail = file_names.get('thumbnail')
-        thumb_output = "{0}.{1}".format(outputFile, thumbnail.ext)
-        print("Moving {0} to {1}".format(thumbnail.path, thumb_output))
-        shutil.move(thumbnail.path, thumb_output)
+    try:
+        if file_names.get('info_json'):
+            info_json = file_names.get('info_json')
+            info_output = "{0}.{1}".format(outputFile, info_json.ext)
+            print("Moving {0} to {1}".format("{0}.{1}".format(info_json.path, info_json.ext), info_output))
+            shutil.move("{0}.{1}".format(info_json.path, info_json.ext), info_output)
+    except Exception as e:
+        print("unable to move info_json: {0}".format(e))
         
-    if file_names.get('info_json'):
-        info_json = file_names.get('info_json')
-        info_output = "{0}.{1}".format(outputFile, info_json.ext)
-        print("Moving {0} to {1}".format(info_json.path, info_output))
-        shutil.move(info_json.path, info_output)
+    try:
+        if file_names.get('description'):
+            description = file_names.get('description')
+            description_output = "{0}.{1}".format(outputFile, description.ext)
+            print("Moving {0} to {1}".format("{0}.{1}".format(description.path, description.ext), description_output))
+            shutil.move("{0}.{1}".format(description.path, description.ext), description_output)
+    except Exception as e:
+        print("unable to move description: {0}".format(e))
+    
+    try:
+        if file_names.get('video'):
+            video = file_names.get('video')
+            video_output = "{0}.{1}".format(outputFile, video.ext)
+            print("Moving {0} to {1}".format("{0}.{1}".format(video.path, video.ext), video_output))
+            shutil.move("{0}.{1}".format(video.path, video.ext), video_output)
+    except Exception as e:
+        print("unable to move video stream: {0}".format(e))
         
-    if file_names.get('description'):
-        description = file_names.get('description')
-        description_output = "{0}.{1}".format(outputFile, description.ext)
-        print("Moving {0} to {1}".format(description.path, description_output))
-        shutil.move(description.path, description_output)
+    try:
+        if file_names.get('audio'):
+            audio = file_names.get('audio')
+            audio_output = "{0}.{1}".format(outputFile, audio.ext)
+            print("Moving {0} to {1}".format("{0}.{1}".format(audio.path, audio.ext), audio_output))
+            shutil.move("{0}.{1}".format(audio.path, audio.ext), audio_output)
+    except Exception as e:
+        print("unable to move audio stream: {0}".format(e))
         
-    if file_names.get('video'):
-        video = file_names.get('video')
-        video_output = "{0}.{1}".format(outputFile, video.ext)
-        print("Moving {0} to {1}".format(video.path, video_output))
-        shutil.move(video.path, video_output)
-        
-    if file_names.get('audio'):
-        audio = file_names.get('audio')
-        audio_output = "{0}.{1}".format(outputFile, audio.ext)
-        print("Moving {0} to {1}".format(audio.path, audio_output))
-        shutil.move(audio.path, audio_output)
-        
-    if file_names.get('merged'):
-        merged = file_names.get('merged')
-        merged_output = "{0}.{1}".format(outputFile, merged.ext)
-        print("Moving {0} to {1}".format(merged.path, merged_output))
-        shutil.move(merged.path, merged_output)
-        
-    if file_names.get('databases'):
-        for file in file_names.get('databases'):
-            db_output = "{0}.{1}.{2}".format(outputFile, file.format, file.ext)
-            print("Moving {0} to {1}".format(file.path, db_output))
-            shutil.move(file.path, db_output)
+    try:
+        if file_names.get('merged'):
+            merged = file_names.get('merged')
+            merged_output = "{0}.{1}".format(outputFile, merged.ext)
+            print("Moving {0} to {1}".format("{0}.{1}".format(merged.path, merged.ext), merged_output))
+            shutil.move("{0}.{1}".format(merged.path, merged.ext), merged_output)
+    except Exception as e:
+        print("unable to move merged video: {0}".format(e))
+     
+    try:
+        if file_names.get('databases'):
+            for file in file_names.get('databases'):
+                db_output = "{0}.{1}.{2}".format(outputFile, file.format, file.ext)
+                print("Moving {0} to {1}".format("{0}.{1}".format(file.path, file.ext), db_output))
+                shutil.move("{0}.{1}".format(file.path, file.ext), db_output)
+    except Exception as e:
+        print("unable to move database files: {0}".format(e))
         
     try:
         os.rmdir(options.get('temp_folder'))
@@ -222,7 +242,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         info_file = "{0}.info.json".format(base_output)
         with open(info_file, 'w', encoding='utf-8') as f:
             f.write(json.dumps(info_dict, indent=4))
-        created_files['info_json'] = fileInfo(info_file, ext='info.json', type='info_json')
+        created_files['info_json'] = fileInfo(base_output, ext='info.json', type='info_json')
     
     if options.get('write_description'):
         desc_file = "{0}.description".format(base_output)
@@ -249,7 +269,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         response = session.get(highest_preference_jpg, timeout=30)
         with open(thumb_file, 'wb') as f:
             f.write(response.content)
-        created_files['thumbnail'] = fileInfo(thumb_file, ext='jpg', type='thumbnail')      
+        created_files['thumbnail'] = fileInfo(base_output, ext='jpg', type='thumbnail')      
     
     return created_files, 'auxiliary'
     
@@ -263,23 +283,23 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
 
     
     ffmpeg_builder = ['ffmpeg', '-y', 
-                      '-hide_banner', '-nostdin', '-loglevel', 'fatal', '-stats'
+                      '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats'
                       ]
     
     if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
-        input = ['-i', os.path.abspath(file_names.get('thumbnail')), '-seekable', '0', '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('thumbnail').abs_path, file_names.get('thumbnail').ext), '-seekable', '0', '-thread_queue_size', '1024']
         thumbnail = index
         index += 1
     
     # Add input files
     if file_names.get('video'):        
-        input = ['-i', os.path.abspath(file_names.get('video')), '-seekable', '0', '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('video').abs_path, file_names.get('video').ext), '-seekable', '0', '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         video = index
         index += 1
             
     if file_names.get('audio'):
-        input = ['-i', os.path.abspath(file_names.get('audio')), '-seekable', '0', '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('audio').abs_path, file_names.get('audio').ext), '-seekable', '0', '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         audio = index
         index += 1
@@ -324,10 +344,11 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
         f.write(" ".join(ffmpeg_builder))   
         
     print("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
-    
     result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
-
-    file_names['merged'] = outputFile
+    print(result.stdout)
+    print(result.stderr)
+    
+    file_names['merged'] = fileInfo(base_output, ext=ext, type='merged')
     
     # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
@@ -404,12 +425,13 @@ class DownloadStream:
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
             backoff_factor=1, 
-            status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+            status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
         )
         
         
         self.is_403 = False
         self.estimated_segment_duration = 0
+        self.refresh_retries = 0
         
         self.type = None
         self.ext = None        
@@ -420,6 +442,7 @@ class DownloadStream:
         self.conn, self.cursor = self.create_db(self.temp_db_file)    
 
     def refresh_Check(self):    
+        
         #print("Refresh check ({0})".format(self.format))        
         if time.time() - self.url_checked >= 3600.0 or self.is_403:
             print("Refreshing URL for {0}".format(self.format))
@@ -430,8 +453,11 @@ class DownloadStream:
                     self.stream_url = stream_url
                 if live_status is not None:
                     self.live_status = live_status
+                self.refresh_retries = 0
             except Exception as e:
                 print(e)
+                self.refresh_retries = self.refresh_retries + 1
+                time.sleep(5)
             
             
             self.url_checked = time.time()
@@ -453,7 +479,8 @@ class DownloadStream:
             optimistic_seg = 0
             while True:     
                 self.check_kill()
-                self.refresh_Check()
+                if self.refresh_retries <= 10:
+                    self.refresh_Check()
                         
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
@@ -534,7 +561,8 @@ class DownloadStream:
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
                         print("No new fragments found... Getting new url")
-                        info_dict, live_status = None
+                        info_dict = None
+                        live_status = None
                         try:
                             info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
                         except Exception as e:
@@ -554,6 +582,7 @@ class DownloadStream:
                             stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                             if stream_url is not None:
                                 self.stream_url = stream_url  
+                                self.refresh_retries = 0
                             #self.catchup()
                             break
                         
@@ -561,6 +590,9 @@ class DownloadStream:
                         elif live_status == 'is_live':
                             print("Updating url to new url")
                             self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                            if stream_url is not None:
+                                self.stream_url = stream_url  
+                                self.refresh_retries = 0
                             continue   
                         
                     time.sleep(5)
@@ -787,6 +819,7 @@ class DownloadStream:
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
                 f.write(cleaned_segment)
+                #f.write(segment_piece)
         return output_file
     
     ### Via ytarchive            
