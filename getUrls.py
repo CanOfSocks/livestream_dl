@@ -27,9 +27,11 @@ class MyLogger:
         print(msg)
 
     def warning(self, msg):
-        #print(msg)
+        #
         if "private" in msg.lower() or "UNAVAILABLE" in msg.upper() or "should already be available" in msg.lower():
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
+        else:
+            print(msg)
         
 
     def error(self, msg):
@@ -47,7 +49,7 @@ def get_Video_Info(id, wait=True, cookies=None):
         'skip_download': True,
         'cookiefile': cookies,
 #        'quiet': True,
-        'no_warnings': True,
+#        'no_warnings': True,
 #        'extractor_args': 'youtube:player_client=web;skip=dash;formats=incomplete,duplicate',
         'logger': logger
     }

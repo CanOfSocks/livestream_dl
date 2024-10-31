@@ -26,7 +26,9 @@ logging.basicConfig(
 )
 
 # File name dictionary
-#file_names = {}
+file_names = {
+    'databases': []
+}
 
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False):
@@ -42,15 +44,19 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
             downloader.delete_temp_database()
+        elif downloader.temp_db_file != ':memory:':
+            database_file = fileInfo(downloader.temp_db_file, type='database', format=downloader.format)
+            file_names['databases'].append(database_file)
     finally:
         # Explicitly close connection
         downloader.close_connection()
-    return file_name, downloader.type
+        file = fileInfo(file_name, type=downloader.type, format=downloader.format)
+    return file, downloader.type
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', options={}):
     futures = set()
-    file_names = {}
+    #file_names = {}
        
     print(json.dumps(options, indent=4))
     outputFile = output_filename(info_dict=info_dict, options=options)
@@ -116,7 +122,9 @@ def download_segments(info_dict, resolution='best', options={}):
                     elif str(type).lower() == 'video':
                         file_names['video'] = result
                     elif str(type).lower() == 'audio':
-                        file_names['audio'] = result                    
+                        file_names['audio'] = result    
+                    else:
+                        file_names[result.type] = result
                     
                     futures.remove(future)
                     
@@ -153,28 +161,46 @@ def move_to_final(options, outputFile, file_names):
         os.makedirs(os.path.dirname(outputFile), exist_ok=True)
     
     if file_names.get('thumbnail'):
-        print("Moving {0} to {1}".format(file_names.get('thumbnail'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('thumbnail'))[1])))
-        shutil.move(file_names.get('thumbnail'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('thumbnail'))[1]))
+        thumbnail = file_names.get('thumbnail')
+        thumb_output = "{0}.{1}".format(outputFile, thumbnail.ext)
+        print("Moving {0} to {1}".format(thumbnail.path, thumb_output))
+        shutil.move(thumbnail.path, thumb_output)
         
     if file_names.get('info_json'):
-        print("Moving {0} to {1}".format(file_names.get('info_json'), "{0}.info.json".format(outputFile)))
-        shutil.move(file_names.get('info_json'), "{0}.info.json".format(outputFile))
+        info_json = file_names.get('info_json')
+        info_output = "{0}.{1}".format(outputFile, info_json.ext)
+        print("Moving {0} to {1}".format(info_json.path, info_output))
+        shutil.move(info_json.path, info_output)
         
     if file_names.get('description'):
-        print("Moving {0} to {1}".format(file_names.get('description'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('description'))[1])))
-        shutil.move(file_names.get('description'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('description'))[1]))
+        description = file_names.get('description')
+        description_output = "{0}.{1}".format(outputFile, description.ext)
+        print("Moving {0} to {1}".format(description.path, description_output))
+        shutil.move(description.path, description_output)
         
     if file_names.get('video'):
-        print("Moving {0} to {1}".format(file_names.get('video'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('video'))[1])))
-        shutil.move(file_names.get('video'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('video'))[1]))
+        video = file_names.get('video')
+        video_output = "{0}.{1}".format(outputFile, video.ext)
+        print("Moving {0} to {1}".format(video.path, video_output))
+        shutil.move(video.path, video_output)
         
     if file_names.get('audio'):
-        print("Moving {0} to {1}".format(file_names.get('audio'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('audio'))[1])))
-        shutil.move(file_names.get('audio'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('audio'))[1]))
+        audio = file_names.get('audio')
+        audio_output = "{0}.{1}".format(outputFile, audio.ext)
+        print("Moving {0} to {1}".format(audio.path, audio_output))
+        shutil.move(audio.path, audio_output)
         
     if file_names.get('merged'):
-        print("Moving {0} to {1}".format(file_names.get('merged'), "{0}.{1}".format(outputFile, os.path.splitext(file_names.get('merged'))[1])))
-        shutil.move(file_names.get('merged'), "{0}{1}".format(outputFile, os.path.splitext(file_names.get('merged'))[1]))
+        merged = file_names.get('merged')
+        merged_output = "{0}.{1}".format(outputFile, merged.ext)
+        print("Moving {0} to {1}".format(merged.path, merged_output))
+        shutil.move(merged.path, merged_output)
+        
+    if file_names.get('databases'):
+        for file in file_names.get('databases'):
+            db_output = "{0}.{1}.{2}".format(outputFile, file.format, file.ext)
+            print("Moving {0} to {1}".format(file.path, db_output))
+            shutil.move(file.path, db_output)
         
     try:
         os.rmdir(options.get('temp_folder'))
@@ -196,13 +222,13 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         info_file = "{0}.info.json".format(base_output)
         with open(info_file, 'w', encoding='utf-8') as f:
             f.write(json.dumps(info_dict, indent=4))
-        created_files['info_json'] = info_file
+        created_files['info_json'] = fileInfo(info_file, ext='info.json', type='info_json')
     
     if options.get('write_description'):
         desc_file = "{0}.description".format(base_output)
         with open(desc_file, 'w', encoding='utf-8') as f:
             f.write(info_dict.get('description', ""))    
-        created_files['description'] = desc_file
+        created_files['description'] = fileInfo(desc_file, ext='description', type='description')
     
     if options.get('write_thumbnail') or options.get("embed_thumbnail") and info_dict.get('thumbnail'):
         # Filter URLs ending with '.jpg' and sort by preference in descending order
@@ -223,7 +249,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         response = session.get(highest_preference_jpg, timeout=30)
         with open(thumb_file, 'wb') as f:
             f.write(response.content)
-        created_files['thumbnail'] = thumb_file      
+        created_files['thumbnail'] = fileInfo(thumb_file, ext='jpg', type='thumbnail')      
     
     return created_files, 'auxiliary'
     
@@ -315,6 +341,31 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
     return file_names
     #for file in file_names:
     #    os.remove(file)
+    
+class fileInfo:
+    def __init__(self, path, ext=None, type=None, size=None, abs_path=None, format=None):       
+        self.path = os.path.splitext(path)[0]
+        
+        if abs_path is None:
+            self.abs_path = os.path.abspath(self.path)
+        else:
+            self.abs_path = abs_path
+        
+        if ext is None:
+            self.ext = os.path.splitext(path)[1]
+        else:
+            self.ext = ext
+        
+        self.ext = str(self.ext).lstrip('.')
+            
+        self.type = type
+        
+        if size is None and os.path.exists(self.path):
+            self.size = os.path.getsize(self.path)
+        else:
+            self.size = None
+            
+        self.format = format
 
 class DownloadStream:
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False):        
@@ -483,6 +534,7 @@ class DownloadStream:
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
                         print("No new fragments found... Getting new url")
+                        info_dict, live_status = None
                         try:
                             info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
                         except Exception as e:
@@ -491,12 +543,12 @@ class DownloadStream:
                         
                         # If status of downloader is not live, assume stream has ended
                         if self.live_status != 'is_live':
-                            print("Livestream has ended, commiting any remaining segments")
+                            print("Livestream has ended, committing any remaining segments")
                             #self.catchup()
                             break
                         
                         # If live has changed, use new URL to get any fragments that may be missing
-                        elif self.live_status == 'is_live' and live_status != 'is_live':
+                        elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live' :
                             print("Stream has finished ({0})".format(live_status))
                             self.live_status = live_status
                             stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
