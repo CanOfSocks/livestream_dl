@@ -78,7 +78,7 @@ if __name__ == "__main__":
     if options.get('ID', None) is None:
         options['ID'] = str(input("Please enter a video URL: ")).strip()
 
-    if options.get('resolution', None) is None:
+    if options.get('resolution', None) is None and (options.get('video_format', None) is None or options.get('audio_format', None) is None):
         options['resolution'] = str(input("Please enter resolution: ")).strip()
                
     if options.get('wait_for_video', None) is not None:        

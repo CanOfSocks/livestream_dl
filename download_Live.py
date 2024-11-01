@@ -429,8 +429,7 @@ class DownloadStream:
             total=fragment_retries,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
-        )
-        
+        )        
         
         self.is_403 = False
         self.is_private = False
@@ -525,9 +524,8 @@ class DownloadStream:
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
-                    #print("Remaining futures ({2}) for live: {0}, finished {1}".format(len(not_done), len(done), self.format))
                     
-                    # Remove completed threads to free RAM
+                    # Remove completed thread to free RAM
                     del future_to_seg[future]
                       
                 
@@ -553,14 +551,9 @@ class DownloadStream:
                         segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
                         
                 # If update has no segments and no segments are currently running, wait                              
-                if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:    
-                    #print("Remaining futures: {0}".format(len(submitted_segments)))                
+                if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                     wait += 1
                     print("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
-                    
-                    # Wait for all but last future to finish. Currently unsure of why the last future remains? Maybe something to do with the optimistic method?
-                    #if len(submitted_segments) <= 3:
-                    #    print(future_to_seg)
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
                     if wait > 20:
@@ -568,47 +561,49 @@ class DownloadStream:
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
-                        print("No new fragments found... Getting new url")
-                        info_dict = None
-                        live_status = None
-                        try:
-                            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
+                        if self.is_private:
+                            print("Video is private and no more segments are available. Ending...")
+                            break
+                        else:
+                            print("No new fragments found... Getting new url")
+                            info_dict = None
+                            live_status = None
+                            try:
+                                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
+                                
+                            # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
+                            except PermissionError as e:
+                                print(e)
+                                self.is_private = True
+                            except Exception as e:
+                                logging.info("Error refreshing URL: {0}".format(e))
+                                print("Error refreshing URL: {0}".format(e))
                             
-                        # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
-                        except PermissionError as e:
-                            print(e)
-                            self.is_private = True
-                            # Assume end if no more fragments can be grabbed at this point
-                            live_status = 'post_live'
-                        except Exception as e:
-                            logging.info("Error refreshing URL: {0}".format(e))
-                            print("Error refreshing URL: {0}".format(e))
-                        
-                        # If status of downloader is not live, assume stream has ended
-                        if self.live_status != 'is_live':
-                            print("Livestream has ended, committing any remaining segments")
-                            #self.catchup()
-                            break
-                        
-                        # If live has changed, use new URL to get any fragments that may be missing
-                        elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
-                            print("Stream has finished ({0})".format(live_status))
-                            self.live_status = live_status
-                            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
-                            if stream_url is not None:
-                                self.stream_url = stream_url  
-                                self.refresh_retries = 0
-                            #self.catchup()
-                            break
-                        
-                        # If livestream is still live, use new url
-                        elif live_status == 'is_live':
-                            print("Updating url to new url")
-                            self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
-                            if stream_url is not None:
-                                self.stream_url = stream_url  
-                                self.refresh_retries = 0
-                            continue   
+                            # If status of downloader is not live, assume stream has ended
+                            if self.live_status != 'is_live':
+                                print("Livestream has ended, committing any remaining segments")
+                                #self.catchup()
+                                break
+                            
+                            # If live has changed, use new URL to get any fragments that may be missing
+                            elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
+                                print("Stream has finished ({0})".format(live_status))
+                                self.live_status = live_status
+                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                                if stream_url is not None:
+                                    self.stream_url = stream_url  
+                                    self.refresh_retries = 0
+                                #self.catchup()
+                                break
+                            
+                            # If livestream is still live, use new url
+                            elif live_status == 'is_live':
+                                print("Updating url to new url")
+                                self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                                if stream_url is not None:
+                                    self.stream_url = stream_url  
+                                    self.refresh_retries = 0
+                                continue   
                         
                     time.sleep(5)
                     continue
@@ -616,12 +611,12 @@ class DownloadStream:
                     wait = 0
                     
                 # Check if segments already exist within database (used to not create more connections). Needs fixing upstream
-                remove_set = set()
+                existing = set()
                 for seg_num in segments_to_download:
                     if self.segment_exists(self.cursor, seg_num):
                         self.already_downloaded.add(seg_num)
-                        remove_set.add(seg_num)
-                segments_to_download = segments_to_download - remove_set
+                        existing.add(seg_num)
+                segments_to_download = segments_to_download - existing
 
                 # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
                 future_to_seg.update(
@@ -632,27 +627,10 @@ class DownloadStream:
                     }
                 )
                 
-                # IDK, it seems to do better if something exists outside the for loop
-                i = 0
-                pass
-            
-            # Cancel any remaining threads
-#            for future in future_to_seg:
-#                future.cancel()
-                
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
         return True
-           
-    def get_live_segment(self, seg_num):
-        # Create new connection and cursor to check sqlite database within thread
-        single_conn, single_cursor = self.create_connection(self.temp_db_file)
-        if self.segment_exists(cursor=single_cursor, segment_order=seg_num):
-            self.already_downloaded.add(seg_num)
-            return -1, None, seg_num
-        else:
-            return self.download_segment("{0}&sq={1}".format(self.stream_url, seg_num), seg_num)
-    
+
     def update_latest_segment(self):
         # Kill if keyboard interrupt is detected
         self.check_kill()
@@ -694,7 +672,6 @@ class DownloadStream:
         conn = sqlite3.connect(file)
         cursor = conn.cursor()
         
-        
         # Database connection optimisation. Benefits will need to be tested
         if not self.database_in_memory:
             # Set the journal mode to WAL
@@ -709,7 +686,6 @@ class DownloadStream:
     def create_db(self, temp_file):
         # Connect to SQLite database (or create it if it doesn't exist)
         conn, cursor = self.create_connection(temp_file)
-
         
         # Create the table where id represents the segment order
         cursor.execute('''
@@ -751,12 +727,6 @@ class DownloadStream:
                 self.is_403 = False
                 #return latest header number and segmqnt content
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
-                """
-            elif response.status_code == 204:
-                print("Segment {0} has no data")
-                self.is_403 = False
-                return -1, bytes(), segment_order, response.status_code, response.headers
-                """
             elif response.status_code == 403:
                 print("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
@@ -834,7 +804,6 @@ class DownloadStream:
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
                 f.write(cleaned_segment)
-                #f.write(segment_piece)
         return output_file
     
     ### Via ytarchive            

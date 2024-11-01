@@ -1,23 +1,9 @@
 #!/usr/local/bin/python
 import yt_dlp
-import os
-import json
-import requests
-import base64
-import subprocess
-from shutil import move
-
-import sqlite3
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from json import load       
-
-import YoutubeURL
 
 class MyLogger:
     def __init__(self):
-        self.private_video_detected = False
+        pass
 
     def debug(self, msg):
         #print(msg)
