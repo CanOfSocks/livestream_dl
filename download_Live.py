@@ -30,10 +30,11 @@ file_names = {
     'databases': []
 }
 
+
 # Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False):
+def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None):
     try:
-        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name)
+        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies)
         #file_name = downloader.catchup()
         #time.sleep(0.5)
         print(downloader.stream_url)
@@ -84,7 +85,7 @@ def download_segments(info_dict, resolution='best', options={}):
                         raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
                     else:
                         video_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                    keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
+                                    keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'))
                         futures.add(video_future)
                 
                 if options.get('audio_format', None) is not None:
@@ -344,9 +345,9 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
         f.write(" ".join(ffmpeg_builder))   
         
     print("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
-    result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
-    print(result.stdout)
-    print(result.stderr)
+    result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+    #print(result.stdout)
+    #print(result.stderr)
     
     file_names['merged'] = fileInfo(base_output, ext=ext, type='merged')
     
@@ -364,13 +365,15 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
     #    os.remove(file)
     
 class fileInfo:
-    def __init__(self, path, ext=None, type=None, size=None, abs_path=None, format=None):       
+    def __init__(self, path, ext=None, type=None, size=None, abs_path=None, format=None, cookies_path=None):       
         self.path = os.path.splitext(path)[0]
         
         if abs_path is None:
             self.abs_path = os.path.abspath(self.path)
         else:
             self.abs_path = abs_path
+            
+        self.cookies_path = cookies_path
         
         if ext is None:
             self.ext = os.path.splitext(path)[1]
@@ -389,7 +392,7 @@ class fileInfo:
         self.format = format
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -430,8 +433,11 @@ class DownloadStream:
         
         
         self.is_403 = False
+        self.is_private = False
         self.estimated_segment_duration = 0
         self.refresh_retries = 0
+        
+        self.cookies = cookies
         
         self.type = None
         self.ext = None        
@@ -443,21 +449,24 @@ class DownloadStream:
 
     def refresh_Check(self):    
         
-        #print("Refresh check ({0})".format(self.format))        
-        if time.time() - self.url_checked >= 3600.0 or self.is_403:
+        #print("Refresh check ({0})".format(self.format))  
+        
+        # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
+        if (time.time() - self.url_checked >= 3600.0 or self.is_403) and not self.is_private:
             print("Refreshing URL for {0}".format(self.format))
             try:
-                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
+                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                 if stream_url is not None:
                     self.stream_url = stream_url
                 if live_status is not None:
                     self.live_status = live_status
-                self.refresh_retries = 0
+            except PermissionError as e:
+                print(e)
+                self.is_private = True
             except Exception as e:
                 print(e)
-                self.refresh_retries = self.refresh_retries + 1
-                time.sleep(5)
+
             
             
             self.url_checked = time.time()
@@ -479,8 +488,7 @@ class DownloadStream:
             optimistic_seg = 0
             while True:     
                 self.check_kill()
-                if self.refresh_retries <= 10:
-                    self.refresh_Check()
+                self.refresh_Check()
                         
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
@@ -544,15 +552,15 @@ class DownloadStream:
                         self.update_latest_segment()
                         segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
                         
-                # If update has found no segments, wait.                                
-                if len(segments_to_download) <= 0:    
+                # If update has no segments and no segments are currently running, wait                              
+                if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:    
                     #print("Remaining futures: {0}".format(len(submitted_segments)))                
                     wait += 1
                     print("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                     
                     # Wait for all but last future to finish. Currently unsure of why the last future remains? Maybe something to do with the optimistic method?
-                    if len(submitted_segments) <= 3:
-                        print(future_to_seg)
+                    #if len(submitted_segments) <= 3:
+                    #    print(future_to_seg)
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
                     if wait > 20:
@@ -564,7 +572,14 @@ class DownloadStream:
                         info_dict = None
                         live_status = None
                         try:
-                            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False)
+                            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
+                            
+                        # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
+                        except PermissionError as e:
+                            print(e)
+                            self.is_private = True
+                            # Assume end if no more fragments can be grabbed at this point
+                            live_status = 'post_live'
                         except Exception as e:
                             logging.info("Error refreshing URL: {0}".format(e))
                             print("Error refreshing URL: {0}".format(e))
@@ -576,7 +591,7 @@ class DownloadStream:
                             break
                         
                         # If live has changed, use new URL to get any fragments that may be missing
-                        elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live' :
+                        elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
                             print("Stream has finished ({0})".format(live_status))
                             self.live_status = live_status
                             stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 

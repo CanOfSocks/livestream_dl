@@ -54,8 +54,10 @@ def get_Video_Info(id, wait=True, cookies=None):
         'logger': logger
     }
     
-    if wait == True:
-        ydl_opts['wait_for_video'] = (1,300)
+    if isinstance(wait, tuple):
+        ydl_opts['wait_for_video'] = wait
+    elif wait is True:
+        ydl_opts['wait_for_video'] = (5,300)
 
     info_dict = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

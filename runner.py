@@ -65,6 +65,9 @@ if __name__ == "__main__":
     parser.add_argument('--keep-database-file', action='store_true', help="Keep database file")
     
     parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments in memory. Requires a lot of RAM (Not recommended)")
+    
+    parser.add_argument("--wait-for-video", type=int, nargs="*", help="(min, max) Minimum and maximum interval to wait for a video"
+)
 
     # Parse the arguments
     args = parser.parse_args()
@@ -72,13 +75,14 @@ if __name__ == "__main__":
 
     # Access the 'ID' value
     options = vars(args)
-    
     if options.get('ID', None) is None:
         options['ID'] = str(input("Please enter a video URL: ")).strip()
 
-
     if options.get('resolution', None) is None:
         options['resolution'] = str(input("Please enter resolution: ")).strip()
+               
+    if options.get('wait_for_video', None) is not None:        
+        options['wait_for_video'] = tuple(options.get('wait_for_video')[:2])
         
     id = options.get('ID')
     resolution = options.get('resolution')
