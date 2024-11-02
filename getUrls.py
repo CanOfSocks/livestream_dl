@@ -30,7 +30,7 @@ def get_Video_Info(id, wait=True, cookies=None):
     logger = MyLogger()
     
     ydl_opts = {
-        
+        #'live_from_start': True,
         'retries': 25,
         'skip_download': True,
         'cookiefile': cookies,

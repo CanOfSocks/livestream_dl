@@ -70,6 +70,11 @@ def download_segments(info_dict, resolution='best', options={}):
             # Download auxiliary files (thumbnail, info,json etc)
             auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
             futures.add(auxiliary_thread)
+            if options.get('live_chat') is True:
+                #download_live_chat(info_dict=info_dict, options=options)
+                chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
+                futures.add(chat_thread)
+            
             format_parser = YoutubeURL.Formats()
             # For use of specificed format. Expects two values, but can work with more
             if options.get('video_format', None) is not None or options.get('video_format', None) is not None:
@@ -118,7 +123,7 @@ def download_segments(info_dict, resolution='best', options={}):
                     logging.info("result of thread: {0}".format(result))
                     print("\033[31m{0}\033[0m".format(result))
                     
-                    if type == 'auxiliary':
+                    if type == 'auxiliary' or type == 'live_chat':
                         file_names.update(result)
                     elif str(type).lower() == 'video':
                         file_names['video'] = result
@@ -213,6 +218,15 @@ def move_to_final(options, outputFile, file_names):
             shutil.move("{0}.{1}".format(merged.path, merged.ext), merged_output)
     except Exception as e:
         print("unable to move merged video: {0}".format(e))
+        
+    try:
+        if file_names.get('live_chat'):
+            live_chat = file_names.get('live_chat')
+            live_chat_output = "{0}.{1}".format(outputFile, live_chat.ext)
+            print("Moving {0} to {1}".format("{0}.{1}".format(live_chat.path, live_chat.ext), live_chat_output))
+            shutil.move("{0}.{1}".format(live_chat.path, live_chat.ext), live_chat_output)
+    except Exception as e:
+        print("unable to move live chat zip: {0}".format(e))
      
     try:
         if file_names.get('databases'):
@@ -230,6 +244,44 @@ def move_to_final(options, outputFile, file_names):
         
     print("Finished moving files from temporary directory to output destination")
     
+def download_live_chat(info_dict, options):
+    import yt_dlp
+    import zipfile
+    
+    if options.get("temp_folder"):
+        base_output = os.path.join(options.get("temp_folder"), info_dict.get('id'))
+    else:
+        base_output = info_dict.get('id')
+
+    ydl_opts = {
+        'skip_download': True,               # Skip downloading video/audio
+        'quiet': True,
+        #'live_from_start': True,
+        'writesubtitles': True,              # Extract subtitles (live chat)
+        'subtitlesformat': 'json',           # Set format to JSON
+        'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
+        'concurrent_fragment_downloads': 2,
+        'outtmpl': base_output          # Save to a JSON file
+    }
+    livechat_filename = base_output + ".live_chat.json"
+    zip_filename = base_output + ".live_chat.zip"
+    
+    print("Downloading live chat to: {0}".format(livechat_filename))
+    # Run yt-dlp with the specified options
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        result = ydl.process_ie_result(info_dict)
+
+    
+    try:
+        with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
+            zipf.write(livechat_filename)
+        os.remove(livechat_filename)
+    except Exception as e:
+        print(e)
+    live_chat = {
+        'live_chat': fileInfo(path=base_output, ext='.live_chat.zip', type='live_chat')
+    }
+    return live_chat, 'live_chat'
 
 def download_auxiliary_files(info_dict, options, thumbnail=None):
     if options.get("temp_folder"):

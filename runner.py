@@ -46,7 +46,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--cookies', type=str, default=None, help="Path to cookies file")
 
-    parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files")
+    parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files. Currently doesn't support templates like the output files")
     
     parser.add_argument('--output', type=str, default="%(title)s (%(id)s)", help="Path for output files")
     
@@ -61,6 +61,8 @@ if __name__ == "__main__":
     parser.add_argument('--keep-temp-files', action='store_true', help="Keep all temp files i.e. database and ts files")
     
     parser.add_argument('--keep-ts-files', action='store_true', help="Keep all ts files")
+    
+    parser.add_argument('--live-chat', action='store_true', help="Get Live chat")
     
     parser.add_argument('--keep-database-file', action='store_true', help="Keep database file")
     
