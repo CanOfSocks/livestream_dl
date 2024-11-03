@@ -85,7 +85,7 @@ def download_segments(info_dict, resolution='best', options={}):
     
     with concurrent.futures.ThreadPoolExecutor() as executor:  
         try: 
-            
+            """
             # Download auxiliary files (thumbnail, info,json etc)
             auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
             futures.add(auxiliary_thread)
@@ -93,7 +93,7 @@ def download_segments(info_dict, resolution='best', options={}):
                 #download_live_chat(info_dict=info_dict, options=options)
                 chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
                 futures.add(chat_thread)
-            
+            """
             format_parser = YoutubeURL.Formats()
             # For use of specificed format. Expects two values, but can work with more
             if options.get('video_format', None) is not None or options.get('video_format', None) is not None:
@@ -110,7 +110,7 @@ def download_segments(info_dict, resolution='best', options={}):
                         if int(options.get('audio_format')) not in format_parser.audio: 
                             raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
                         else:
-                            audio_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                            audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                         keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
                             futures.add(audio_future)  
                 else:
@@ -136,7 +136,7 @@ def download_segments(info_dict, resolution='best', options={}):
                     if options.get('direct_to_ts', False) is True:
                         video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
-                        audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                        audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
                     else:
                         video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
@@ -195,12 +195,12 @@ def download_segments(info_dict, resolution='best', options={}):
             global kill_all
             kill_all = True
             print("Keyboard interrupt detected")
-            time.sleep(0.5)
-            """
+            executor.shutdown(wait=5)
+            
             for future in futures:
                 future.cancel()
-                executor.shutdown(wait=False)
-                """
+                
+                
     #move_to_final(info_dict, options, file_names)
     
 def output_filename(info_dict, outtmpl):
@@ -1146,7 +1146,7 @@ class DownloadStreamDirect:
                         json.dump(self.state, file, indent=4)  # 'indent=4' makes the JSON pretty-printed
                     print("Written {0} segments of {1} to file. Current file size is {2} bytes".format(self.state.get('last_written'),self.format, self.state.get('file_size')))
                 
-                segments_to_download = set(range(self.state.get('last_written', 0), self.latest_sequence)) - submitted_segments 
+                segments_to_download = set(range(self.state.get('last_written', 0)+1, self.latest_sequence)) - submitted_segments 
                                 
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
