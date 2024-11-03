@@ -48,7 +48,7 @@ if __name__ == "__main__":
 
     parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files. Currently doesn't support templates like the output files")
     
-    parser.add_argument('--output', type=str, default="%(title)s (%(id)s)", help="Path for output files")
+    parser.add_argument('--output', type=str, default="%(fulltitle)s (%(id)s)", help="Path for output files")
     
     parser.add_argument('--write-thumbnail', action='store_true', help="Write thumbnail to file")
     
@@ -67,6 +67,8 @@ if __name__ == "__main__":
     parser.add_argument('--keep-database-file', action='store_true', help="Keep database file")
     
     parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments in memory. Requires a lot of RAM (Not recommended)")
+    
+    parser.add_argument('--direct-to-ts', action='store_true', help="Write directly to ts file instead of database. May use more RAM if a segment is slow to download")
     
     parser.add_argument("--wait-for-video", type=int, nargs="*", help="(min, max) Minimum and maximum interval to wait for a video"
 )

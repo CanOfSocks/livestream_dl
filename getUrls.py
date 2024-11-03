@@ -7,8 +7,10 @@ class MyLogger:
 
     def debug(self, msg):
         #print(msg)
-        pass
-    
+        if str(msg).startswith('[DEBUG]'):
+            pass
+        else:
+            print(msg)
     def info(self, msg):
         print(msg)
 
@@ -34,6 +36,9 @@ def get_Video_Info(id, wait=True, cookies=None):
         'retries': 25,
         'skip_download': True,
         'cookiefile': cookies,
+        'writesubtitles': True,              # Extract subtitles (live chat)
+        'subtitlesformat': 'json',           # Set format to JSON
+        'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
 #        'quiet': True,
 #        'no_warnings': True,
 #        'extractor_args': 'youtube:player_client=web;skip=dash;formats=incomplete,duplicate',
