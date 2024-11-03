@@ -85,7 +85,7 @@ def download_segments(info_dict, resolution='best', options={}):
     
     with concurrent.futures.ThreadPoolExecutor() as executor:  
         try: 
-            """
+            
             # Download auxiliary files (thumbnail, info,json etc)
             auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
             futures.add(auxiliary_thread)
@@ -93,7 +93,7 @@ def download_segments(info_dict, resolution='best', options={}):
                 #download_live_chat(info_dict=info_dict, options=options)
                 chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
                 futures.add(chat_thread)
-            """
+            
             format_parser = YoutubeURL.Formats()
             # For use of specificed format. Expects two values, but can work with more
             if options.get('video_format', None) is not None or options.get('video_format', None) is not None:
@@ -132,10 +132,7 @@ def download_segments(info_dict, resolution='best', options={}):
                     
             elif resolution.lower() != "audio_only":                
                 if YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution) is not None:
-                    # Submit tasks for both video and audio downloads
-                    download_stream_direct(info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
-                    """
+                    # Submit tasks for both video and audio downloads                    
                     if options.get('direct_to_ts', False) is True:
                         video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)))
@@ -150,7 +147,7 @@ def download_segments(info_dict, resolution='best', options={}):
                             # Wait for both downloads to finish
                     futures.add(video_future)
                     futures.add(audio_future)
-                    """
+                    
                 else:
                     raise ValueError("Resolution is not valid or does not exist in stream")
                             
