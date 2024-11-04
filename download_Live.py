@@ -597,7 +597,7 @@ class DownloadStream:
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
             submitted_segments = set()
             future_to_seg = {}
             
@@ -1087,7 +1087,7 @@ class DownloadStreamDirect:
         print("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
         wait = 0   
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
             submitted_segments = set()
             future_to_seg = {}
             
@@ -1165,7 +1165,7 @@ class DownloadStreamDirect:
                     if len(downloaded_segments) > 0:
                         seg_keys = list(downloaded_segments.keys())
                         for seg_key in seg_keys:
-                            if self.state.get('last_written') - seg_key > self.max_workers*2:
+                            if self.state.get('last_written') - int(seg_key) > self.max_workers*2:
                                 print("Segment {0} of {1} has been detected as leftover, removing from dictionary".format(seg_key, self.format))
                                 del downloaded_segments[seg_key]
                 
