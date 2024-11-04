@@ -161,7 +161,7 @@ def download_segments(info_dict, resolution='best', options={}):
                 # Continuously check for completion or interruption
                 for future in done:
                     if future.exception() is not None:
-                        raise result.exception()
+                        raise future.exception()
                     
                     result, type = future.result()
                     logging.info("result of thread: {0}".format(result))
@@ -1008,6 +1008,7 @@ class DownloadStreamDirect:
         self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)  
         
         self.state_file_name = "{0}.{1}.state".format(self.id, self.format)        
+        self.state_file_backup = self.state_file_name + ".bkup"
         
         self.folder = folder    
         if self.folder:
@@ -1020,7 +1021,14 @@ class DownloadStreamDirect:
             'file_size': 0
         }
         
-        if os.path.exists(self.state_file_name) and os.path.exists(self.merged_file_name):
+        if os.path.exists(self.state_file_backup) and os.path.exists(self.merged_file_name):
+            with open(self.state_file_name, "r") as file:
+                loaded_state = json.load(file)
+            ts_size = os.path.getsize(self.merged_file_name)
+            if ts_size >= loaded_state.get('file_size', 0) and loaded_state.get('last_written', None) is not None:
+                self.state = loaded_state
+            print(self.state)
+        elif os.path.exists(self.state_file_name) and os.path.exists(self.merged_file_name):
             with open(self.state_file_name, "r") as file:
                 loaded_state = json.load(file)
             ts_size = os.path.getsize(self.merged_file_name)
@@ -1139,9 +1147,22 @@ class DownloadStreamDirect:
                     time.sleep(0.1)
                     
                     self.state['file_size'] = os.path.getsize(self.merged_file_name)
+                    
+                    shutil.move(self.state_file_name, self.state_file_backup)
                     with open(self.state_file_name, "w") as file:
-                        json.dump(self.state, file, indent=4)  # 'indent=4' makes the JSON pretty-printed
+                        json.dump(self.state, file, indent=4)
+                    os.remove(self.state_file_backup)
+                        
                     print("Written {0} segments of {1} to file. Current file size is {2} bytes".format(self.state.get('last_written'),self.format, self.state.get('file_size')))
+                    
+                    # Cleanup of leftover segments
+                    # Needs to be determined if these are accidental extras or missed segments
+                    if len(downloaded_segments) > 0:
+                        seg_keys = list(downloaded_segments.keys())
+                        for seg_key in seg_keys:
+                            if self.state.get('last_written') - seg_key > self.max_workers*2:
+                                print("Segment {0} of {1} has been detected as leftover, removing from dictionary".format(seg_key, self.format))
+                                del downloaded_segments[seg_key]
                 
                 segments_to_download = set(range(self.state.get('last_written')+1, self.latest_sequence)) - submitted_segments 
                                 
