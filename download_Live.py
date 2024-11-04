@@ -184,7 +184,7 @@ def download_segments(info_dict, resolution='best', options={}):
                     time.sleep(0.9)
             
             if options.get('merge') or not options.get('no_merge'):
-                create_mp4(file_names=file_names, info_dict=info_dict, outputFile=outputFile, options=options)
+                create_mp4(file_names=file_names, info_dict=info_dict, options=options)
                 
             if options.get('temp_folder') is not None:
                 move_to_final(options=options, outputFile=outputFile, file_names=file_names)
@@ -381,7 +381,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
     return created_files, 'auxiliary'
     
         
-def create_mp4(file_names, info_dict, outputFile, options={}):
+def create_mp4(file_names, info_dict, options):
     index = 0
     thumbnail = None
     video = None
@@ -432,10 +432,15 @@ def create_mp4(file_names, info_dict, outputFile, options={}):
     ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
     ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
     
-    if options.get("temp_folder"):
-        base_output = os.path.join(options.get("temp_folder"), info_dict.get('id'))
+    if options.get('filename') is not None:
+        filename = options.get('filename')
     else:
-        base_output = info_dict.get('id')
+        filename = info_dict.get('id')
+    
+    if options.get("temp_folder"):
+        base_output = os.path.join(options.get("temp_folder"), filename)
+    else:
+        base_output = filename
     
     if ext is None:
         ext = info_dict.get('ext', '.mp4')
