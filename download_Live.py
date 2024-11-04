@@ -52,8 +52,7 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
 def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None):
     try:
         downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies)        
-        downloader.live_dl()
-        file_name = downloader.merged_file_name
+        file_name = downloader.live_dl()
         if not keep_state:
             downloader.delete_state_file()
         else:
@@ -1008,9 +1007,7 @@ class DownloadStreamDirect:
         
         self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)  
         
-        self.state_file_name = "{0}.{1}.state".format(self.id, self.format)  
-        
-        
+        self.state_file_name = "{0}.{1}.state".format(self.id, self.format)        
         
         self.folder = folder    
         if self.folder:
@@ -1146,7 +1143,7 @@ class DownloadStreamDirect:
                         json.dump(self.state, file, indent=4)  # 'indent=4' makes the JSON pretty-printed
                     print("Written {0} segments of {1} to file. Current file size is {2} bytes".format(self.state.get('last_written'),self.format, self.state.get('file_size')))
                 
-                segments_to_download = set(range(self.state.get('last_written', 0)+1, self.latest_sequence)) - submitted_segments 
+                segments_to_download = set(range(self.state.get('last_written')+1, self.latest_sequence)) - submitted_segments 
                                 
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
@@ -1165,7 +1162,7 @@ class DownloadStreamDirect:
                     else:
                         print("Checking for more segments available for {0}".format(self.format))
                         self.update_latest_segment()
-                        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
+                        segments_to_download = set(range(self.state.get('last_written')+1, self.latest_sequence)) - submitted_segments                             
                         
                 # If update has no segments and no segments are currently running, wait                              
                 if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
@@ -1236,7 +1233,7 @@ class DownloadStreamDirect:
                     }
                 )
                 
-        return True
+        return self.merged_file_name
 
     def update_latest_segment(self):
         # Kill if keyboard interrupt is detected
