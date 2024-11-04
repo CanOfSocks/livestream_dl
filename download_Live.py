@@ -84,7 +84,7 @@ def download_segments(info_dict, resolution='best', options={}):
     
     with concurrent.futures.ThreadPoolExecutor() as executor:  
         try: 
-            """
+            
             # Download auxiliary files (thumbnail, info,json etc)
             auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
             futures.add(auxiliary_thread)
@@ -92,7 +92,7 @@ def download_segments(info_dict, resolution='best', options={}):
                 #download_live_chat(info_dict=info_dict, options=options)
                 chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
                 futures.add(chat_thread)
-            """
+            
             format_parser = YoutubeURL.Formats()
             # For use of specificed format. Expects two values, but can work with more
             if options.get('video_format', None) is not None or options.get('video_format', None) is not None:
