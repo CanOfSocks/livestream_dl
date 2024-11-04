@@ -20,7 +20,6 @@ def parse_string_or_tuple(value):
 
 def main(id, resolution='best', options={}):
     info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None))
-    #if live_status == 'is_live' or live_status == 'was_live':
     download_Live.download_segments(info_dict, resolution, options)
     
 if __name__ == "__main__":
@@ -39,6 +38,8 @@ if __name__ == "__main__":
     parser.add_argument('--threads', type=int, default=1, help="Number of download threads per format. This will be 2x for an video and audio download. Default: 1")
     
     parser.add_argument('--batch-size', type=int, default=5, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances. Default: 5")
+    
+    parser.add_argument('--segment-retries', type=int, default=5, help="Number of times to retry grabbing a segment. Default: 5")
     
     parser.add_argument('--no-merge', action='store_false', dest='merge', help="Don't merge video")
 
@@ -70,8 +71,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--direct-to-ts', action='store_true', help="Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options")
     
-    parser.add_argument("--wait-for-video", type=int, nargs="*", help="(min, max) Minimum and maximum interval to wait for a video"
-)
+    parser.add_argument("--wait-for-video", type=int, nargs="*", help="(min, max) Minimum and maximum interval to wait for a video")
 
     # Parse the arguments
     args = parser.parse_args()
