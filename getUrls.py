@@ -9,6 +9,8 @@ class MyLogger:
         #print(msg)
         if str(msg).startswith('[DEBUG]'):
             pass
+        elif str(msg).startswith('[wait] R'):
+            print(msg, end='\r')
         else:
             print(msg)
     def info(self, msg):

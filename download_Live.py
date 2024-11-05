@@ -30,7 +30,6 @@ file_names = {
     'databases': []
 }
 
-
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5):
     try:
@@ -244,7 +243,7 @@ def move_to_final(options, outputFile, file_names):
     try:
         if file_names.get('video'):
             video = file_names.get('video')
-            video_output = "{0}.{1}".format(outputFile, video.ext)
+            video_output = "{0}.{1}.{2}".format(outputFile, video.format, video.ext)
             print("Moving {0} to {1}".format("{0}.{1}".format(video.path, video.ext), video_output))
             shutil.move("{0}.{1}".format(video.path, video.ext), video_output)
     except Exception as e:
@@ -253,7 +252,7 @@ def move_to_final(options, outputFile, file_names):
     try:
         if file_names.get('audio'):
             audio = file_names.get('audio')
-            audio_output = "{0}.{1}".format(outputFile, audio.ext)
+            audio_output = "{0}.{1}.{2}".format(outputFile, audio.format, audio.ext)
             print("Moving {0} to {1}".format("{0}.{1}".format(audio.path, audio.ext), audio_output))
             shutil.move("{0}.{1}".format(audio.path, audio.ext), audio_output)
     except Exception as e:
@@ -265,6 +264,15 @@ def move_to_final(options, outputFile, file_names):
             merged_output = "{0}.{1}".format(outputFile, merged.ext)
             print("Moving {0} to {1}".format("{0}.{1}".format(merged.path, merged.ext), merged_output))
             shutil.move("{0}.{1}".format(merged.path, merged.ext), merged_output)
+    except Exception as e:
+        print("unable to move merged video: {0}".format(e))
+        
+    try:
+        if file_names.get('ffmpeg_cmd'):
+            ffmpeg_cmd = file_names.get('ffmpeg_cmd')
+            ffmpeg_cmd_output = "{0}.{1}".format(outputFile, ffmpeg_cmd.ext)
+            print("Moving {0} to {1}".format("{0}.{1}".format(ffmpeg_cmd.path, ffmpeg_cmd.ext), ffmpeg_cmd_output))
+            shutil.move("{0}.{1}".format(ffmpeg_cmd.path, ffmpeg_cmd.ext), ffmpeg_cmd_output)
     except Exception as e:
         print("unable to move merged video: {0}".format(e))
         
@@ -322,20 +330,27 @@ def download_live_chat(info_dict, options):
     
     print("Downloading live chat to: {0}".format(livechat_filename))
     # Run yt-dlp with the specified options
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        result = ydl.process_ie_result(info_dict)
+    # Don't except whole process on live chat fail
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            result = ydl.process_ie_result(info_dict)
+    except Exception as e:
+        print("\033[31m{0}\033[0m".format(e))
 
+    if os.path.exists("{0}.part".format(livechat_filename)):
+        shutil.move("{0}.part", livechat_filename)
     
     try:
         with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
             zipf.write(livechat_filename, arcname=os.path.basename(livechat_filename))
         os.remove(livechat_filename)
+        live_chat = {
+            'live_chat': fileInfo(path=base_output, ext='.live_chat.zip', type='live_chat')
+        }
+        return live_chat, 'live_chat'
     except Exception as e:
-        print(e)
-    live_chat = {
-        'live_chat': fileInfo(path=base_output, ext='.live_chat.zip', type='live_chat')
-    }
-    return live_chat, 'live_chat'
+        print("\033[31m{0}\033[0m".format(e))
+    
 
 def download_auxiliary_files(info_dict, options, thumbnail=None):
     if options.get('filename') is not None:
@@ -349,40 +364,48 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         base_output = filename
     
     created_files = {}
-    
-    if options.get('write_info_json'):
-        info_file = "{0}.info.json".format(base_output)
-        with open(info_file, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(info_dict, indent=4))
-        created_files['info_json'] = fileInfo(base_output, ext='info.json', type='info_json')
-    
-    if options.get('write_description'):
-        desc_file = "{0}.description".format(base_output)
-        with open(desc_file, 'w', encoding='utf-8') as f:
-            f.write(info_dict.get('description', ""))    
-        created_files['description'] = fileInfo(desc_file, ext='description', type='description')
-    
-    if options.get('write_thumbnail') or options.get("embed_thumbnail") and info_dict.get('thumbnail'):
-        # Filter URLs ending with '.jpg' and sort by preference in descending order
-        jpg_urls = [item for item in info_dict['thumbnails'] if item['url'].endswith('.jpg')]
-        highest_preference_jpg = max(jpg_urls, key=lambda x: x['preference']).get('url')
-        print("Best url: {0}".format(highest_preference_jpg))
-        thumb_file = "{0}.jpg".format(base_output)
-        retry_strategy = Retry(
-                total=5,  # maximum number of retries
-                backoff_factor=1, 
-                status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
-            )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        # create a new session object
-        session = requests.Session()
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        response = session.get(highest_preference_jpg, timeout=30)
-        with open(thumb_file, 'wb') as f:
-            f.write(response.content)
-        created_files['thumbnail'] = fileInfo(base_output, ext='jpg', type='thumbnail')      
-    
+    try:
+        if options.get('write_info_json'):
+            info_file = "{0}.info.json".format(base_output)
+            with open(info_file, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(info_dict, indent=4))
+            created_files['info_json'] = fileInfo(base_output, ext='info.json', type='info_json')
+    except Exception as e:
+        print("\033[31m{0}\033[0m".format(e))
+        
+    try:
+        if options.get('write_description'):
+            desc_file = "{0}.description".format(base_output)
+            with open(desc_file, 'w', encoding='utf-8') as f:
+                f.write(info_dict.get('description', ""))    
+            created_files['description'] = fileInfo(desc_file, ext='description', type='description')
+    except Exception as e:
+        print("\033[31m{0}\033[0m".format(e))
+        
+    try:
+        if options.get('write_thumbnail') or options.get("embed_thumbnail") and info_dict.get('thumbnail'):
+            # Filter URLs ending with '.jpg' and sort by preference in descending order
+            jpg_urls = [item for item in info_dict['thumbnails'] if item['url'].endswith('.jpg')]
+            highest_preference_jpg = max(jpg_urls, key=lambda x: x['preference']).get('url')
+            print("Best url: {0}".format(highest_preference_jpg))
+            thumb_file = "{0}.jpg".format(base_output)
+            retry_strategy = Retry(
+                    total=5,  # maximum number of retries
+                    backoff_factor=1, 
+                    status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+                )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            # create a new session object
+            session = requests.Session()
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            response = session.get(highest_preference_jpg, timeout=30)
+            with open(thumb_file, 'wb') as f:
+                f.write(response.content)
+            created_files['thumbnail'] = fileInfo(base_output, ext='jpg', type='thumbnail')      
+    except Exception as e:
+        print("\033[31m{0}\033[0m".format(e))
+        
     return created_files, 'auxiliary'
     
         
@@ -456,9 +479,8 @@ def create_mp4(file_names, info_dict, options):
         
     ffmpeg_builder.append(os.path.abspath(base_output))
     
-    
-    with open("{0}.ffmpeg.txt".format(info_dict.get('id')), 'w', encoding='utf-8') as f:
-        f.write(" ".join(ffmpeg_builder))   
+    ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
+    file_names['ffmpeg_cmd'] =  fileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), type='ffmpeg_command')
         
     print("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
     result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
@@ -479,6 +501,25 @@ def create_mp4(file_names, info_dict, options):
     return file_names
     #for file in file_names:
     #    os.remove(file)
+
+def write_ffmpeg_command(command_array, filename):
+    # Determine the platform
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        if os.name == 'nt':  # Windows
+            for arg in command_array:
+                # Handle multiline and quotes for Windows
+                if '\n' in arg:
+                    arg = arg.replace('\n', '^ \n')  # Escape newlines
+                f.write(f'"{arg}" ' if ' ' in arg else f'{arg} ')
+
+        else:  # Assuming it's a Unix-like system (Linux, macOS)
+            for arg in ffmpeg_args:
+                # Write each argument for Linux
+                f.write(f'"{arg}" ' if ' ' in arg else f'{arg} ')
+            f.write("\n")  # Ensure the last command line ends properly
+
+    return filename
     
 class fileInfo:
     def __init__(self, path, ext=None, type=None, size=None, abs_path=None, format=None, cookies_path=None):       

@@ -19,7 +19,12 @@ def parse_string_or_tuple(value):
 
 
 def main(id, resolution='best', options={}):
-    info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None))
+    if options.get('json_file', None) is not None:
+        import json
+        with open(options.get('json_file'), 'r') as file:
+            info_dict = json.load(file)
+    else:
+        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None))
     download_Live.download_segments(info_dict, resolution, options)
     
 if __name__ == "__main__":
@@ -72,6 +77,8 @@ if __name__ == "__main__":
     parser.add_argument('--direct-to-ts', action='store_true', help="Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options")
     
     parser.add_argument("--wait-for-video", type=int, nargs="*", help="(min, max) Minimum and maximum interval to wait for a video")
+    
+    parser.add_argument('--json-file', type=str, default=None, help="Path to yt-dlp info.json file. Overrides ID and skips retrieving URLs")
 
     # Parse the arguments
     args = parser.parse_args()
@@ -79,7 +86,7 @@ if __name__ == "__main__":
 
     # Access the 'ID' value
     options = vars(args)
-    if options.get('ID', None) is None:
+    if options.get('ID', None) is None and options.get('json_file', None) is None:
         options['ID'] = str(input("Please enter a video URL: ")).strip()
 
     if options.get('resolution', None) is None and (options.get('video_format', None) is None or options.get('audio_format', None) is None):
