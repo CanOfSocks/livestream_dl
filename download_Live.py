@@ -190,14 +190,19 @@ def download_segments(info_dict, resolution='best', options={}):
                 move_to_final(options=options, outputFile=outputFile, file_names=file_names)
             
             
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as e:
             global kill_all
             kill_all = True
             print("Keyboard interrupt detected")
-            executor.shutdown(wait=5)
-            
-            for future in futures:
-                future.cancel()
+            done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
+            if len(not_done) > 0:
+                print("Cancelling remaining threads")
+            for future in not_done:
+                _ = future.cancel()
+            done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
+            if len(not_done) > 0:
+                print("Remaining threads not ending, killing...")
+                os.kill(os.getpid(), 9)
                 
                 
     #move_to_final(info_dict, options, file_names)
@@ -446,10 +451,10 @@ def create_mp4(file_names, info_dict, options):
         ext = info_dict.get('ext', '.mp4')
     if ext is not None and not str(ext).startswith("."):
         ext = "." + ext
-    if not outputFile.endswith(ext):
-        outputFile = base_output + ext  
+    if not base_output.endswith(ext):
+        base_output = base_output + ext  
         
-    ffmpeg_builder.append(os.path.abspath(outputFile))
+    ffmpeg_builder.append(os.path.abspath(base_output))
     
     
     with open("{0}.ffmpeg.txt".format(info_dict.get('id')), 'w', encoding='utf-8') as f:
