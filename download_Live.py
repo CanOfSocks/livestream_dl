@@ -31,9 +31,9 @@ file_names = {
 }
 
 # Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5):
+def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, recovery=False):
     try:
-        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries)        
+        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, recovery=recovery)        
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -48,9 +48,9 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
     return file, downloader.type
 
 # Create runner function for each download format
-def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5):
+def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, recovery=False):
     try:
-        downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries)        
+        downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, recovery=recovery)        
         file_name = downloader.live_dl()
         if not keep_state:
             downloader.delete_state_file()
@@ -101,7 +101,7 @@ def download_segments(info_dict, resolution='best', options={}):
                             raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
                         else:
                             video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'))
+                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
                             futures.add(video_future)
                     
                     if options.get('audio_format', None) is not None:
@@ -109,7 +109,7 @@ def download_segments(info_dict, resolution='best', options={}):
                             raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
                         else:
                             audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'))
+                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
                             futures.add(audio_future)  
                 else:
                     if options.get('video_format', None) is not None:
@@ -117,7 +117,7 @@ def download_segments(info_dict, resolution='best', options={}):
                             raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
                         else:
                             video_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'))
+                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
                             futures.add(video_future)
                     
                     if options.get('audio_format', None) is not None:
@@ -125,7 +125,7 @@ def download_segments(info_dict, resolution='best', options={}):
                             raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
                         else:
                             audio_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'))
+                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
                             futures.add(audio_future)                        
                     
             elif resolution.lower() != "audio_only":                
@@ -133,14 +133,14 @@ def download_segments(info_dict, resolution='best', options={}):
                     # Submit tasks for both video and audio downloads                    
                     if options.get('direct_to_ts', False) is True:
                         video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'))
+                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
                         audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'))
+                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
                     else:
                         video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'))
                         audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
                     
                             # Wait for both downloads to finish
                     futures.add(video_future)
@@ -151,9 +151,9 @@ def download_segments(info_dict, resolution='best', options={}):
                             
             elif resolution.lower() == "audio_only":
                 if options.get('direct_to_ts', False) is True:
-                    futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries')))
+                    futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), recovery=options.get("recovery", False)))
                 else:
-                    futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries')))
+                    futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), recovery=options.get("recovery", False)))
                 
             while True:
                 done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
@@ -560,7 +560,7 @@ class fileInfo:
         return "{0}.{1}".format(self.abs_path, self.ext)
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -603,6 +603,7 @@ class DownloadStream:
         self.is_private = False
         self.estimated_segment_duration = 0
         self.refresh_retries = 0
+        self.recover = recovery
         
         self.cookies = cookies
         
@@ -650,6 +651,10 @@ class DownloadStream:
             # Trackers for optimistic segment downloads 
             optimistic = True
             optimistic_seg = 0
+            
+            if self.recover is True:
+                print("Recovery mode active")
+            
             while True:     
                 self.check_kill()
                 self.refresh_Check()
@@ -695,6 +700,15 @@ class DownloadStream:
                       
                 
                 segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
+                
+                if self.recover is True:
+                    if len(not_done) > 0:
+                        segments_to_download = set()
+                    else:
+                        segments_to_download = set(list(segments_to_download)[:self.max_workers])
+                    time.sleep(1)
+                    
+                        
                                 
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
@@ -715,6 +729,7 @@ class DownloadStream:
                         self.update_latest_segment()
                         segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
                         
+
                 # If update has no segments and no segments are currently running, wait                              
                 if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                     wait += 1
@@ -782,6 +797,8 @@ class DownloadStream:
                         self.already_downloaded.add(seg_num)
                         existing.add(seg_num)
                 segments_to_download = segments_to_download - existing
+                
+
 
                 # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
                 future_to_seg.update(
@@ -1038,7 +1055,7 @@ class DownloadStream:
             os.remove(self.folder)
             
 class DownloadStreamDirect:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, cookies=None):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, cookies=None, recovery=False):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -1099,6 +1116,8 @@ class DownloadStreamDirect:
         self.estimated_segment_duration = 0
         self.refresh_retries = 0
         
+        self.recover = recovery
+        
         self.cookies = cookies
         
         self.type = None
@@ -1142,6 +1161,9 @@ class DownloadStreamDirect:
             # Trackers for optimistic segment downloads 
             optimistic = True
             optimistic_seg = 0
+            if self.recover is True:
+                print("Recovery mode active")
+            
             while True:     
                 self.check_kill()
                 self.refresh_Check()
@@ -1216,6 +1238,9 @@ class DownloadStreamDirect:
                                 del downloaded_segments[seg_key]
                 
                 segments_to_download = set(range(self.state.get('last_written')+1, self.latest_sequence)) - submitted_segments 
+                
+                if self.recover is True:
+                    segments_to_download = set(list(segments_to_download)[:self.max_workers])
                                 
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
@@ -1375,9 +1400,9 @@ class DownloadStreamDirect:
             print("Retries exceeded downloading fragment: {0}".format(e))
             if "(Caused by ResponseError('too many 204 error responses')" in str(e):
                 return -1, bytes(), segment_order, 204, None
-            elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
-                self.is_403 = True
-                return -1, None, segment_order, 403, None
+            #elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
+            #    self.is_403 = True
+            #    return -1, None, segment_order, 403, None
             else:
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:

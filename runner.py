@@ -21,7 +21,7 @@ def parse_string_or_tuple(value):
 def main(id, resolution='best', options={}):
     if options.get('json_file', None) is not None:
         import json
-        with open(options.get('json_file'), 'r') as file:
+        with open(options.get('json_file'), 'r', encoding='utf-8') as file:
             info_dict = json.load(file)
     else:
         info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None))
@@ -71,6 +71,8 @@ if __name__ == "__main__":
     parser.add_argument('--live-chat', action='store_true', help="Get Live chat")
     
     parser.add_argument('--keep-database-file', action='store_true', help="Keep database file. If using with --direct-to-ts, this keeps the state file")
+    
+    parser.add_argument('--recovery', action='store_true', help="Puts downloader into stream recovery mode")
     
     parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments in memory. Requires a lot of RAM (Not recommended)")
     
