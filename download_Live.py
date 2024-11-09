@@ -2,7 +2,7 @@ import yt_dlp
 import sqlite3
 import requests
 from requests.adapters import HTTPAdapter, Retry
-#from urllib3.util import Retry
+import random
 
 import time
 import concurrent.futures
@@ -61,6 +61,22 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
         file = fileInfo(file_name, type=downloader.type, format=downloader.format)
     return file, downloader.type
 
+def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, recovery=False):
+    
+    downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, recovery=recovery)        
+    result = downloader.live_dl()
+    if result:
+        file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
+        if not keep_database:
+            downloader.delete_temp_database()
+        elif downloader.temp_db_file != ':memory:':
+            database_file = fileInfo(downloader.temp_db_file, type='database', format=downloader.format)
+            file_names['databases'].append(database_file)
+    # Explicitly close connection
+    downloader.close_connection()
+    file = fileInfo(file_name, type=downloader.type, format=downloader.format)
+    return file, downloader.type
+
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', options={}):
     futures = set()
@@ -80,128 +96,132 @@ def download_segments(info_dict, resolution='best', options={}):
     options['filename'] = file_name
     if download_folder:    
         os.makedirs(download_folder, exist_ok=True)
-    
-    with concurrent.futures.ThreadPoolExecutor() as executor:  
-        try: 
-            
-            # Download auxiliary files (thumbnail, info,json etc)
-            auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
-            futures.add(auxiliary_thread)
-            if options.get('live_chat') is True:
-                #download_live_chat(info_dict=info_dict, options=options)
-                chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
-                futures.add(chat_thread)
-            
-            format_parser = YoutubeURL.Formats()
-            # For use of specificed format. Expects two values, but can work with more
-            if options.get('video_format', None) is not None or options.get('video_format', None) is not None:
-                if options.get('direct_to_ts', False) is True:
-                    if options.get('video_format', None) is not None:
-                        if int(options.get('video_format')) not in format_parser.video.get('best'):    
-                            raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
-                        else:
-                            video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
-                            futures.add(video_future)
-                    
-                    if options.get('audio_format', None) is not None:
-                        if int(options.get('audio_format')) not in format_parser.audio: 
-                            raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
-                        else:
-                            audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
-                            futures.add(audio_future)  
-                else:
-                    if options.get('video_format', None) is not None:
-                        if int(options.get('video_format')) not in format_parser.video.get('best'):    
-                            raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
-                        else:
-                            video_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
-                            futures.add(video_future)
-                    
-                    if options.get('audio_format', None) is not None:
-                        if int(options.get('audio_format')) not in format_parser.audio: 
-                            raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
-                        else:
-                            audio_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
-                            futures.add(audio_future)                        
-                    
-            elif resolution.lower() != "audio_only":                
-                if YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution) is not None:
-                    # Submit tasks for both video and audio downloads                    
+    if options.get('recovery', False) is True:
+        recover_stream(info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'))
+    else:
+        with concurrent.futures.ThreadPoolExecutor() as executor:  
+            try: 
+                
+                # Download auxiliary files (thumbnail, info,json etc)
+                auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
+                futures.add(auxiliary_thread)
+                if options.get('live_chat') is True:
+                    #download_live_chat(info_dict=info_dict, options=options)
+                    chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
+                    futures.add(chat_thread)
+                
+                format_parser = YoutubeURL.Formats()
+                # For use of specificed format. Expects two values, but can work with more
+                if options.get('video_format', None) is not None or options.get('video_format', None) is not None:
                     if options.get('direct_to_ts', False) is True:
-                        video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                        if options.get('video_format', None) is not None:
+                            if int(options.get('video_format')) not in format_parser.video.get('best'):    
+                                raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
+                            else:
+                                video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
+                                futures.add(video_future)
+                        
+                        if options.get('audio_format', None) is not None:
+                            if int(options.get('audio_format')) not in format_parser.audio: 
+                                raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
+                            else:
+                                audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
-                        audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
+                                futures.add(audio_future)  
                     else:
-                        video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'))
-                        audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                        if options.get('video_format', None) is not None:
+                            if int(options.get('video_format')) not in format_parser.video.get('best'):    
+                                raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
+                            else:
+                                video_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
+                                futures.add(video_future)
+                        
+                        if options.get('audio_format', None) is not None:
+                            if int(options.get('audio_format')) not in format_parser.audio: 
+                                raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
+                            else:
+                                audio_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
-                    
-                            # Wait for both downloads to finish
-                    futures.add(video_future)
-                    futures.add(audio_future)
-                    
-                else:
-                    raise ValueError("Resolution is not valid or does not exist in stream")
-                            
-            elif resolution.lower() == "audio_only":
-                if options.get('direct_to_ts', False) is True:
-                    futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), recovery=options.get("recovery", False)))
-                else:
-                    futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), recovery=options.get("recovery", False)))
-                
-            while True:
-                done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
-                # Continuously check for completion or interruption
-                for future in done:
-                    if future.exception() is not None:
-                        raise future.exception()
-                    
-                    result, type = future.result()
-                    logging.info("result of thread: {0}".format(result))
-                    print("\033[31m{0}\033[0m".format(result))
-                    
-                    if type == 'auxiliary' or type == 'live_chat':
-                        file_names.update(result)
-                    elif str(type).lower() == 'video':
-                        file_names['video'] = result
-                    elif str(type).lower() == 'audio':
-                        file_names['audio'] = result    
+                                futures.add(audio_future)                        
+                        
+                elif resolution.lower() != "audio_only":                
+                    if YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution) is not None:
+                        # Submit tasks for both video and audio downloads                    
+                        if options.get('direct_to_ts', False) is True:
+                            video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                                                keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
+                            audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                                                keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
+                        else:
+                            video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                                                keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'))
+                            audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
+                                                keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), recovery=options.get("recovery", False))
+                        
+                                # Wait for both downloads to finish
+                        futures.add(video_future)
+                        futures.add(audio_future)
+                        
                     else:
-                        file_names[result.type] = result
+                        raise ValueError("Resolution is not valid or does not exist in stream")
+                                
+                elif resolution.lower() == "audio_only":
+                    if options.get('direct_to_ts', False) is True:
+                        futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), recovery=options.get("recovery", False)))
+                    else:
+                        futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), recovery=options.get("recovery", False)))
                     
-                    futures.remove(future)
-                    
-                if len(not_done) <= 0:
-                    break
-                else:
-                    time.sleep(0.9)
+                while True:
+                    done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
+                    # Continuously check for completion or interruption
+                    for future in done:
+                        if future.exception() is not None:
+                            raise future.exception()
+                        
+                        result, type = future.result()
+                        logging.info("result of thread: {0}".format(result))
+                        print("\033[31m{0}\033[0m".format(result))
+                        
+                        if type == 'auxiliary' or type == 'live_chat':
+                            file_names.update(result)
+                        elif str(type).lower() == 'video':
+                            file_names['video'] = result
+                        elif str(type).lower() == 'audio':
+                            file_names['audio'] = result    
+                        else:
+                            file_names[result.type] = result
+                        
+                        futures.remove(future)
+                        
+                    if len(not_done) <= 0:
+                        break
+                    else:
+                        time.sleep(0.9)
+            except KeyboardInterrupt as e:
+                global kill_all
+                kill_all = True
+                print("Keyboard interrupt detected")
+                done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
+                if len(not_done) > 0:
+                    print("Cancelling remaining threads")
+                for future in not_done:
+                    _ = future.cancel()
+                done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
+                if len(not_done) > 0:
+                    print("Remaining threads not ending, killing...")
+                    os.kill(os.getpid(), 9)
             
-            if options.get('merge') or not options.get('no_merge'):
-                create_mp4(file_names=file_names, info_dict=info_dict, options=options)
-                
-            if options.get('temp_folder') is not None:
-                move_to_final(options=options, outputFile=outputFile, file_names=file_names)
+    if options.get('merge') or not options.get('no_merge'):
+        create_mp4(file_names=file_names, info_dict=info_dict, options=options)
+        
+    if options.get('temp_folder') is not None:
+        move_to_final(options=options, outputFile=outputFile, file_names=file_names)
             
             
-        except KeyboardInterrupt as e:
-            global kill_all
-            kill_all = True
-            print("Keyboard interrupt detected")
-            done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
-            if len(not_done) > 0:
-                print("Cancelling remaining threads")
-            for future in not_done:
-                _ = future.cancel()
-            done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
-            if len(not_done) > 0:
-                print("Remaining threads not ending, killing...")
-                os.kill(os.getpid(), 9)
+        
                 
                 
     #move_to_final(info_dict, options, file_names)
@@ -1509,3 +1529,513 @@ class DownloadStreamDirect:
             self.delete_temp_database()
             self.delete_ts_file()
             os.remove(self.folder)
+            
+class StreamRecovery:
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=120):        
+        
+        self.latest_sequence = -1
+        self.already_downloaded = set()
+        self.batch_size = batch_size
+        self.max_workers = max_workers
+        
+        self.id = info_dict.get('id')
+        self.live_status = info_dict.get('live_status')
+        
+        self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
+        
+        if self.stream_urls is None:
+            raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
+        
+        print("Number of stream URLs available: {0}".format(len(self.stream_urls)))
+        self.stream_url = random.choice(self.stream_urls)
+        
+        self.database_in_memory = database_in_memory
+        
+        if file_name is None:
+            file_name = self.id        
+        
+        self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)     
+        if self.database_in_memory:
+            self.temp_db_file = ':memory:'
+        else:
+            self.temp_db_file = '{0}.{1}.temp'.format(file_name, self.format)
+        
+        self.folder = folder    
+        if self.folder:
+            os.makedirs(folder, exist_ok=True)
+            self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
+            if not self.database_in_memory:
+                self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
+        
+        self.retry_strategy = Retry(
+            total=1,  # maximum number of retries
+            backoff_factor=1, 
+            status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+        )  
+        
+        self.fragment_retries = fragment_retries  
+        self.segment_retry_time = segment_retry_time  
+        
+        self.is_403 = False
+        self.is_401 = False
+        self.is_private = False
+        self.estimated_segment_duration = 0
+        self.refresh_retries = 0
+        self.recover = recovery
+        
+        self.sequential = True
+        
+        self.count_400s = 0
+        
+        self.sleep_time = 1
+        
+        self.cookies = cookies
+        
+        self.type = None
+        self.ext = None        
+        
+        self.update_latest_segment()
+        self.url_checked = time.time()
+
+        self.conn, self.cursor = self.create_db(self.temp_db_file)    
+                
+    def live_dl(self):
+        from itertools import groupby
+        print("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        self.already_downloaded = self.segment_exists_batch()
+        wait = 0   
+        self.cursor.execute('BEGIN TRANSACTION')
+        uncommitted_inserts = 0     
+        
+        self.sleep_time = max(self.estimated_segment_duration, 0.1)
+        
+        # Track retries of all missing segments in database      
+        segments_retries = {key: {'retries': 0, 'last_retry': 0} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
+        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
+        
+        i = 0
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
+            submitted_segments = set()
+            future_to_seg = {}
+            
+            # Trackers for optimistic segment downloads 
+            print("Recovery mode active")
+            
+            while True:     
+                self.check_kill()                                        
+                # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
+                
+                for future in done:
+                    head_seg_num, segment_data, seg_num, status, headers = future.result()
+                    
+                    # Remove from submitted segments in case it neeeds to be regrabbed
+                    if seg_num in submitted_segments:
+                        submitted_segments.remove(seg_num)
+                    
+                    if head_seg_num > self.latest_sequence:
+                        print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                        self.latest_sequence = head_seg_num
+                        
+                    if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
+                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence                       
+
+                    if segment_data is not None:
+                        # Insert segment data in the main thread (database interaction)
+                        self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
+                        uncommitted_inserts += 1
+                        
+                        # Assume segment will be added
+                        if segments_retries.get(seg_num, None) is not None:
+                            del segments_retries[seg_num]
+                        
+                        # If finished threads exceeds batch size, commit the whole batch of threads at once. 
+                        # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
+                        if uncommitted_inserts >= max(self.batch_size, len(done)):
+                            print("Writing segments to file...")
+                            self.commit_batch(self.conn)
+                            uncommitted_inserts = 0
+                            self.cursor.execute('BEGIN TRANSACTION') 
+                    else:
+                        if segments_retries.get(seg_num, None) is not None:
+                            segments_retries[seg_num]['retries'] = segments_retries[seg_num]['retries'] + 1
+                            segments_retries[seg_num]['last_retry'] = time.time()
+                            if segments_retries[seg_num]['retries'] >= self.fragment_retries:
+                                print("Segment {0} of {1} has exceeded maximum number of retries")
+                    
+                    # Remove completed thread to free RAM
+                    del future_to_seg[future]
+                      
+                
+                #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
+                
+                
+                for seg_num in segments_to_download:
+                    if self.segment_exists(self.cursor, seg_num):
+                        self.already_downloaded.add(seg_num)
+                        
+                # Don't bother calculating if there are threads not done
+                #if len(not_done) <= 0:                        
+                if self.sequential:
+                    # Create a dictionary sorted by number of retries, lowest first, then by segment number, lowest first
+                    sorted_retries = dict(sorted(segments_retries.items(), key=lambda item: (item[1]['retries'], item[0])))
+                else:
+                    # Step 1: Sort the dictionary by `retries` first
+                    sorted_retries = sorted(segments_retries.items(), key=lambda item: item[1]['retries'])
+
+                    # Step 2: Group by `retries` and shuffle each group
+                    grouped_and_shuffled = []
+                    for _, group in groupby(sorted_retries, key=lambda item: item[1]['retries']):
+                        group_list = list(group)
+                        random.shuffle(group_list)  # Shuffle within the same `retries` count
+                        grouped_and_shuffled.extend(group_list)
+
+                    # Step 3: Convert back to a dictionary
+                    sorted_retries = dict(grouped_and_shuffled)
+                segments_to_download = sorted_retries.keys()
+                
+                if len(segments_retries) <= 0:
+                    print("All segment downloads complete, ending...")
+                    break
+                
+                elif all(value['retries'] > self.fragment_retries for value in segments_retries.values()):
+                    print("All remaining segments have exceeded their retry count, ending...")
+                    break
+                     
+                elif len(not_done) < 1:
+                #elif len(not_done) <= 0 and not self.is_401 and not self.is_403:
+                    new_download = set()
+                    number_to_add = self.max_workers - len(not_done)
+                    for seg_num in segments_to_download:
+                        if seg_num not in self.already_downloaded and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
+                            new_download.add(seg_num)
+                            print("Adding segment {0} with retries: {1}".format(seg_num, segments_retries[seg_num]['retries']))
+                        if len(new_download) >= number_to_add:                            
+                            break
+                    segments_to_download = new_download
+                    self.sleep_time = max(self.sleep_time/2, 1)    
+                        
+                elif (self.is_403 or self.is_401) and len(not_done) <= 0: 
+                    new_download = set()
+                    number_to_add = 1
+                    for seg_num in segments_to_download:
+                        if segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
+                            new_download.add(seg_num)
+                        if len(new_download) >= number_to_add:                            
+                            break
+                    segments_to_download = new_download                        
+                    self.sleep_time = min(self.sleep_time*2, self.segment_retry_time)                
+                    # Sleep to prevent 400 errors, may only be included if 400 errors occur   
+                    print("Sleeping for {0}s before adding segment downloads".format(self.sleep_time))
+                    #time.sleep(self.sleep_time) 
+                
+                if self.is_403 or self.is_401:
+                    time.sleep(1)
+                    
+                # New
+                for seg_num in segments_to_download:
+                    if seg_num not in submitted_segments:
+                        future_to_seg[executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_urls[i % len(self.stream_urls)], seg_num), seg_num)] = seg_num
+                        submitted_segments.add(seg_num)
+                        i += 1
+                        time.sleep(0.25)
+                '''
+                # Old        
+                for url in self.stream_urls:
+                    future_to_seg.update(
+                        {
+                            executor.submit(self.download_segment, "{0}&sq={1}".format(url, seg_num), seg_num): seg_num
+                            for seg_num in segments_to_download
+                            if not submitted_segments.add(seg_num) and not time.sleep(0.25)
+                        }
+                    )
+                '''
+                if len(submitted_segments) == 0:
+                    print("Remaining segments: {0}".format(segments_retries))
+                
+            self.commit_batch(self.conn)
+        self.commit_batch(self.conn)
+        return len(segments_retries) <= 0
+
+    def update_latest_segment(self):
+        # Kill if keyboard interrupt is detected
+        self.check_kill()
+        
+        stream_url_info = self.get_Headers(self.stream_url)
+        if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
+            self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
+            print("Latest sequence: {0}".format(self.latest_sequence))
+            
+        if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
+            self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
+            
+        if stream_url_info is not None and stream_url_info.get("X-Head-Time-Sec", None) is not None:
+            self.estimated_segment_duration = int(stream_url_info.get("X-Head-Time-Sec"))/max(self.latest_sequence,1)
+    
+    def get_Headers(self, url):
+        try:
+            # Send a GET request to a URL
+            response = requests.get(url, timeout=30)
+            # 200 and 204 responses appear to have valid headers so far
+            if response.status_code == 200 or response.status_code == 204:
+                self.is_403 = False
+                self.is_401 = False
+                # Print the response headers
+                #print(json.dumps(dict(response.headers), indent=4))  
+                return response.headers
+            elif response.status_code == 403:
+                self.is_403 = True
+                return None
+            elif response.status_code == 401:
+                self.is_401 = True
+                return None
+            else:
+                print("Error retrieving headers: {0}".format(response.status_code))
+                print(json.dumps(dict(response.headers), indent=4))
+                return None
+            
+        except requests.exceptions.Timeout as e:
+            logging.info("Timed out updating fragments: {0}".format(e))
+            print(e)
+            return None
+    
+
+    def create_connection(self, file):
+        conn = sqlite3.connect(file)
+        cursor = conn.cursor()
+        
+        # Database connection optimisation. Benefits will need to be tested
+        if not self.database_in_memory:
+            # Set the journal mode to WAL
+            cursor.execute('PRAGMA journal_mode = WAL;')        
+            # Set the synchronous mode to NORMAL
+            cursor.execute('PRAGMA synchronous = NORMAL;')
+            # Increase page size to help with large blobs
+            cursor.execute('pragma page_size = 32768;')
+        
+        return conn, cursor
+    
+    def create_db(self, temp_file):
+        # Connect to SQLite database (or create it if it doesn't exist)
+        conn, cursor = self.create_connection(temp_file)
+        
+        # Create the table where id represents the segment order
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS segments (
+            id INTEGER PRIMARY KEY, 
+            segment_data BLOB
+        )
+        ''')
+        conn.commit()
+        return conn, cursor
+
+    # Function to check if a segment exists in the database
+    def segment_exists(self, cursor, segment_order):
+        cursor.execute('SELECT 1 FROM segments WHERE id = ?', (segment_order,))
+        return cursor.fetchone() is not None
+    
+    def segment_exists_batch(self):
+        """
+        Queries the database to check if a batch of segment numbers are already downloaded.
+        Returns a set of existing segment numbers.
+        """
+        query = "SELECT id FROM segments"
+        self.cursor.execute(query)
+        return set(row[0] for row in self.cursor.fetchall())
+
+    # Function to download a single segment
+    def download_segment(self, segment_url, segment_order):
+        self.check_kill()
+        try:
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/536.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/536.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/89.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/538.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/538.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/539.36 (KHTML, like Gecko) Firefox/90.0 Safari/539.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.44 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.44",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/540.36 (KHTML, like Gecko) Firefox/91.0 Safari/540.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.85 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/536.40 (KHTML, like Gecko) Firefox/92.0 Safari/536.40",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.58 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.58",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/541.36 (KHTML, like Gecko) Firefox/93.0 Safari/541.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.65 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.65",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.74 (KHTML, like Gecko) Firefox/94.0 Safari/537.74",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/542.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/542.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/543.36 (KHTML, like Gecko) Firefox/95.0 Safari/543.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.85 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.85",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.98 (KHTML, like Gecko) Firefox/96.0 Safari/537.98",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/544.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/544.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.100 (KHTML, like Gecko) Firefox/97.0 Safari/537.100",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/545.36 (KHTML, like Gecko) Chrome/101.0.4951.64 Safari/545.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/546.36 (KHTML, like Gecko) Firefox/98.0 Safari/546.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.110 (KHTML, like Gecko) Chrome/102.0.5005.63 Safari/537.110",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/547.36 (KHTML, like Gecko) Firefox/99.0 Safari/547.36"
+            ]
+
+            # create an HTTP adapter with the retry strategy and mount it to the session
+            adapter = HTTPAdapter(max_retries=self.retry_strategy)
+            # create a new session object
+            session = requests.Session()
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            headers = {
+                "User-Agent": random.choice(user_agents),
+            }
+            response = session.get(segment_url, timeout=30, headers=headers)
+            if response.status_code == 200:
+                print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
+                self.is_403 = False
+                self.is_401 = False
+                #return latest header number and segmqnt content
+                return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
+            elif response.status_code == 403:
+                print("Received 403 error, marking for URL refresh...")
+                self.is_403 = True
+                return -1, None, segment_order, response.status_code, response.headers
+            else:
+                print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+                return -1, None, segment_order, response.status_code, response.headers
+        except requests.exceptions.Timeout as e:
+            logging.info("Fragment timeout {1}: {0}".format(e, segment_order))
+            print(e)
+            return -1, None, segment_order, None, None
+        except requests.exceptions.RetryError as e:
+            logging.info("Retries exceeded downloading fragment: {0}".format(e))
+            print("Retries exceeded downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            if "(Caused by ResponseError('too many 204 error responses')" in str(e):
+                self.is_403 = False
+                self.is_401 = False
+                return -1, bytes(), segment_order, 204, None
+            elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
+                self.is_403 = True
+                return -1, None, segment_order, 403, None
+            elif "(Caused by ResponseError('too many 401 error responses')" in str(e):
+                self.is_401 = True
+                return -1, None, segment_order, 401, None
+            else:
+                return -1, None, segment_order, None, None
+        except requests.exceptions.ChunkedEncodingError as e:
+            logging.info("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            return -1, bytes(), segment_order, None, None
+        except requests.exceptions.ConnectionError as e:
+            logging.info("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            return -1, None, segment_order, None, None
+        except requests.exceptions.Timeout as e:
+            logging.info("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            return -1, None, segment_order, None, None
+        except requests.exceptions.HTTPError as e:
+            logging.info("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            return -1, None, segment_order, None, None
+        except Exception as e:
+            logging.info("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            print("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            return -1, None, segment_order, None, None
+            
+    # Function to insert a single segment without committing
+    def insert_single_segment(self, cursor, segment_order, segment_data):
+
+        cursor.execute('''
+            INSERT INTO segments (id, segment_data) 
+            VALUES (?, ?) 
+            ON CONFLICT(id) 
+            DO UPDATE SET segment_data = CASE 
+                WHEN LENGTH(excluded.segment_data) > LENGTH(segments.segment_data) 
+                THEN excluded.segment_data 
+                ELSE segments.segment_data 
+            END;
+        ''', (segment_order, segment_data))
+
+
+    # Function to commit after a batch of inserts
+    def commit_batch(self, conn):
+        conn.commit()
+        
+    def close_connection(self):
+        self.conn.close()
+
+    # Function to combine segments into a single file
+    def combine_segments_to_file(self, output_file, cursor=None):
+        if cursor is None:
+            cursor = self.cursor
+        
+        print("Merging segments to {0}".format(output_file))
+        with open(output_file, 'wb') as f:
+            cursor.execute('SELECT segment_data FROM segments ORDER BY id')
+            for segment in cursor:  # Cursor iterates over rows one by one
+                segment_piece = segment[0]
+                # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
+                cleaned_segment = self.remove_sidx(segment_piece)
+                f.write(cleaned_segment)
+        return output_file
+    
+    ### Via ytarchive            
+    def get_atoms(self, data):
+        """
+        Get the name of top-level atoms along with their offset and length
+        In our case, data should be the first 5kb - 8kb of a fragment
+
+        :param data:
+        """
+        atoms = {}
+        ofs = 0
+
+        while True:
+            # We should be fine and not run into errors, but I do dumb things
+            try:
+                alen = int(data[ofs:ofs + 4].hex(), 16)
+                if alen > len(data):
+                    break
+
+                aname = data[ofs + 4:ofs + 8].decode()
+                atoms[aname] = {"ofs": ofs, "len": alen}
+                ofs += alen
+            except Exception:
+                break
+
+            if ofs + 8 >= len(data):
+                break
+
+        return atoms
+
+    ### Via ytarchive  
+    def remove_sidx(self, data):
+        """
+        Remove the sidx atom from a chunk of data
+
+        :param data:
+        """
+        atoms = self.get_atoms(data)
+        if not "sidx" in atoms:
+            return data
+
+        sidx = atoms["sidx"]
+        ofs = sidx["ofs"]
+        rlen = sidx["ofs"] + sidx["len"]
+        new_data = data[:ofs] + data[rlen:]
+
+        return new_data
+    
+    def check_kill(self):
+        # Kill if keyboard interrupt is detected
+        if kill_all:
+            print("Kill command detected, ending thread")
+            raise KeyboardInterrupt("Kill command executed")
+        
+    def delete_temp_database(self):
+        self.close_connection()
+        os.remove(self.temp_db_file)
+        
+    def delete_ts_file(self):
+        os.remove(self.merged_file_name)
+        
+    def remove_folder(self):
+        if self.folder:
+            self.delete_temp_database()
+            self.delete_ts_file()
+            os.remove(self.folder)
+ 

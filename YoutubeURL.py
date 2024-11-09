@@ -167,4 +167,59 @@ class Formats:
             if key.startswith(resolution):
                 combined_list.extend(self.video[key])
         return combined_list
+    
+    def getAllFormatURL(self, info_json, resolution, return_format=False, not_selector=None): 
+        urls = []   
+        format = None    
+        if resolution in self.video['best'] or resolution in self.audio:
+            resolution = str(resolution)
+            
+            # Shuffle formats in case of multiple formats in info.json
+            shuffle(info_json['formats'])
+            for ytdlp_format in info_json['formats']:
+                
+                # If format has yet to be found, match the first matching format ID, otherwise only grab URLs of the same format
+                if resolution == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https' and (format is None or format == ytdlp_format['format_id'].split('-')[0]):
+                    urls.append(ytdlp_format['url'])
+                    format = ytdlp_format['format_id'].split('-')[0]        
+        elif resolution == "audio_only":
+            for audio_format in self.audio:
+                audio_format = str(audio_format)
+                #if best['audio'] is None:
+                # Shuffle formats in case of multiple formats in info.json
+                shuffle(info_json['formats'])
+                for audio_format in info_json['formats']:
+                    if video_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https' and (format is None or format == ytdlp_format['format_id'].split('-')[0]):
+                        urls.append(ytdlp_format['url'])
+                        format = ytdlp_format['format_id'].split('-')[0]
+                    
+        elif self.video.get(resolution, None) is not None:  
+            format_list = self.video.get(resolution)
+            for video_format in format_list:
+                video_format = str(video_format)
+                # Shuffle formats in case of multiple formats in info.json
+                shuffle(info_json['formats'])
+                for ytdlp_format in info_json['formats']:
+                    if video_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https' and (format is None or format == ytdlp_format['format_id'].split('-')[0]):
+                        urls.append(ytdlp_format['url'])
+                        format = ytdlp_format['format_id'].split('-')[0]
+                    
+        elif resolution.endswith('*'):
+            format_list = self.wildcard_search(resolution)
+            for video_format in format_list:
+                video_format = str(video_format)
+                # Shuffle formats in case of multiple formats in info.json
+                shuffle(info_json['formats'])
+                for ytdlp_format in info_json['formats']:
+                    if video_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https' and (format is None or format == ytdlp_format['format_id'].split('-')[0]):
+                        urls.append(ytdlp_format['url'])
+                        format = ytdlp_format['format_id'].split('-')[0]
+                    
+        if urls:
+            if return_format:
+                return urls, format
+            else:
+                return urls
+        else:
+            return None 
             

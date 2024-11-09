@@ -102,7 +102,6 @@ if __name__ == "__main__":
     
     # For testing
     
-    options['threads'] = 5
     options['batch_size'] = 5
     options['write_thumbnail'] = True
     options['write_description'] = True
