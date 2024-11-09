@@ -1190,7 +1190,6 @@ class DownloadStreamDirect:
             # Trackers for optimistic segment downloads 
             optimistic = True
             optimistic_seg = 0
-                print("Recovery mode active")
             
             while True:     
                 self.check_kill()
