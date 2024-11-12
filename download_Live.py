@@ -1631,6 +1631,8 @@ class StreamRecovery:
         
         i = 0
         
+        last_print = time.time()
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
             submitted_segments = set()
             future_to_seg = {}
@@ -1736,14 +1738,11 @@ class StreamRecovery:
                     for url in self.stream_urls:
                         self.update_latest_segment(url=url)
                     # Sleep to help prevent 401s (?)
-                    """
+                    
                     if len(not_done) > 0:
                         continue
-                    elif self.estimated_segment_duration != 0:
-                        time.sleep(1)
                     else:
-                        time.sleep(self.estimated_segment_duration)
-                        """
+                        time.sleep(1)
                     continue
                      
                 elif len(not_done) < 1 or (len(not_done) < self.max_workers and not (self.is_403 or self.is_401)):
@@ -1798,8 +1797,12 @@ class StreamRecovery:
                         }
                     )
                 '''
-                if len(submitted_segments) == 0:
+                if len(submitted_segments) == 0 and len(segments_retries) < 11 and time.time() - last_print > 15:
                     print("Remaining segments: {0}".format(segments_retries))
+                    last_print = time.time()
+                elif len(submitted_segments) == 0 and time.time() - last_print > 15:
+                    print("{0} segments remain for {1}".format(len(segments_retries), self.format))
+                    last_print = time.time()
                 
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
