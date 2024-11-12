@@ -1627,7 +1627,7 @@ class StreamRecovery:
         
         # Track retries of all missing segments in database      
         segments_retries = {key: {'retries': 0, 'last_retry': 0} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
-        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
+        #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
         
         i = 0
         
@@ -1691,10 +1691,17 @@ class StreamRecovery:
                 #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                 
                 
-                for seg_num in segments_to_download:
+                for seg_num in segments_retries.keys():
                     if self.segment_exists(self.cursor, seg_num):
                         self.already_downloaded.add(seg_num)
-                        
+                
+                # Reset segments to download
+                segments_to_download = set()
+                
+                # Create working set
+                potential_segments_to_download = set(segments_retries.keys()) - self.already_downloaded
+                
+                
                 # Don't bother calculating if there are threads not done
                 #if len(not_done) <= 0:                        
                 if self.sequential:
@@ -1713,7 +1720,7 @@ class StreamRecovery:
 
                     # Step 3: Convert back to a dictionary
                     sorted_retries = dict(grouped_and_shuffled)
-                segments_to_download = sorted_retries.keys()
+                potential_segments_to_download = sorted_retries.keys()
                 
                 if len(segments_retries) <= 0:
                     print("All segment downloads complete, ending...")
@@ -1744,7 +1751,7 @@ class StreamRecovery:
                 #elif len(not_done) <= 0 and not self.is_401 and not self.is_403:
                     new_download = set()
                     number_to_add = self.max_workers - len(not_done)
-                    for seg_num in segments_to_download:
+                    for seg_num in potential_segments_to_download:
                         if seg_num not in self.already_downloaded and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
                             new_download.add(seg_num)
                             print("Adding segment {0} of {2} with retries: {1}".format(seg_num, segments_retries[seg_num]['retries'], self.format))
