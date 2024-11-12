@@ -1627,7 +1627,7 @@ class StreamRecovery:
         
         # Track retries of all missing segments in database      
         segments_retries = {key: {'retries': 0, 'last_retry': 0} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
-        #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
+        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
         
         i = 0
         
@@ -1641,6 +1641,14 @@ class StreamRecovery:
                 print("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(self.expires).strftime('%Y-%m-%d %H:%M:%S')))
             else:
                 print("Recovery mode active")
+            
+            # Add all segments
+            for seg_num in segments_to_download:
+                if seg_num not in submitted_segments:
+                    future_to_seg[executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_urls[i % len(self.stream_urls)], seg_num), seg_num)] = seg_num
+                    submitted_segments.add(seg_num)
+                    i += 1
+            
             
             while True:     
                 self.check_kill()                                        
@@ -1687,21 +1695,10 @@ class StreamRecovery:
                     # Remove completed thread to free RAM
                     del future_to_seg[future]
                       
-                
                 #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
-                
-                
-                for seg_num in segments_retries.keys():
-                    if self.segment_exists(self.cursor, seg_num):
-                        self.already_downloaded.add(seg_num)
-                
-                # Reset segments to download
+                        
                 segments_to_download = set()
-                
-                # Create working set
                 potential_segments_to_download = set(segments_retries.keys()) - self.already_downloaded
-                
-                
                 # Don't bother calculating if there are threads not done
                 #if len(not_done) <= 0:                        
                 if self.sequential:
@@ -1739,12 +1736,14 @@ class StreamRecovery:
                     for url in self.stream_urls:
                         self.update_latest_segment(url=url)
                     # Sleep to help prevent 401s (?)
+                    """
                     if len(not_done) > 0:
                         continue
                     elif self.estimated_segment_duration != 0:
                         time.sleep(1)
                     else:
                         time.sleep(self.estimated_segment_duration)
+                        """
                     continue
                      
                 elif len(not_done) < 1 or (len(not_done) < self.max_workers and not (self.is_403 or self.is_401)):
@@ -1753,6 +1752,9 @@ class StreamRecovery:
                     number_to_add = self.max_workers - len(not_done)
                     for seg_num in potential_segments_to_download:
                         if seg_num not in self.already_downloaded and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
+                            if self.segment_exists(self.cursor, seg_num):
+                                self.already_downloaded.add(seg_num)
+                                continue
                             new_download.add(seg_num)
                             print("Adding segment {0} of {2} with retries: {1}".format(seg_num, segments_retries[seg_num]['retries'], self.format))
                         if len(new_download) >= number_to_add:                            
