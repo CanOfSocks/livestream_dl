@@ -102,10 +102,10 @@ if __name__ == "__main__":
     
     # For testing
     
-    options['batch_size'] = 5
-    options['write_thumbnail'] = True
-    options['write_description'] = True
-    options['write_info_json'] = True
+    #options['batch_size'] = 5
+    #options['write_thumbnail'] = True
+    #options['write_description'] = True
+    #options['write_info_json'] = True
     
     
     main(id=id, resolution=resolution, options=options)

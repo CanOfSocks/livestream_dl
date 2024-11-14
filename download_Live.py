@@ -609,6 +609,8 @@ class DownloadStream:
         self.batch_size = batch_size
         self.max_workers = max_workers
         
+        self.resolution = resolution
+        
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
         
@@ -617,10 +619,18 @@ class DownloadStream:
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
         
+        # Extract and parse the query parameters into a dictionary
+        parsed_url = urlparse(self.stream_url)        
+        self.url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
+
+        print(json.dumps(self.url_params))
+        
         self.database_in_memory = database_in_memory
         
         if file_name is None:
-            file_name = self.id        
+            file_name = self.id    
+        
+        self.file_base_name = file_name
         
         self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)     
         if self.database_in_memory:
@@ -632,9 +642,12 @@ class DownloadStream:
         if self.folder:
             os.makedirs(folder, exist_ok=True)
             self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
+            self.file_base_name = os.path.join(self.folder, self.file_base_name)
             if not self.database_in_memory:
                 self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
-        
+
+            
+        self.fragment_retries = fragment_retries
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
             backoff_factor=1, 
@@ -665,6 +678,11 @@ class DownloadStream:
             print("Refreshing URL for {0}".format(self.format))
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
+                
+                # Check for new manifest, if it has, start a nested download session
+                if self.detect_manifest_change(info_json=info_dict) is True:
+                    return True
+                
                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                 if stream_url is not None:
                     self.stream_url = stream_url
@@ -697,7 +715,8 @@ class DownloadStream:
             
             while True:     
                 self.check_kill()
-                self.refresh_Check()
+                if self.refresh_Check() is True:
+                    break
                         
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
@@ -809,11 +828,17 @@ class DownloadStream:
                             # If livestream is still live, use new url
                             elif live_status == 'is_live':
                                 print("Updating url to new url")
-                                self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                                stream_url = None
+                                
+                                # Check for new manifest, if it has, start a nested download session
+                                if self.detect_manifest_change(info_json=info_dict) is True:
+                                    break
+                                else:
+                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.refresh_retries = 0
-                                continue   
+                                   
                         
                     time.sleep(5)
                     continue
@@ -879,6 +904,37 @@ class DownloadStream:
             print(e)
             return None
     
+    def detect_manifest_change(self, info_json):
+        if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False)
+            parsed_url = urlparse(temp_stream_url)        
+            temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
+            if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
+                print("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
+                self.commit_batch()
+                download_stream(info_dict=info_json, resolution=self.format, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
+                return True
+            else:
+                return False
+        elif YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False)
+            parsed_url = urlparse(temp_stream_url)        
+            temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
+            if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
+                print("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
+                self.commit_batch()
+                download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
+                return True
+        elif self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False)
+            parsed_url = urlparse(temp_stream_url)        
+            temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
+            if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
+                print("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
+                self.commit_batch()
+                download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
+                return True
+        return False
 
     def create_connection(self, file):
         conn = sqlite3.connect(file)
@@ -1095,13 +1151,17 @@ class DownloadStreamDirect:
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
         
+        self.resolution=resolution
+        
         self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
         
         if file_name is None:
-            file_name = self.id        
+            file_name = self.id    
+            
+        self.file_base_name = file_name
         
         self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)  
         
@@ -1111,6 +1171,7 @@ class DownloadStreamDirect:
         self.folder = folder    
         if self.folder:
             os.makedirs(folder, exist_ok=True)
+            self.file_base_name = os.path.join(self.folder, self.file_base_name)
             self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
             self.state_file_name = os.path.join(self.folder, self.state_file_name)
             self.state_file_backup = os.path.join(self.folder, self.state_file_backup)
@@ -1135,11 +1196,15 @@ class DownloadStreamDirect:
                 self.state = loaded_state
             print(self.state)
         
+        self.fragment_retries=fragment_retries
+        
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
-        )        
+        )   
+        
+             
         
         self.is_403 = False
         self.is_private = False
@@ -1163,6 +1228,11 @@ class DownloadStreamDirect:
             print("Refreshing URL for {0}".format(self.format))
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
+                
+                # Check for new manifest, if it has, start a nested download session
+                if self.detect_manifest_change(info_json=info_dict) is True:
+                    return True
+                
                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                 if stream_url is not None:
                     self.stream_url = stream_url
@@ -1192,7 +1262,8 @@ class DownloadStreamDirect:
             
             while True:     
                 self.check_kill()
-                self.refresh_Check()
+                if self.refresh_Check() is True:
+                    break
                         
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, _ = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
@@ -1333,11 +1404,15 @@ class DownloadStreamDirect:
                             # If livestream is still live, use new url
                             elif live_status == 'is_live':
                                 print("Updating url to new url")
-                                self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                                stream_url = None
+                                # Check for new manifest, if it has, start a nested download session
+                                if self.detect_manifest_change(info_json=info_dict) is True:
+                                    break
+                                else:
+                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.refresh_retries = 0
-                                continue   
                         
                     time.sleep(5)
                     continue
@@ -1449,7 +1524,37 @@ class DownloadStreamDirect:
             print("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
-
+    def detect_manifest_change(self, info_json):
+        if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False)
+            parsed_url = urlparse(temp_stream_url)        
+            temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
+            if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
+                print("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
+                self.commit_batch()
+                download_stream_direct(info_dict=info_json, resolution=self.format, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
+                return True
+            else:
+                return False
+        elif YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False)
+            parsed_url = urlparse(temp_stream_url)        
+            temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
+            if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
+                print("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
+                self.commit_batch()
+                download_stream_direct(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
+                return True
+        elif self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False)
+            parsed_url = urlparse(temp_stream_url)        
+            temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
+            if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
+                print("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
+                self.commit_batch()
+                download_stream_direct(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
+                return True
+        return False
     # Function to combine segments into a single file
     def combine_segments_to_file(self, output_file, cursor=None):
         if cursor is None:
