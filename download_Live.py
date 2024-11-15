@@ -1841,7 +1841,10 @@ class StreamRecovery:
                 # Request base url if receiving 403s
                 elif self.is_403:
                     for url in self.stream_urls:
-                        self.update_latest_segment(url=url)
+                        if self.live_status == 'post_live':
+                            self.get_Headers("{0}&sq={1}".format(url, self.latest_sequence+1))
+                        else:
+                            self.update_latest_segment(url=url)
                     # Sleep to help prevent 401s (?)
                     
                     if len(not_done) > 0:
