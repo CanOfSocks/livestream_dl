@@ -1675,10 +1675,11 @@ class StreamRecovery:
             if not self.database_in_memory:
                 self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
         
-        self.retry_strategy = Retry(
+        self.retry_strategy = self.CustomRetry(
             total=3,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+            downloader_instance=self
         )  
         
         self.fragment_retries = fragment_retries  
@@ -1691,7 +1692,7 @@ class StreamRecovery:
         self.refresh_retries = 0
         self.recover = recovery
         
-        self.sequential = True
+        self.sequential = False
         
         self.count_400s = 0
         
@@ -1731,7 +1732,7 @@ class StreamRecovery:
         self.sleep_time = max(self.estimated_segment_duration, 0.1)
         
         # Track retries of all missing segments in database      
-        segments_retries = {key: {'retries': 0, 'last_retry': 0} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
+        segments_retries = {key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
         segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
         
         i = 0
@@ -1748,14 +1749,7 @@ class StreamRecovery:
                 print("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(self.expires).strftime('%Y-%m-%d %H:%M:%S')))
             else:
                 print("Recovery mode active")
-            
-            # Add all segments
-            for seg_num in segments_to_download:
-                if seg_num not in submitted_segments:
-                    future_to_seg[executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_urls[i % len(self.stream_urls)], seg_num), seg_num)] = seg_num
-                    submitted_segments.add(seg_num)
-                    i += 1
-            
+                       
             
             while True:     
                 self.check_kill()                                        
@@ -1807,11 +1801,13 @@ class StreamRecovery:
                 segments_to_download = set()
                 potential_segments_to_download = set(segments_retries.keys()) - self.already_downloaded
                 # Don't bother calculating if there are threads not done
-                #if len(not_done) <= 0:                        
+                #if len(not_done) <= 0:      
+                sorted_retries = -1
                 if self.sequential:
                     # Create a dictionary sorted by number of retries, lowest first, then by segment number, lowest first
                     sorted_retries = dict(sorted(segments_retries.items(), key=lambda item: (item[1]['retries'], item[0])))
                 else:
+                    """
                     # Step 1: Sort the dictionary by `retries` first
                     sorted_retries = sorted(segments_retries.items(), key=lambda item: item[1]['retries'])
 
@@ -1824,7 +1820,28 @@ class StreamRecovery:
 
                     # Step 3: Convert back to a dictionary
                     sorted_retries = dict(grouped_and_shuffled)
-                potential_segments_to_download = sorted_retries.keys()
+                    """
+                    current_time = time.time()
+                    # Step 1: Separate items into two groups
+                    priority_items = {
+                        key: value for key, value in segments_retries.items()
+                        if (current_time - value['last_retry']) > value['ideal_retry_time'] and value['retries'] > 0
+                    }
+                    non_priority_items = {
+                        key: value for key, value in segments_retries.items()
+                        if not ((current_time - value['last_retry']) <= value['ideal_retry_time'] and value['retries'] > 0)
+                    }
+
+                    # Step 2: Sort each group (preserve keys)
+                    priority_items_sorted = dict(sorted(priority_items.items(), key=lambda item: item[1]['retries']))
+                    non_priority_items_sorted = dict(sorted(non_priority_items.items(), key=lambda item: item[1]['retries']))
+
+                    # Combine the results
+                    sorted_retries = priority_items_sorted | non_priority_items_sorted
+                    
+                    
+                if sorted_retries != -1:
+                    potential_segments_to_download = sorted_retries.keys()
                 
                 if len(segments_retries) <= 0:
                     print("All segment downloads complete, ending...")
@@ -2007,6 +2024,19 @@ class StreamRecovery:
         query = "SELECT id FROM segments"
         self.cursor.execute(query)
         return set(row[0] for row in self.cursor.fetchall())
+    
+    class CustomRetry(Retry):
+        def __init__(self, *args, downloader_instance=None, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.downloader_instance = downloader_instance  # Store the Downloader instance
+
+        def increment(self, method=None, url=None, response=None, error=None, _pool=None, _stacktrace=None):
+            # Check the response status code and set self.is_403 if it's 403
+            if response and response.status == 403:
+                if self.downloader_instance:  # Ensure the instance exists
+                    self.downloader_instance.is_403 = True
+                    
+            return super().increment(method, url, response, error, _pool, _stacktrace)
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
