@@ -21,6 +21,8 @@ import logging
 
 kill_all = False
 
+live_chat_result = None
+
 logging.basicConfig(
     filename='output.log',   # File where the logs will be stored
     level=logging.INFO,      # Minimum level of messages to log (INFO or higher)
@@ -105,10 +107,15 @@ def download_segments(info_dict, resolution='best', options={}):
             # Download auxiliary files (thumbnail, info,json etc)
             auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
             futures.add(auxiliary_thread)
+            live_chat_thread = None
+            
             if options.get('live_chat') is True:
+                import threading
+                live_chat_thread = threading.Thread(target=download_live_chat, args=(info_dict,options), daemon=True)
+                live_chat_thread.start()
                 #download_live_chat(info_dict=info_dict, options=options)
-                chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
-                futures.add(chat_thread)
+                #chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
+                #futures.add(chat_thread)
             
             format_parser = YoutubeURL.Formats()
             # For use of specificed format. Expects two values, but can work with more
@@ -207,7 +214,7 @@ def download_segments(info_dict, resolution='best', options={}):
                     logging.info("result of thread: {0}".format(result))
                     print("\033[31m{0}\033[0m".format(result))
                     
-                    if type == 'auxiliary' or type == 'live_chat':
+                    if type == 'auxiliary':
                         file_names.update(result)
                     elif str(type).lower() == 'video':
                         file_names['video'] = result
@@ -222,6 +229,13 @@ def download_segments(info_dict, resolution='best', options={}):
                     break
                 else:
                     time.sleep(0.9)
+            
+            if live_chat_thread is not None:
+                print("Waiting for live chat to end")
+                live_chat_thread.join()
+                if live_chat_result is not None:
+                    file_names.update(live_chat_result)
+            
         except KeyboardInterrupt as e:
             global kill_all
             kill_all = True
@@ -232,9 +246,7 @@ def download_segments(info_dict, resolution='best', options={}):
             for future in not_done:
                 _ = future.cancel()
             done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
-            if len(not_done) > 0:
-                print("Remaining threads not ending, killing...")
-                os.kill(os.getpid(), 9)
+            raise
             
     if options.get('merge') or not options.get('no_merge'):
         create_mp4(file_names=file_names, info_dict=info_dict, options=options)
@@ -389,6 +401,8 @@ def download_live_chat(info_dict, options):
         live_chat = {
             'live_chat': fileInfo(path=base_output, ext='.live_chat.zip', type='live_chat')
         }
+        global live_chat_result
+        live_chat_result = live_chat
         return live_chat, 'live_chat'
     except Exception as e:
         print("\033[31m{0}\033[0m".format(e))
@@ -668,6 +682,16 @@ class DownloadStream:
         self.url_checked = time.time()
 
         self.conn, self.cursor = self.create_db(self.temp_db_file)    
+        
+        self.stream_urls = [self.stream_url]
+        
+    def get_expire_time(self, url):
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+
+        # Get the 'expire' parameter
+        expire_value = query_params.get('expire', [None])[0]
+        return expire_value
 
     def refresh_Check(self):    
         
@@ -686,6 +710,9 @@ class DownloadStream:
                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                 if stream_url is not None:
                     self.stream_url = stream_url
+                    self.stream_urls.append(stream_url)
+                    filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) < time.time()]
+                    self.stream_urls = filtered_array
                 if live_status is not None:
                     self.live_status = live_status
             except PermissionError as e:
@@ -1706,11 +1733,7 @@ class StreamRecovery:
         self.expires = None
         expires = []
         for url in self.stream_urls:
-            parsed_url = urlparse(url)
-            query_params = parse_qs(parsed_url.query)
-
-            # Get the 'expire' parameter
-            expire_value = query_params.get('expire', [None])[0]
+            expire_value = self.get_expire_time(url)
             if expire_value is not None:
                 expires.append(int(expire_value))
         if expires:
@@ -1719,13 +1742,21 @@ class StreamRecovery:
         self.update_latest_segment()
         self.url_checked = time.time()
 
-        self.conn, self.cursor = self.create_db(self.temp_db_file)    
+        self.conn, self.cursor = self.create_db(self.temp_db_file) 
+        
+    def get_expire_time(self, url):
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+
+        # Get the 'expire' parameter
+        expire_value = query_params.get('expire', [None])[0]
+        return expire_value
                 
     def live_dl(self):
-        from itertools import groupby
+        #from itertools import groupby
         print("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
         self.already_downloaded = self.segment_exists_batch()
-        wait = 0   
+        #wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
         
@@ -1862,20 +1893,19 @@ class StreamRecovery:
                             self.get_Headers("{0}&sq={1}".format(url, self.latest_sequence+1))
                         else:
                             self.update_latest_segment(url=url)
-                    # Sleep to help prevent 401s (?)
                     
-                    if len(not_done) > 0:
-                        continue
-                    else:
-                        time.sleep(1)
-                    continue
+                    time.sleep(0.1)                        
                      
-                elif len(not_done) < 1 or (len(not_done) < self.max_workers and not (self.is_403 or self.is_401)):
+                #if len(not_done) < 1 or (len(not_done) < self.max_workers and not (self.is_403 or self.is_401)):
+                if len(not_done) < 1 or len(not_done) < self.max_workers:
                 #elif len(not_done) <= 0 and not self.is_401 and not self.is_403:
                     new_download = set()
-                    number_to_add = self.max_workers - len(not_done)
+                    if self.is_403:
+                        number_to_add = self.max_workers - len(not_done)
+                    else:
+                        number_to_add = self.max_workers*2 - len(not_done)
                     for seg_num in potential_segments_to_download:
-                        if seg_num not in self.already_downloaded and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
+                        if seg_num not in self.already_downloaded and seg_num not in submitted_segments and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
                             if self.segment_exists(self.cursor, seg_num):
                                 self.already_downloaded.add(seg_num)
                                 continue
@@ -1936,6 +1966,18 @@ class StreamRecovery:
     def update_latest_segment(self, url=None):
         # Kill if keyboard interrupt is detected
         self.check_kill()
+        
+        # Remove expired URLs
+        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) < time.time()]
+        
+        if len(filtered_array) > 0:
+            self.stream_urls = filtered_array
+            expire_times = []
+            for url in self.stream_urls:
+                exp_time = self.get_expire_time(url)
+                if exp_time:
+                    expire_times.append(exp_time)
+            self.expires = max(expire_times)
         
         if url is None:
             if len(self.stream_urls) > 1:
@@ -2037,6 +2079,14 @@ class StreamRecovery:
                     self.downloader_instance.is_403 = True
                     
             return super().increment(method, url, response, error, _pool, _stacktrace)
+        
+        # Limit backoff to a maximum of 4 seconds
+        def get_backoff_time(self):
+            # Calculate the base backoff time using exponential backoff
+            base_backoff = super().get_backoff_time()
+
+            clamped_backoff = min(4, base_backoff)
+            return clamped_backoff
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
