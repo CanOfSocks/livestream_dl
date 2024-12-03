@@ -1245,6 +1245,15 @@ class DownloadStreamDirect:
         
         self.update_latest_segment()
         self.url_checked = time.time()   
+        self.stream_urls = [self.stream_url]
+        
+    def get_expire_time(self, url):
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+
+        # Get the 'expire' parameter
+        expire_value = query_params.get('expire', [None])[0]
+        return expire_value
 
     def refresh_Check(self):    
         
@@ -1263,6 +1272,9 @@ class DownloadStreamDirect:
                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                 if stream_url is not None:
                     self.stream_url = stream_url
+                    self.stream_urls.append(stream_url)
+                    filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) < time.time()]
+                    self.stream_urls = filtered_array
                 if live_status is not None:
                     self.live_status = live_status
             except PermissionError as e:
@@ -1666,7 +1678,7 @@ class DownloadStreamDirect:
             os.remove(self.folder)
             
 class StreamRecovery:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=120):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -1900,10 +1912,13 @@ class StreamRecovery:
                 if len(not_done) < 1 or len(not_done) < self.max_workers:
                 #elif len(not_done) <= 0 and not self.is_401 and not self.is_403:
                     new_download = set()
+                    number_to_add = self.max_workers - len(not_done)
+                    
                     if self.is_403:
                         number_to_add = self.max_workers - len(not_done)
                     else:
                         number_to_add = self.max_workers*2 - len(not_done)
+                    
                     for seg_num in potential_segments_to_download:
                         if seg_num not in self.already_downloaded and seg_num not in submitted_segments and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
                             if self.segment_exists(self.cursor, seg_num):
@@ -2087,6 +2102,24 @@ class StreamRecovery:
 
             clamped_backoff = min(4, base_backoff)
             return clamped_backoff
+        
+    class SessionWith403Counter(requests.Session):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.num_403_responses = 0  # Counter for 403 responses
+
+        def request(self, method, url, *args, **kwargs):
+            # Call the parent class's request method
+            response = super().request(method, url, *args, **kwargs)
+
+            # Increment counter if response status code is 403
+            if response.status_code == 403:
+                self.num_403_responses += 1
+
+            return response
+
+        def get_403_count(self):
+            return self.num_403_responses
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
@@ -2120,7 +2153,8 @@ class StreamRecovery:
             # create an HTTP adapter with the retry strategy and mount it to the session
             adapter = HTTPAdapter(max_retries=self.retry_strategy)
             # create a new session object
-            session = requests.Session()
+            #session = requests.Session()
+            session = self.SessionWith403Counter()
             session.mount("http://", adapter)
             session.mount("https://", adapter)
             headers = {
