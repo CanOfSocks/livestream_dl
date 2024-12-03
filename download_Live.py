@@ -1754,8 +1754,17 @@ class StreamRecovery:
                 expires.append(int(expire_value))
         if expires:
             self.expires = int(max(expires))
-        print(type(self.expires))
+            
+        if time.time() > self.expires:
+            from datetime import datetime
+            print("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
+            raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
+            
         self.update_latest_segment()
+        
+        
         self.url_checked = time.time()
 
         self.conn, self.cursor = self.create_db(self.temp_db_file) 
@@ -1909,7 +1918,7 @@ class StreamRecovery:
                 elif self.is_403:
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
-                            self.get_Headers("{0}&sq={1}".format(url, self.latest_sequence+1))
+                            self.update_latest_segment(url="{0}&sq={1}".format(url, self.latest_sequence+1))
                         else:
                             self.update_latest_segment(url=url)
                     
@@ -1992,7 +2001,7 @@ class StreamRecovery:
         # Remove expired URLs
         filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) < time.time()]
         
-        if len(filtered_array) > 0:
+        if len(filtered_array) > 1:
             self.stream_urls = filtered_array
             expire_times = []
             for url in self.stream_urls:
@@ -2020,25 +2029,33 @@ class StreamRecovery:
     
     def get_Headers(self, url):
         try:
-            # Send a GET request to a URL
-            response = requests.get(url, timeout=30)
-            # 200 and 204 responses appear to have valid headers so far
-            if response.status_code == 200 or response.status_code == 204:
-                self.is_403 = False
-                self.is_401 = False
-                # Print the response headers
-                #print(json.dumps(dict(response.headers), indent=4))  
+            if self.live_status == 'post_live':
+                response = requests.get(url, timeout=30)
+                if response.status_code == 403:
+                    response = requests.head(url, timeout=30)
                 return response.headers
-            elif response.status_code == 403:
-                self.is_403 = True
-                return None
-            elif response.status_code == 401:
-                self.is_401 = True
-                return None
             else:
-                print("Error retrieving headers: {0}".format(response.status_code))
-                print(json.dumps(dict(response.headers), indent=4))
-                return None
+                # Send a GET request to a URL
+                #response = requests.get(url, timeout=30)
+                response = requests.get(url, timeout=30)
+                print("Print response: {0}".format(response.status_code))
+                # 200 and 204 responses appear to have valid headers so far
+                if response.status_code == 200 or response.status_code == 204:
+                    self.is_403 = False
+                    self.is_401 = False
+                    # Print the response headers
+                    #print(json.dumps(dict(response.headers), indent=4))  
+                    return response.headers
+                elif response.status_code == 403:
+                    self.is_403 = True
+                    return None
+                elif response.status_code == 401:
+                    self.is_401 = True
+                    return None
+                else:
+                    print("Error retrieving headers: {0}".format(response.status_code))
+                    print(json.dumps(dict(response.headers), indent=4))
+                    return None
             
         except requests.exceptions.Timeout as e:
             logging.info("Timed out updating fragments: {0}".format(e))
