@@ -691,6 +691,8 @@ class DownloadStream:
 
         # Get the 'expire' parameter
         expire_value = query_params.get('expire', [None])[0]
+        if expire_value is not None:
+            return int(expire_value)
         return expire_value
 
     def refresh_Check(self):    
@@ -1253,6 +1255,8 @@ class DownloadStreamDirect:
 
         # Get the 'expire' parameter
         expire_value = query_params.get('expire', [None])[0]
+        if expire_value is not None:
+            return int(expire_value)
         return expire_value
 
     def refresh_Check(self):    
@@ -1762,6 +1766,8 @@ class StreamRecovery:
 
         # Get the 'expire' parameter
         expire_value = query_params.get('expire', [None])[0]
+        if expire_value is not None:
+            return int(expire_value)
         return expire_value
                 
     def live_dl(self):
