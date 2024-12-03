@@ -1749,8 +1749,8 @@ class StreamRecovery:
             if expire_value is not None:
                 expires.append(int(expire_value))
         if expires:
-            self.expires = max(expires)
-        
+            self.expires = int(max(expires))
+        print(type(self.expires))
         self.update_latest_segment()
         self.url_checked = time.time()
 
@@ -1789,7 +1789,8 @@ class StreamRecovery:
             # Trackers for optimistic segment downloads 
             if self.expires is not None:
                 from datetime import datetime
-                print("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(self.expires).strftime('%Y-%m-%d %H:%M:%S')))
+                #print(datetime.fromtimestamp(int(self.expires)))
+                print("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')))
             else:
                 print("Recovery mode active")
                        
