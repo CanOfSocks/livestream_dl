@@ -3,7 +3,7 @@ import sqlite3
 import requests
 from requests.adapters import HTTPAdapter, Retry
 import random
-
+from datetime import datetime
 import time
 import concurrent.futures
 import json
@@ -1683,7 +1683,7 @@ class DownloadStreamDirect:
             
 class StreamRecovery:
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30):        
-        
+        from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
@@ -1722,7 +1722,8 @@ class StreamRecovery:
             total=3,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
-            downloader_instance=self
+            downloader_instance=self,
+            retry_time_clamp=4
         )  
         
         self.fragment_retries = fragment_retries  
@@ -1756,7 +1757,7 @@ class StreamRecovery:
             self.expires = int(max(expires))
             
         if time.time() > self.expires:
-            from datetime import datetime
+            
             print("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
@@ -2001,7 +2002,7 @@ class StreamRecovery:
         # Remove expired URLs
         filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) < time.time()]
         
-        if len(filtered_array) > 1:
+        if len(filtered_array) > 0:
             self.stream_urls = filtered_array
             expire_times = []
             for url in self.stream_urls:
@@ -2009,6 +2010,13 @@ class StreamRecovery:
                 if exp_time:
                     expire_times.append(exp_time)
             self.expires = max(expire_times)
+            
+        if time.time() > self.expires:
+            
+            print("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
+            raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
         
         if url is None:
             if len(self.stream_urls) > 1:
@@ -2107,9 +2115,10 @@ class StreamRecovery:
         return set(row[0] for row in self.cursor.fetchall())
     
     class CustomRetry(Retry):
-        def __init__(self, *args, downloader_instance=None, **kwargs):
+        def __init__(self, *args, downloader_instance=None, retry_time_clamp=4, **kwargs):
             super().__init__(*args, **kwargs)
             self.downloader_instance = downloader_instance  # Store the Downloader instance
+            self.retry_time_clamp = retry_time_clamp
 
         def increment(self, method=None, url=None, response=None, error=None, _pool=None, _stacktrace=None):
             # Check the response status code and set self.is_403 if it's 403
@@ -2124,7 +2133,7 @@ class StreamRecovery:
             # Calculate the base backoff time using exponential backoff
             base_backoff = super().get_backoff_time()
 
-            clamped_backoff = min(4, base_backoff)
+            clamped_backoff = min(self.retry_time_clamp, base_backoff)
             return clamped_backoff
         
     class SessionWith403Counter(requests.Session):
