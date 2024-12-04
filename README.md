@@ -1,5 +1,5 @@
 # livestream_dl
-Garbage youtube livestream downloader combining the principles of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchiverawgo]([https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go"). This focuses on using yt-dlp for more frequent updates for stream information extraction to handle changes YouTube implements.
+Garbage youtube livestream downloader combining the principles of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchive-raw-go](https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go"). This focuses on using yt-dlp for more frequent updates for stream information extraction to handle changes YouTube implements.
 This project aims to combine the features of live recording and stream recovery when a stream becomes unavailable.
 
 # Requirements
@@ -86,7 +86,7 @@ For regular livestream recording that doesn't experience frequent segment downlo
 
 ## SQLite
 The SQLite downloader method is used to improve handling of non-sequential successful segment downloads. This works by creating and using a basic table of the segment number as an ID and a blob to store the segment data. Once all segments are downloaded, a query is executed to sort all of the downloaded segments into the correct order and saved to a .ts file. This helps significantly to manage downloaded segments when failures occur often, such as unavailable stream recovery. By writing to the database and a final .ts file, this will require 2 full writes of the downloaded data, which may increase wear on flash-based systems. For most users, this increased wear will not be significant in the long-term.
-This improves over saving individual segment files like [ytarchiverawgo]([https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go") as all the downloaded segments are encapsilated into a single file, making it easier for the file system to handle.
+This improves over saving individual segment files like [ytarchive-raw-go](https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go") as all the downloaded segments are encapsilated into a single file, making it easier for the file system to handle.
 In the SQLite method, the existence of a downloaded segment is checked before it is downloaded. This allows failed segments to be "looped back to" later without causing other slowdowns, and ensures some information is saved for a segment (even if it is empty, as is the case sometimes).
 
 
