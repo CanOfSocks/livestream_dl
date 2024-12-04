@@ -1984,7 +1984,7 @@ class StreamRecovery:
                     )
                 '''
                 if len(submitted_segments) == 0 and len(segments_retries) < 11 and time.time() - last_print > 15:
-                    print("Remaining segments: {0}".format(segments_retries))
+                    print("Remaining segments for {1}: {0}".format(segments_retries, self.format))
                     last_print = time.time()
                 elif len(submitted_segments) == 0 and time.time() - last_print > 15:
                     print("{0} segments remain for {1}".format(len(segments_retries), self.format))

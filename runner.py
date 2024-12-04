@@ -29,12 +29,14 @@ def main(id, resolution='best', options={}):
     
 if __name__ == "__main__":
     # Create the parser
-    parser = argparse.ArgumentParser(description="Download an video by ID")
+    parser = argparse.ArgumentParser(description="Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)")
 
-    # Add a required positional argument 'ID'
     parser.add_argument('ID', type=str, nargs='?', default=None, help='The video URL or ID')
     
-    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="Desired resolution. Can be best, audio_only or specific resolution. Default: best")
+    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="""Desired resolution. Can be best, audio_only or specific resolution.
+                        Possible values best, 2160p60, 2160p, 1440p60, 1440p, 1080p60, premium, 1080p, 720p60, 720p, 480p, 360p, 240p, 144p.
+                        '*' can be used as a wildcard e.g. 1080* for 1080p60 or 1080p.
+                        Default: best""")
     
     parser.add_argument('--video-format', type=int, help="Specify specific video format. Resolution will be ignored if used")
     
@@ -44,27 +46,27 @@ if __name__ == "__main__":
     
     parser.add_argument('--batch-size', type=int, default=5, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances. Default: 5")
     
-    parser.add_argument('--segment-retries', type=int, default=5, help="Number of times to retry grabbing a segment. Default: 5")
+    parser.add_argument('--segment-retries', type=int, default=10, help="Number of times to retry grabbing a segment. Default: 10")
     
-    parser.add_argument('--no-merge', action='store_false', dest='merge', help="Don't merge video")
+    parser.add_argument('--no-merge', action='store_false', dest='merge', help="Don't merge video using ffmpeg")
 
-    parser.add_argument('--merge', action='store_true', dest='merge', help="Merge video, overrides --no-merge")
+    parser.add_argument('--merge', action='store_true', dest='merge', help="Merge video using ffmpeg, overrides --no-merge")
     
     parser.add_argument('--cookies', type=str, default=None, help="Path to cookies file")
-
-    parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files. Currently doesn't support templates like the output files")
     
-    parser.add_argument('--output', type=str, default="%(fulltitle)s (%(id)s)", help="Path for output files")
+    parser.add_argument('--output', type=str, default="%(fulltitle)s (%(id)s)", help="Path/file name for output files. Supports yt-dlp output formatting")
+
+    parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files. Supports yt-dlp output formatting")    
     
     parser.add_argument('--write-thumbnail', action='store_true', help="Write thumbnail to file")
     
     parser.add_argument('--embed-thumbnail', action='store_true', help="Embed thumbnail into final file. Ignored if --no-merge is used")
     
-    parser.add_argument('--write-info-json', action='store_true', help="Write info-json to file")
+    parser.add_argument('--write-info-json', action='store_true', help="Write info.json to file")
     
     parser.add_argument('--write-description', action='store_true', help="Write description to file")
     
-    parser.add_argument('--keep-temp-files', action='store_true', help="Keep all temp files i.e. database and ts files")
+    parser.add_argument('--keep-temp-files', action='store_true', help="Keep all temp files i.e. database and/or ts files")
     
     parser.add_argument('--keep-ts-files', action='store_true', help="Keep all ts files")
     
@@ -74,13 +76,13 @@ if __name__ == "__main__":
     
     parser.add_argument('--recovery', action='store_true', help="Puts downloader into stream recovery mode")
     
-    parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments in memory. Requires a lot of RAM (Not recommended)")
+    parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments database in memory. Requires a lot of RAM (Not recommended)")
     
     parser.add_argument('--direct-to-ts', action='store_true', help="Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options")
     
     parser.add_argument("--wait-for-video", type=int, nargs="*", help="(min, max) Minimum and maximum interval to wait for a video")
     
-    parser.add_argument('--json-file', type=str, default=None, help="Path to yt-dlp info.json file. Overrides ID and skips retrieving URLs")
+    parser.add_argument('--json-file', type=str, default=None, help="Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs")
 
     # Parse the arguments
     args = parser.parse_args()
