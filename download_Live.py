@@ -248,15 +248,11 @@ def download_segments(info_dict, resolution='best', options={}):
             done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
             raise
             
-    if options.get('merge') or not options.get('no_merge'):
+    if options.get('merge', None) or not options.get('no_merge', False):
         create_mp4(file_names=file_names, info_dict=info_dict, options=options)
         
-    if options.get('temp_folder') is not None:
-        move_to_final(options=options, outputFile=outputFile, file_names=file_names)
-            
-            
-        
-                
+    if options.get('temp_folder', None) is not None:
+        move_to_final(options=options, outputFile=outputFile, file_names=file_names)               
                 
     #move_to_final(info_dict, options, file_names)
     
@@ -1814,7 +1810,7 @@ class StreamRecovery:
             while True:     
                 self.check_kill()                                        
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=1, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.01, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
@@ -1917,25 +1913,26 @@ class StreamRecovery:
                 
                 # Request base url if receiving 403s
                 elif self.is_403:
+                    time.sleep(0.9)
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
                             self.update_latest_segment(url="{0}&sq={1}".format(url, self.latest_sequence+1))
                         else:
                             self.update_latest_segment(url=url)
                     
-                    time.sleep(0.1)                        
+                                           
                      
                 #if len(not_done) < 1 or (len(not_done) < self.max_workers and not (self.is_403 or self.is_401)):
                 if len(not_done) < 1 or len(not_done) < self.max_workers:
                 #elif len(not_done) <= 0 and not self.is_401 and not self.is_403:
                     new_download = set()
                     number_to_add = self.max_workers - len(not_done)
-                    
+                    """
                     if self.is_403:
                         number_to_add = self.max_workers - len(not_done)
                     else:
                         number_to_add = self.max_workers*2 - len(not_done)
-                    
+                    """
                     for seg_num in potential_segments_to_download:
                         if seg_num not in self.already_downloaded and seg_num not in submitted_segments and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
                             if self.segment_exists(self.cursor, seg_num):
@@ -2039,8 +2036,6 @@ class StreamRecovery:
         try:
             if self.live_status == 'post_live':
                 response = requests.get(url, timeout=30)
-                if response.status_code == 403:
-                    response = requests.head(url, timeout=30)
                 return response.headers
             else:
                 # Send a GET request to a URL
