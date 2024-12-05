@@ -1678,7 +1678,7 @@ class DownloadStreamDirect:
             os.remove(self.folder)
             
 class StreamRecovery:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[]):        
         from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -1689,6 +1689,9 @@ class StreamRecovery:
         self.live_status = info_dict.get('live_status')
         
         self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
+        
+        if stream_urls:
+            self.stream_urls = list(set(self.stream_urls + stream_urls))
         
         if self.stream_urls is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
