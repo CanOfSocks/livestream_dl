@@ -624,6 +624,8 @@ class DownloadStream:
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
         
+        self.info_dict = info_dict
+        
         self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
         if self.stream_url is None:
@@ -713,6 +715,10 @@ class DownloadStream:
                     self.stream_urls = filtered_array
                 if live_status is not None:
                     self.live_status = live_status
+                
+                if info_dict is not None:
+                    self.info_dict = info_dict    
+                
             except PermissionError as e:
                 print(e)
                 self.is_private = True
@@ -862,11 +868,29 @@ class DownloadStream:
                                     stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
+                                    self.stream_urls.append(stream_url)
                                     self.refresh_retries = 0
-                                   
-                        
+                            
+                            if info_dict is not None:
+                                self.info_dict = info_dict                                                   
                     time.sleep(5)
                     continue
+                
+                elif segments_to_download > 0 and self.is_private and len(submitted_segments) > 0:
+                    print("Video is private, waiting for remaining threads to finish before going to stream recovery")
+                    continue
+                elif segments_to_download > 0 and self.is_private:
+                    print("Video is private and still has segments remaining, moving to stream recovery")
+                    self.commit_batch(self.conn)
+                    self.close_connection()
+                    print("Sleeping for 60 seconds to increase chances of URLs succeeding in recovery")
+                    time.sleep(30)
+                    downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=self.max_workers, file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
+                    downloader.live_dl()
+                    downloader.close_connection()
+                    self.cursor, self.conn = self.create_connection()
+                    print("Stream recovery finished, ending live download")
+                    break
                 else:
                     wait = 0
                     
@@ -1678,7 +1702,7 @@ class DownloadStreamDirect:
             os.remove(self.folder)
             
 class StreamRecovery:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[]):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=15, stream_urls=[]):        
         from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
