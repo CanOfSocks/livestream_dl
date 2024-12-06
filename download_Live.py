@@ -2072,7 +2072,7 @@ class StreamRecovery:
                 # Send a GET request to a URL
                 #response = requests.get(url, timeout=30)
                 response = requests.get(url, timeout=30)
-                print("Print response: {0}".format(response.status_code))
+                #print("Print response: {0}".format(response.status_code))
                 # 200 and 204 responses appear to have valid headers so far
                 if response.status_code == 200 or response.status_code == 204:
                     self.is_403 = False
