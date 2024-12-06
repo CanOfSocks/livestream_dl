@@ -1793,6 +1793,8 @@ class StreamRecovery:
 
         self.conn, self.cursor = self.create_db(self.temp_db_file) 
         
+        self.count_403s = {}
+        
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
@@ -2179,52 +2181,58 @@ class StreamRecovery:
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
         self.check_kill()
-        try:
-            user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/536.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/536.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/89.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/538.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/538.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/539.36 (KHTML, like Gecko) Firefox/90.0 Safari/539.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.44 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.44",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/540.36 (KHTML, like Gecko) Firefox/91.0 Safari/540.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.85 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/536.40 (KHTML, like Gecko) Firefox/92.0 Safari/536.40",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.58 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.58",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/541.36 (KHTML, like Gecko) Firefox/93.0 Safari/541.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.65 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.65",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.74 (KHTML, like Gecko) Firefox/94.0 Safari/537.74",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/542.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/542.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/543.36 (KHTML, like Gecko) Firefox/95.0 Safari/543.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.85 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.85",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.98 (KHTML, like Gecko) Firefox/96.0 Safari/537.98",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/544.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/544.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.100 (KHTML, like Gecko) Firefox/97.0 Safari/537.100",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/545.36 (KHTML, like Gecko) Chrome/101.0.4951.64 Safari/545.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/546.36 (KHTML, like Gecko) Firefox/98.0 Safari/546.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.110 (KHTML, like Gecko) Chrome/102.0.5005.63 Safari/537.110",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/547.36 (KHTML, like Gecko) Firefox/99.0 Safari/547.36"
-            ]
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/536.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/536.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/89.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/538.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/538.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/539.36 (KHTML, like Gecko) Firefox/90.0 Safari/539.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.44 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.44",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/540.36 (KHTML, like Gecko) Firefox/91.0 Safari/540.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.85 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/536.40 (KHTML, like Gecko) Firefox/92.0 Safari/536.40",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.58 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.58",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/541.36 (KHTML, like Gecko) Firefox/93.0 Safari/541.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.65 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.65",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.74 (KHTML, like Gecko) Firefox/94.0 Safari/537.74",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/542.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/542.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/543.36 (KHTML, like Gecko) Firefox/95.0 Safari/543.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.85 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.85",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.98 (KHTML, like Gecko) Firefox/96.0 Safari/537.98",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/544.36 (KHTML, like Gecko) Chrome/100.0.4896.75 Safari/544.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.100 (KHTML, like Gecko) Firefox/97.0 Safari/537.100",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/545.36 (KHTML, like Gecko) Chrome/101.0.4951.64 Safari/545.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/546.36 (KHTML, like Gecko) Firefox/98.0 Safari/546.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.110 (KHTML, like Gecko) Chrome/102.0.5005.63 Safari/537.110",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/547.36 (KHTML, like Gecko) Firefox/99.0 Safari/547.36"
+        ]
 
-            # create an HTTP adapter with the retry strategy and mount it to the session
-            adapter = HTTPAdapter(max_retries=self.retry_strategy)
-            # create a new session object
-            #session = requests.Session()
-            session = self.SessionWith403Counter()
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
-            headers = {
-                "User-Agent": random.choice(user_agents),
-            }
+        # create an HTTP adapter with the retry strategy and mount it to the session
+        adapter = HTTPAdapter(max_retries=self.retry_strategy)
+        # create a new session object
+        #session = requests.Session()
+        session = self.SessionWith403Counter()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        headers = {
+            "User-Agent": random.choice(user_agents),
+        }
+        
+        try:            
             response = session.get(segment_url, timeout=30, headers=headers)
             if response.status_code == 200:
                 print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
                 self.is_403 = False
                 self.is_401 = False
-                #return latest header number and segmqnt content
+                #return latest header number and segment content
+                if session.get_403_count() > 0:
+                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
+                
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
             elif response.status_code == 403:
                 print("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
+                if session.get_403_count() > 0:
+                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
                 return -1, None, segment_order, response.status_code, response.headers
             else:
                 print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
@@ -2239,14 +2247,22 @@ class StreamRecovery:
             if "(Caused by ResponseError('too many 204 error responses')" in str(e):
                 self.is_403 = False
                 self.is_401 = False
+                if session.get_403_count() > 0:
+                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
                 return -1, bytes(), segment_order, 204, None
             elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
                 self.is_403 = True
+                if session.get_403_count() > 0:
+                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
                 return -1, None, segment_order, 403, None
             elif "(Caused by ResponseError('too many 401 error responses')" in str(e):
                 self.is_401 = True
+                if session.get_403_count() > 0:
+                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
                 return -1, None, segment_order, 401, None
             else:
+                if session.get_403_count() > 0:
+                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
             logging.info("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
