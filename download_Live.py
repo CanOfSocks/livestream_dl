@@ -71,6 +71,7 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
     
     downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries)        
     result = downloader.live_dl()
+    downloader.save_stats()    
     if result:
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -81,6 +82,9 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
     # Explicitly close connection
     downloader.close_connection()
     file = fileInfo(file_name, type=downloader.type, format=downloader.format)
+    
+    
+    
     return file, downloader.type
 
 # Multithreaded function to download new segments with delayed commit after a batch
@@ -370,12 +374,14 @@ def download_live_chat(info_dict, options):
     ydl_opts = {
         'skip_download': True,               # Skip downloading video/audio
         'quiet': True,
+        'cookiefile': options.get('cookies'),
         #'live_from_start': True,
         'writesubtitles': True,              # Extract subtitles (live chat)
         'subtitlesformat': 'json',           # Set format to JSON
         'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
         'concurrent_fragment_downloads': 2,
         'outtmpl': base_output          # Save to a JSON file
+        
     }
     livechat_filename = base_output + ".live_chat.json"
     zip_filename = base_output + ".live_chat.zip"
@@ -878,10 +884,10 @@ class DownloadStream:
                     time.sleep(5)
                     continue
                 
-                elif segments_to_download > 0 and self.is_private and len(submitted_segments) > 0:
+                elif len(segments_to_download) > 0 and self.is_private and len(submitted_segments) > 0:
                     print("Video is private, waiting for remaining threads to finish before going to stream recovery")
                     continue
-                elif segments_to_download > 0 and self.is_private:
+                elif len(segments_to_download) > 0 and self.is_private:
                     print("Video is private and still has segments remaining, moving to stream recovery")
                     self.commit_batch(self.conn)
                     self.close_connection()
@@ -1728,7 +1734,9 @@ class StreamRecovery:
         self.database_in_memory = database_in_memory
         
         if file_name is None:
-            file_name = self.id        
+            file_name = self.id    
+        
+        self.file_base_name = file_name
         
         self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)     
         if self.database_in_memory:
@@ -1740,6 +1748,7 @@ class StreamRecovery:
         if self.folder:
             os.makedirs(folder, exist_ok=True)
             self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
+            self.file_base_name = os.path.join(self.folder, self.file_base_name)
             if not self.database_in_memory:
                 self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
         
@@ -1795,7 +1804,9 @@ class StreamRecovery:
 
         self.conn, self.cursor = self.create_db(self.temp_db_file) 
         
-        self.count_403s = {}
+        self.count_403s = {}        
+        self.user_agent_403s = {}
+        self.user_agent_full_403s = {}
         
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
@@ -1841,7 +1852,7 @@ class StreamRecovery:
             while True:     
                 self.check_kill()                                        
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.01, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
@@ -1944,7 +1955,6 @@ class StreamRecovery:
                 
                 # Request base url if receiving 403s
                 elif self.is_403:
-                    time.sleep(0.9)
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
                             self.update_latest_segment(url="{0}&sq={1}".format(url, self.latest_sequence+1))
@@ -2018,6 +2028,9 @@ class StreamRecovery:
                 elif len(submitted_segments) == 0 and time.time() - last_print > 15:
                     print("{0} segments remain for {1}".format(len(segments_retries), self.format))
                     last_print = time.time()
+                elif time.time() - last_print > 30:
+                    print(self.count_403s)
+                    last_print = time.time()
                 
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
@@ -2065,31 +2078,24 @@ class StreamRecovery:
     
     def get_Headers(self, url):
         try:
-            if self.live_status == 'post_live':
-                response = requests.get(url, timeout=30)
-                return response.headers
+            # Send a GET request to a URL
+            #response = requests.get(url, timeout=30)
+            response = requests.get(url, timeout=30)
+            #print("Print response: {0}".format(response.status_code))
+            # 200 and 204 responses appear to have valid headers so far
+            if response.status_code == 200 or response.status_code == 204:
+                self.is_403 = False
+                self.is_401 = False
+                # Print the response headers
+                #print(json.dumps(dict(response.headers), indent=4))  
+            elif response.status_code == 403:
+                self.is_403 = True
+            elif response.status_code == 401:
+                self.is_401 = True
             else:
-                # Send a GET request to a URL
-                #response = requests.get(url, timeout=30)
-                response = requests.get(url, timeout=30)
-                #print("Print response: {0}".format(response.status_code))
-                # 200 and 204 responses appear to have valid headers so far
-                if response.status_code == 200 or response.status_code == 204:
-                    self.is_403 = False
-                    self.is_401 = False
-                    # Print the response headers
-                    #print(json.dumps(dict(response.headers), indent=4))  
-                    return response.headers
-                elif response.status_code == 403:
-                    self.is_403 = True
-                    return None
-                elif response.status_code == 401:
-                    self.is_401 = True
-                    return None
-                else:
-                    print("Error retrieving headers: {0}".format(response.status_code))
-                    print(json.dumps(dict(response.headers), indent=4))
-                    return None
+                print("Error retrieving headers: {0}".format(response.status_code))
+                print(json.dumps(dict(response.headers), indent=4))
+            return response.headers
             
         except requests.exceptions.Timeout as e:
             logging.info("Timed out updating fragments: {0}".format(e))
@@ -2167,9 +2173,9 @@ class StreamRecovery:
             super().__init__(*args, **kwargs)
             self.num_403_responses = 0  # Counter for 403 responses
 
-        def request(self, method, url, *args, **kwargs):
-            # Call the parent class's request method
-            response = super().request(method, url, *args, **kwargs)
+        def get(self, url, *args, **kwargs):
+            # Call the parent class's get method
+            response = super().get(url, *args, **kwargs)
 
             # Increment counter if response status code is 403
             if response.status_code == 403:
@@ -2179,6 +2185,7 @@ class StreamRecovery:
 
         def get_403_count(self):
             return self.num_403_responses
+        
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
@@ -2191,8 +2198,9 @@ class StreamRecovery:
         session = self.SessionWith403Counter()
         session.mount("http://", adapter)
         session.mount("https://", adapter)
+        user_agent = random.choice(user_agents)
         headers = {
-            "User-Agent": random.choice(user_agents),
+            "User-Agent": user_agent,
         }
         
         try:            
@@ -2203,14 +2211,16 @@ class StreamRecovery:
                 self.is_401 = False
                 #return latest header number and segment content
                 if session.get_403_count() > 0:
-                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
+                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
+                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
             elif response.status_code == 403:
                 print("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 if session.get_403_count() > 0:
-                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
+                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
+                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 return -1, None, segment_order, response.status_code, response.headers
             else:
                 print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
@@ -2226,21 +2236,26 @@ class StreamRecovery:
                 self.is_403 = False
                 self.is_401 = False
                 if session.get_403_count() > 0:
-                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
+                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
+                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 return -1, bytes(), segment_order, 204, None
             elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
                 self.is_403 = True
                 if session.get_403_count() > 0:
-                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
+                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
+                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
+                    self.user_agent_full_403s.update({user_agent: (self.user_agent_full_403s.get(user_agent, 0) + 1)})
                 return -1, None, segment_order, 403, None
             elif "(Caused by ResponseError('too many 401 error responses')" in str(e):
                 self.is_401 = True
                 if session.get_403_count() > 0:
-                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
+                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
+                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 return -1, None, segment_order, 401, None
             else:
                 if session.get_403_count() > 0:
-                    self.count_403s[segment_order] = self.count_403s.get(segment_order, 0) + session.get_403_count()
+                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
+                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
             logging.info("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
@@ -2365,4 +2380,12 @@ class StreamRecovery:
             self.delete_temp_database()
             self.delete_ts_file()
             os.remove(self.folder)
+    def save_stats(self):
+        # Stats files
+        with open("{0}.{1}_seg_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
+            json.dump(self.count_403s, outfile, indent=4)
+        with open("{0}.{1}_usr_ag_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
+            json.dump(self.user_agent_403s, outfile, indent=4)
+        with open("{0}.{1}_usr_ag_full_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
+            json.dump(self.user_agent_full_403s, outfile, indent=4)
  
