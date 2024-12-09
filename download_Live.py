@@ -2167,24 +2167,14 @@ class StreamRecovery:
 
             clamped_backoff = min(self.retry_time_clamp, base_backoff)
             return clamped_backoff
-        
+
     class SessionWith403Counter(requests.Session):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.num_403_responses = 0  # Counter for 403 responses
-
-        def get(self, url, *args, **kwargs):
-            # Call the parent class's get method
-            response = super().get(url, *args, **kwargs)
-
-            # Increment counter if response status code is 403
-            if response.status_code == 403:
-                self.num_403_responses += 1
-
-            return response
+            self.num_retries = 0  # Initialize counter for 403 responses
 
         def get_403_count(self):
-            return self.num_403_responses
+            return self.num_retries  # Return the number of 403 responses
         
 
     # Function to download a single segment
@@ -2195,7 +2185,7 @@ class StreamRecovery:
         adapter = HTTPAdapter(max_retries=self.retry_strategy)
         # create a new session object
         #session = requests.Session()
-        session = self.SessionWith403Counter()
+        session = requests.Session()
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         user_agent = random.choice(user_agents)
@@ -2209,18 +2199,11 @@ class StreamRecovery:
                 print("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
                 self.is_403 = False
                 self.is_401 = False
-                #return latest header number and segment content
-                if session.get_403_count() > 0:
-                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
-                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
-                
+                #return latest header number and segment content                
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
             elif response.status_code == 403:
                 print("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
-                if session.get_403_count() > 0:
-                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
-                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 return -1, None, segment_order, response.status_code, response.headers
             else:
                 print("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
@@ -2235,27 +2218,16 @@ class StreamRecovery:
             if "(Caused by ResponseError('too many 204 error responses')" in str(e):
                 self.is_403 = False
                 self.is_401 = False
-                if session.get_403_count() > 0:
-                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
-                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 return -1, bytes(), segment_order, 204, None
             elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
                 self.is_403 = True
-                if session.get_403_count() > 0:
-                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
-                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
-                    self.user_agent_full_403s.update({user_agent: (self.user_agent_full_403s.get(user_agent, 0) + 1)})
+                self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
+                self.user_agent_full_403s.update({user_agent: (self.user_agent_full_403s.get(user_agent, 0) + 1)})
                 return -1, None, segment_order, 403, None
             elif "(Caused by ResponseError('too many 401 error responses')" in str(e):
                 self.is_401 = True
-                if session.get_403_count() > 0:
-                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
-                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 return -1, None, segment_order, 401, None
             else:
-                if session.get_403_count() > 0:
-                    self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
-                    self.user_agent_403s.update({user_agent: (self.count_403s.get(user_agent, 0) + session.get_403_count())})
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
             logging.info("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
