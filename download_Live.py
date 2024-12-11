@@ -758,7 +758,7 @@ class DownloadStream:
                     break
                         
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
@@ -881,7 +881,7 @@ class DownloadStream:
                             
                             if info_dict is not None:
                                 self.info_dict = info_dict                                                   
-                    time.sleep(5)
+                    time.sleep(10)
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(submitted_segments) > 0:
@@ -891,9 +891,10 @@ class DownloadStream:
                     print("Video is private and still has segments remaining, moving to stream recovery")
                     self.commit_batch(self.conn)
                     self.close_connection()
-                    print("Sleeping for 60 seconds to increase chances of URLs succeeding in recovery")
-                    time.sleep(30)
-                    downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=self.max_workers, file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
+                    for i in range(30, 0, -1):
+                        print("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
+                        time.sleep(60)
+                    downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=(self.max_workers*int(len(self.stream_urls))), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
                     downloader.live_dl()
                     downloader.close_connection()
                     self.cursor, self.conn = self.create_connection()
@@ -913,13 +914,16 @@ class DownloadStream:
 
 
                 # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
-                future_to_seg.update(
-                    {
-                        executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
-                        for seg_num in segments_to_download
-                        if seg_num not in submitted_segments and not submitted_segments.add(seg_num)
-                    }
-                )
+                
+                for seg_num in segments_to_download:
+                    if seg_num not in submitted_segments:
+                        future_to_seg.update({
+                            executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                        })
+                        submitted_segments.add(seg_num)
+                    # Have up to 2x max workers of threads submitted
+                    if len(future_to_seg) > 2*self.max_workers:
+                        break
                 
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
@@ -1039,6 +1043,7 @@ class DownloadStream:
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
         self.check_kill()
+        #time.sleep(120)
         try:
             # create an HTTP adapter with the retry strategy and mount it to the session
             adapter = HTTPAdapter(max_retries=self.retry_strategy)
@@ -1710,7 +1715,7 @@ class DownloadStreamDirect:
             os.remove(self.folder)
             
 class StreamRecovery:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=15, stream_urls=[]):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[]):        
         from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -1895,7 +1900,27 @@ class StreamRecovery:
                     del future_to_seg[future]
                       
                 #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
-                        
+                                       
+                if len(segments_retries) <= 0:
+                    print("All segment downloads complete, ending...")
+                    break
+                
+                elif self.is_403 and self.expires is not None and time.time() > self.expires:
+                    print("URL(s) have expired and failures being detected, ending...")
+                    break
+                
+                elif all(value['retries'] > self.fragment_retries for value in segments_retries.values()):
+                    print("All remaining segments have exceeded their retry count, ending...")
+                    break
+                
+                # Request base url if receiving 403s
+                elif self.is_403:
+                    for url in self.stream_urls:
+                        if self.live_status == 'post_live':
+                            self.update_latest_segment(url="{0}&sq={1}".format(url, self.latest_sequence+1))
+                        else:
+                            self.update_latest_segment(url=url)
+                    
                 segments_to_download = set()
                 potential_segments_to_download = set(segments_retries.keys()) - self.already_downloaded
                 # Don't bother calculating if there are threads not done
@@ -1927,7 +1952,7 @@ class StreamRecovery:
                     }
                     non_priority_items = {
                         key: value for key, value in segments_retries.items()
-                        if not ((current_time - value['last_retry']) <= value['ideal_retry_time'] and value['retries'] > 0)
+                        if not ((current_time - value['last_retry']) > value['ideal_retry_time'] and value['retries'] > 0)
                     }
 
                     # Step 2: Sort each group (preserve keys)
@@ -1940,31 +1965,9 @@ class StreamRecovery:
                     
                 if sorted_retries != -1:
                     potential_segments_to_download = sorted_retries.keys()
-                
-                if len(segments_retries) <= 0:
-                    print("All segment downloads complete, ending...")
-                    break
-                
-                elif self.is_403 and self.expires is not None and time.time() > self.expires:
-                    print("URL(s) have expired and failures being detected, ending...")
-                    break
-                
-                elif all(value['retries'] > self.fragment_retries for value in segments_retries.values()):
-                    print("All remaining segments have exceeded their retry count, ending...")
-                    break
-                
-                # Request base url if receiving 403s
-                elif self.is_403:
-                    for url in self.stream_urls:
-                        if self.live_status == 'post_live':
-                            self.update_latest_segment(url="{0}&sq={1}".format(url, self.latest_sequence+1))
-                        else:
-                            self.update_latest_segment(url=url)
-                    
-                                           
                      
                 #if len(not_done) < 1 or (len(not_done) < self.max_workers and not (self.is_403 or self.is_401)):
-                if len(not_done) < 1 or len(not_done) < self.max_workers:
+                if not not_done or len(not_done) < self.max_workers:
                 #elif len(not_done) <= 0 and not self.is_401 and not self.is_403:
                     new_download = set()
                     number_to_add = self.max_workers - len(not_done)
@@ -1975,7 +1978,11 @@ class StreamRecovery:
                         number_to_add = self.max_workers*2 - len(not_done)
                     """
                     for seg_num in potential_segments_to_download:
-                        if seg_num not in self.already_downloaded and seg_num not in submitted_segments and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
+                        #print("{0}: {1} seconds since last retry".format(seg_num,time.time() - segments_retries[seg_num]['last_retry']))
+                        if seg_num not in submitted_segments and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:                            
+                            if seg_num in self.already_downloaded:
+                                del segments_retries[seg_num]
+                                continue
                             if self.segment_exists(self.cursor, seg_num):
                                 self.already_downloaded.add(seg_num)
                                 continue
@@ -2022,14 +2029,11 @@ class StreamRecovery:
                         }
                     )
                 '''
-                if len(submitted_segments) == 0 and len(segments_retries) < 11 and time.time() - last_print > 15:
-                    print("Remaining segments for {1}: {0}".format(segments_retries, self.format))
+                if len(submitted_segments) == 0 and len(segments_retries) < 11 and time.time() - last_print > self.segment_retry_time:
+                    print("{2} remaining segments for {1}: {0}".format(segments_retries, self.format, len(segments_retries)))
                     last_print = time.time()
                 elif len(submitted_segments) == 0 and time.time() - last_print > 15:
                     print("{0} segments remain for {1}".format(len(segments_retries), self.format))
-                    last_print = time.time()
-                elif time.time() - last_print > 30:
-                    print(self.count_403s)
                     last_print = time.time()
                 
             self.commit_batch(self.conn)
@@ -2147,16 +2151,19 @@ class StreamRecovery:
         return set(row[0] for row in self.cursor.fetchall())
     
     class CustomRetry(Retry):
-        def __init__(self, *args, downloader_instance=None, retry_time_clamp=4, **kwargs):
+        def __init__(self, *args, downloader_instance=None, retry_time_clamp=4, segment_number=None, **kwargs):
             super().__init__(*args, **kwargs)
             self.downloader_instance = downloader_instance  # Store the Downloader instance
             self.retry_time_clamp = retry_time_clamp
+            self.segment_number = segment_number
 
         def increment(self, method=None, url=None, response=None, error=None, _pool=None, _stacktrace=None):
             # Check the response status code and set self.is_403 if it's 403
             if response and response.status == 403:
                 if self.downloader_instance:  # Ensure the instance exists
                     self.downloader_instance.is_403 = True
+                if self.segment_number is not None:
+                    print("{0} encountered a 403")
                     
             return super().increment(method, url, response, error, _pool, _stacktrace)
         
@@ -2221,7 +2228,7 @@ class StreamRecovery:
                 return -1, bytes(), segment_order, 204, None
             elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
                 self.is_403 = True
-                self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + session.get_403_count())})
+                self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + 1)})
                 self.user_agent_full_403s.update({user_agent: (self.user_agent_full_403s.get(user_agent, 0) + 1)})
                 return -1, None, segment_order, 403, None
             elif "(Caused by ResponseError('too many 401 error responses')" in str(e):
