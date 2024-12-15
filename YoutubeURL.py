@@ -71,50 +71,61 @@ class Formats:
             best.extend(self.video[key])
         self.video['best'] = best
         
+    def get_itag(self, url):
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+
+        # Get the 'expire' parameter
+        itag = query_params.get("itag", [None])[0]
+        return itag
+        
     def getFormatURL(self, info_json, resolution, return_format=False, not_selector=None):     
-        resolution = str(resolution)
+        resolution = str(resolution).strip()
         
         # If resolution is a string, check if it is a number and convert it for
-        if resolution in self.video['best'] or resolution in self.audio:
-            
+        if resolution in self.video['best'] or resolution in self.audio:           
             
             # Shuffle formats in case of multiple formats in info.json
             shuffle(info_json['formats'])
-            for ytdlp_format in info_json['formats']:
-                if resolution == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https':
-                    # Split by dash to handle multiple instances of a format in the info.json
-                    split = ytdlp_format['format_id'].split('-')
-                    if len(split) > 1 and not_selector is not None:
-                        if split[1] != str(not_selector):
-                            if return_format:
-                                return ytdlp_format['url'], split[0]
-                            else:
-                                return ytdlp_format['url']  
-                    else:
-                        if return_format:
-                            return ytdlp_format['url'], split[0]
-                        else:
-                            return ytdlp_format['url']           
-        elif resolution == "audio_only":
-            for audio_format in self.audio:
-                audio_format = str(audio_format)
-                #if best['audio'] is None:
-                # Shuffle formats in case of multiple formats in info.json
-                shuffle(info_json['formats'])
-                for ytdlp_format in info_json['formats']:
-                    if audio_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https':
+            for ytdlp_format in info_json['formats']:                
+                if ytdlp_format['protocol'] == 'https':
+                    itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                    if resolution == itag:                  
+                        # Split by dash to handle multiple instances of a format in the info.json
                         split = ytdlp_format['format_id'].split('-')
                         if len(split) > 1 and not_selector is not None:
                             if split[1] != str(not_selector):
                                 if return_format:
-                                    return ytdlp_format['url'], int(split[0])
+                                    return ytdlp_format['url'], itag
                                 else:
                                     return ytdlp_format['url']  
                         else:
                             if return_format:
-                                return ytdlp_format['url'], int(split[0])
+                                return ytdlp_format['url'], itag
                             else:
-                                return ytdlp_format['url'] 
+                                return ytdlp_format['url']           
+        elif resolution == "audio_only":
+            for audio_format in self.audio:
+                audio_format = str(audio_format).strip()
+                #if best['audio'] is None:
+                # Shuffle formats in case of multiple formats in info.json
+                shuffle(info_json['formats'])
+                for ytdlp_format in info_json['formats']:
+                    if ytdlp_format['protocol'] == 'https':
+                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                        if audio_format == itag:  
+                            split = ytdlp_format['format_id'].split('-')
+                            if len(split) > 1 and not_selector is not None:
+                                if split[1] != str(not_selector):
+                                    if return_format:
+                                        return ytdlp_format['url'], itag
+                                    else:
+                                        return ytdlp_format['url']  
+                            else:
+                                if return_format:
+                                    return ytdlp_format['url'], itag
+                                else:
+                                    return ytdlp_format['url'] 
                     
         elif self.video.get(resolution, None) is not None:  
             format_list = self.video.get(resolution)
@@ -123,19 +134,21 @@ class Formats:
                 # Shuffle formats in case of multiple formats in info.json
                 shuffle(info_json['formats'])
                 for ytdlp_format in info_json['formats']:
-                    if video_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https':
-                        split = ytdlp_format['format_id'].split('-')
-                        if len(split) > 1 and not_selector is not None:
-                            if split[1] != str(not_selector):
-                                if return_format:
-                                    return ytdlp_format['url'], split[0]
-                                else:
-                                    return ytdlp_format['url']  
-                        else:
-                            if return_format:
-                                return ytdlp_format['url'], split[0]
+                    if ytdlp_format['protocol'] == 'https':
+                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                        if video_format == itag:  
+                            split = ytdlp_format['format_id'].split('-')
+                            if len(split) > 1 and not_selector is not None:
+                                if split[1] != str(not_selector):
+                                    if return_format:
+                                        return ytdlp_format['url'], itag
+                                    else:
+                                        return ytdlp_format['url']  
                             else:
-                                return ytdlp_format['url'] 
+                                if return_format:
+                                    return ytdlp_format['url'], itag
+                                else:
+                                    return ytdlp_format['url'] 
                     
         elif resolution.endswith('*'):
             format_list = self.wildcard_search(resolution)
@@ -144,19 +157,21 @@ class Formats:
                 # Shuffle formats in case of multiple formats in info.json
                 shuffle(info_json['formats'])
                 for ytdlp_format in info_json['formats']:
-                    if video_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https':
-                        split = ytdlp_format['format_id'].split('-')
-                        if len(split) > 1 and not_selector is not None:
-                            if split[1] != str(not_selector):
-                                if return_format:
-                                    return ytdlp_format['url'], split[0]
-                                else:
-                                    return ytdlp_format['url']  
-                        else:
-                            if return_format:
-                                return ytdlp_format['url'], split[0]
+                    if ytdlp_format['protocol'] == 'https':
+                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                        if video_format == itag:  
+                            split = ytdlp_format['format_id'].split('-')
+                            if len(split) > 1 and not_selector is not None:
+                                if split[1] != str(not_selector):
+                                    if return_format:
+                                        return ytdlp_format['url'], itag
+                                    else:
+                                        return ytdlp_format['url']  
                             else:
-                                return ytdlp_format['url'] 
+                                if return_format:
+                                    return ytdlp_format['url'], itag
+                                else:
+                                    return ytdlp_format['url'] 
         
         return None 
     
@@ -172,25 +187,29 @@ class Formats:
         return combined_list
     
     def getAllFormatURL(self, info_json, resolution, return_format=False, not_selector=None): 
+        resolution = str(resolution).strip()
         urls = []   
         format = None    
         
-        if (isinstance(resolution, int) or (isinstance(resolution, str) and resolution.isdigit())) and (int(resolution) in self.video['best'] or int(resolution) in self.audio):
+        if resolution in self.video['best'] or resolution in self.audio:
             resolution = str(resolution)
-            for ytdlp_format in info_json['formats']:
-                
+            for ytdlp_format in info_json['formats']:                
                 # If format has yet to be found, match the first matching format ID, otherwise only grab URLs of the same format
-                if resolution == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https' and (format is None or format == ytdlp_format['format_id'].split('-')[0]):
-                    urls.append(ytdlp_format['url'])
-                    format = ytdlp_format['format_id'].split('-')[0]        
+                if ytdlp_format['protocol'] == 'https':
+                    itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                    if resolution == itag and (format is None or format == itag):   
+                        urls.append(ytdlp_format['url'])
+                        format = itag      
         elif resolution == "audio_only":
             for audio_format in self.audio:
                 audio_format = str(audio_format)
                 #if best['audio'] is None:
                 for ytdlp_format in info_json['formats']:
-                    if audio_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https' and (format is None or format == ytdlp_format['format_id'].split('-')[0]):
-                        urls.append(ytdlp_format['url'])
-                        format = ytdlp_format['format_id'].split('-')[0]
+                    if ytdlp_format['protocol'] == 'https':
+                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                        if audio_format == itag and (format is None or format == itag):  
+                            urls.append(ytdlp_format['url'])
+                            format = itag
                     
         elif self.video.get(resolution, None) is not None:  
             format_list = self.video.get(resolution)
@@ -198,18 +217,22 @@ class Formats:
                 video_format = str(video_format)
 
                 for ytdlp_format in info_json['formats']:
-                    if video_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https' and (format is None or format == ytdlp_format['format_id'].split('-')[0]):
-                        urls.append(ytdlp_format['url'])
-                        format = ytdlp_format['format_id'].split('-')[0]
+                    if ytdlp_format['protocol'] == 'https':
+                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                        if video_format == itag and (format is None or format == itag):  
+                            urls.append(ytdlp_format['url'])
+                            format = itag
                     
         elif resolution.endswith('*'):
             format_list = self.wildcard_search(resolution)
             for video_format in format_list:
                 video_format = str(video_format)
                 for ytdlp_format in info_json['formats']:
-                    if video_format == ytdlp_format['format_id'].split('-')[0] and ytdlp_format['protocol'] == 'https' and (format is None or format == ytdlp_format['format_id'].split('-')[0]):
-                        urls.append(ytdlp_format['url'])
-                        format = ytdlp_format['format_id'].split('-')[0]
+                    if ytdlp_format['protocol'] == 'https':
+                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                        if video_format == itag and (format is None or format == itag):  
+                            urls.append(ytdlp_format['url'])
+                            format = itag
                     
         if urls:
             if return_format:

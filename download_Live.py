@@ -125,7 +125,7 @@ def download_segments(info_dict, resolution='best', options={}):
             
             format_parser = YoutubeURL.Formats()
             # For use of specificed format. Expects two values, but can work with more
-            if options.get('video_format', None) is not None or options.get('video_format', None) is not None:
+            if options.get('video_format', None) is not None or options.get('audio_format', None) is not None:
                 if options.get('recovery', False) is True:
                     if options.get('video_format', None) is not None:
                         if int(options.get('video_format')) not in format_parser.video.get('best'):    
@@ -1078,7 +1078,7 @@ class DownloadStream:
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
         self.check_kill()
-        time.sleep(120)
+        #time.sleep(120)
         try:
             # create an HTTP adapter with the retry strategy and mount it to the session
             adapter = HTTPAdapter(max_retries=self.retry_strategy)
