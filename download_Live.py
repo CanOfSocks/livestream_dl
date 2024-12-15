@@ -756,7 +756,10 @@ class DownloadStream:
                 
             except PermissionError as e:
                 print("Permission error: {0}".format(e))
-                self.is_private = True
+                if "membership" in str(e) and not self.is_403:
+                    print("{0} is now members only. Continuing until 403 errors")
+                else:
+                    self.is_private = True
             except ValueError as e:
                 print("Value error: {0}".format(e))
                 if self.get_expire_time(self.stream_url) < time.time():
@@ -923,17 +926,15 @@ class DownloadStream:
                     print("Video is private and still has segments remaining, moving to stream recovery")
                     self.commit_batch(self.conn)
                     self.close_connection()
-                    """
-                    for i in range(30, 0, -1):
+                    
+                    for i in range(5, 0, -1):
                         print("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
                         time.sleep(60)
-                    """
-                    downloader = StreamRecovery(info_dict=self.info_dict, format=self.format, batch_size=self.batch_size, max_workers=(self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
+                    
+                    downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
                     downloader.live_dl()
                     downloader.close_connection()
-                    self.cursor, self.conn = self.create_connection()
-                    print("Stream recovery finished, ending live download")
-                    break
+                    return True
                 else:
                     wait = 0
                     
@@ -1749,7 +1750,8 @@ class DownloadStreamDirect:
             os.remove(self.folder)
             
 class StreamRecovery:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], format=None):        
+    
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[]):        
         from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -1763,10 +1765,10 @@ class StreamRecovery:
         #print("Stream recovery info dict: {0}".format(info_dict))
         #print("Stream recovery format: {0}".format(resolution))
         
-        # If stream urls and a format have been passed from a live downloader, use those. If not, use the resolution to extract the url from the info_dict given
-        if stream_urls and format:
-            self.stream_urls = stream_urls
-            self.format = format
+        # If stream URLs are given, use them to get the format and also try to extract any URLs from the info.json too. If no stream URLs are passed, use the given resolution and the info.json only               
+        if stream_urls:
+            self.format = self.get_format_from_url(stream_urls[0])
+            self.stream_urls = list(set(stream_urls) | set(YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=False)))            
         else:
             self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
@@ -1869,6 +1871,14 @@ class StreamRecovery:
         if expire_value is not None:
             return int(expire_value)
         return expire_value
+    
+    def get_format_from_url(self, url):
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+
+        # Get the 'expire' parameter
+        itag = query_params.get("itag", [None])[0]
+        return itag
                 
     def live_dl(self):
         #from itertools import groupby
@@ -1881,7 +1891,7 @@ class StreamRecovery:
         self.sleep_time = max(self.estimated_segment_duration, 0.1)
         
         # Track retries of all missing segments in database      
-        segments_retries = {key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
+        self.segments_retries = {key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
         segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
         
         i = 0
@@ -1914,7 +1924,8 @@ class StreamRecovery:
                         submitted_segments.remove(seg_num)
                     
                     if head_seg_num > self.latest_sequence:
-                        print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                        print("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
+                        self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, head_seg_num) if key not in self.already_downloaded})
                         self.latest_sequence = head_seg_num
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
@@ -1926,8 +1937,8 @@ class StreamRecovery:
                         uncommitted_inserts += 1
                         
                         # Assume segment will be added
-                        if segments_retries.get(seg_num, None) is not None:
-                            del segments_retries[seg_num]
+                        if self.segments_retries.get(seg_num, None) is not None:
+                            del self.segments_retries[seg_num]
                         
                         # If finished threads exceeds batch size, commit the whole batch of threads at once. 
                         # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
@@ -1937,10 +1948,10 @@ class StreamRecovery:
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
                     else:
-                        if segments_retries.get(seg_num, None) is not None:
-                            segments_retries[seg_num]['retries'] = segments_retries[seg_num]['retries'] + 1
-                            segments_retries[seg_num]['last_retry'] = time.time()
-                            if segments_retries[seg_num]['retries'] >= self.fragment_retries:
+                        if self.segments_retries.get(seg_num, None) is not None:
+                            self.segments_retries[seg_num]['retries'] = self.segments_retries[seg_num]['retries'] + 1
+                            self.segments_retries[seg_num]['last_retry'] = time.time()
+                            if self.segments_retries[seg_num]['retries'] >= self.fragment_retries:
                                 print("Segment {0} of {1} has exceeded maximum number of retries")
                     
                     # Remove completed thread to free RAM
@@ -1948,7 +1959,7 @@ class StreamRecovery:
                       
                 #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                                        
-                if len(segments_retries) <= 0:
+                if len(self.segments_retries) <= 0:
                     print("All segment downloads complete, ending...")
                     break
                 
@@ -1956,7 +1967,7 @@ class StreamRecovery:
                     print("URL(s) have expired and failures being detected, ending...")
                     break
                 
-                elif all(value['retries'] > self.fragment_retries for value in segments_retries.values()):
+                elif all(value['retries'] > self.fragment_retries for value in self.segments_retries.values()):
                     print("All remaining segments have exceeded their retry count, ending...")
                     break
                 
@@ -1977,13 +1988,13 @@ class StreamRecovery:
                             self.update_latest_segment(url=url)
                     
                 segments_to_download = set()
-                potential_segments_to_download = set(segments_retries.keys()) - self.already_downloaded
+                potential_segments_to_download = set(self.segments_retries.keys()) - self.already_downloaded
                 # Don't bother calculating if there are threads not done
                 #if len(not_done) <= 0:      
                 sorted_retries = -1
                 if self.sequential:
                     # Create a dictionary sorted by number of retries, lowest first, then by segment number, lowest first
-                    sorted_retries = dict(sorted(segments_retries.items(), key=lambda item: (item[1]['retries'], item[0])))
+                    sorted_retries = dict(sorted(self.segments_retries.items(), key=lambda item: (item[1]['retries'], item[0])))
                 else:
                     """
                     # Step 1: Sort the dictionary by `retries` first
@@ -2002,11 +2013,11 @@ class StreamRecovery:
                     current_time = time.time()
                     # Step 1: Separate items into two groups
                     priority_items = {
-                        key: value for key, value in segments_retries.items()
+                        key: value for key, value in self.segments_retries.items()
                         if (current_time - value['last_retry']) > value['ideal_retry_time'] and value['retries'] > 0
                     }
                     non_priority_items = {
-                        key: value for key, value in segments_retries.items()
+                        key: value for key, value in self.segments_retries.items()
                         if not ((current_time - value['last_retry']) > value['ideal_retry_time'] and value['retries'] > 0)
                     }
 
@@ -2034,15 +2045,15 @@ class StreamRecovery:
                     """
                     for seg_num in potential_segments_to_download:
                         #print("{0}: {1} seconds since last retry".format(seg_num,time.time() - segments_retries[seg_num]['last_retry']))
-                        if seg_num not in submitted_segments and segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:                            
+                        if seg_num not in submitted_segments and self.segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - self.segments_retries[seg_num]['last_retry'] > self.segment_retry_time:                            
                             if seg_num in self.already_downloaded:
-                                del segments_retries[seg_num]
+                                del self.segments_retries[seg_num]
                                 continue
                             if self.segment_exists(self.cursor, seg_num):
                                 self.already_downloaded.add(seg_num)
                                 continue
                             new_download.add(seg_num)
-                            print("Adding segment {0} of {2} with retries: {1}".format(seg_num, segments_retries[seg_num]['retries'], self.format))
+                            print("Adding segment {0} of {2} with retries: {1}".format(seg_num, self.segments_retries[seg_num]['retries'], self.format))
                         if len(new_download) >= number_to_add:                            
                             break
                     segments_to_download = new_download
@@ -2084,16 +2095,16 @@ class StreamRecovery:
                         }
                     )
                 '''
-                if len(submitted_segments) == 0 and len(segments_retries) < 11 and time.time() - last_print > self.segment_retry_time:
-                    print("{2} remaining segments for {1}: {0}".format(segments_retries, self.format, len(segments_retries)))
+                if len(submitted_segments) == 0 and len(self.segments_retries) < 11 and time.time() - last_print > self.segment_retry_time:
+                    print("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
                     last_print = time.time()
                 elif len(submitted_segments) == 0 and time.time() - last_print > 15:
-                    print("{0} segments remain for {1}".format(len(segments_retries), self.format))
+                    print("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
                     last_print = time.time()
                 
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
-        return len(segments_retries) <= 0
+        return len(self.segments_retries) <= 0
 
     def update_latest_segment(self, url=None):
         # Kill if keyboard interrupt is detected
@@ -2126,7 +2137,10 @@ class StreamRecovery:
         
         stream_url_info = self.get_Headers(url)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
-            self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
+            new_latest = int(stream_url_info.get("X-Head-Seqnum"))
+            if new_latest > self.latest_sequence:
+                self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, new_latest) if key not in self.already_downloaded})
+            self.latest_sequence = new_latest
             print("Latest sequence: {0}".format(self.latest_sequence))
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:

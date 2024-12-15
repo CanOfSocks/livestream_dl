@@ -67,7 +67,8 @@ def get_Video_Info(id, wait=True, cookies=None):
                 raise PermissionError("Video {0} is private, unable to get stream URLs".format(id))
             elif 'This live event will begin in' in str(e) or 'Premieres in' in str(e):
                 raise ValueError("Video is not yet available. Consider using waiting option")
-            elif "This video is available to this channel's members on level" in str(e):
+            #elif "This video is available to this channel's members on level" in str(e) or "members-only content" in str(e):
+            elif " members " in str(e) or " members-only " in str(e):
                 raise PermissionError("Video {0} is a membership video. Requires valid cookies".format(id))
             else:
                 raise e
