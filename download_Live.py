@@ -45,12 +45,12 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
         if not keep_database:
             downloader.delete_temp_database()
         elif downloader.temp_db_file != ':memory:':
-            database_file = fileInfo(downloader.temp_db_file, type='database', format=downloader.format)
+            database_file = fileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
     finally:
         # Explicitly close connection
         downloader.close_connection()
-        file = fileInfo(file_name, type=downloader.type, format=downloader.format)
+        file = fileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
 # Create runner function for each download format
@@ -61,10 +61,10 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
         if not keep_state:
             downloader.delete_state_file()
         else:
-            database_file = fileInfo(downloader.state_file_name, type='database', format=downloader.format)
+            database_file = fileInfo(downloader.state_file_name, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
     finally:
-        file = fileInfo(file_name, type=downloader.type, format=downloader.format)
+        file = fileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
 def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5):
@@ -77,11 +77,11 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
         if not keep_database:
             downloader.delete_temp_database()
         elif downloader.temp_db_file != ':memory:':
-            database_file = fileInfo(downloader.temp_db_file, type='database', format=downloader.format)
+            database_file = fileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
     # Explicitly close connection
     downloader.close_connection()
-    file = fileInfo(file_name, type=downloader.type, format=downloader.format)
+    file = fileInfo(file_name, file_type=downloader.type, format=downloader.format)
     
     
     
@@ -113,9 +113,9 @@ def download_segments(info_dict, resolution='best', options={}):
             # Download auxiliary files (thumbnail, info,json etc)
             auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
             futures.add(auxiliary_thread)
-            live_chat_thread = None
             
-            if options.get('live_chat') is True:
+            live_chat_thread = None            
+            if options.get('live_chat', False) is True:
                 import threading
                 live_chat_thread = threading.Thread(target=download_live_chat, args=(info_dict,options), daemon=True)
                 live_chat_thread.start()
@@ -394,16 +394,16 @@ def download_live_chat(info_dict, options):
             result = ydl.process_ie_result(info_dict)
     except Exception as e:
         print("\033[31m{0}\033[0m".format(e))
-
+    time.sleep(1)
     if os.path.exists("{0}.part".format(livechat_filename)):
         shutil.move("{0}.part", livechat_filename)
     
     try:
-        with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
+        with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
             zipf.write(livechat_filename, arcname=os.path.basename(livechat_filename))
         os.remove(livechat_filename)
         live_chat = {
-            'live_chat': fileInfo(path=base_output, ext='.live_chat.zip', type='live_chat')
+            'live_chat': fileInfo(path=base_output, ext='.live_chat.zip', file_type='live_chat')
         }
         global live_chat_result
         live_chat_result = live_chat
@@ -424,6 +424,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         base_output = filename
     
     created_files = {}
+    """
     try:
         if options.get('write_info_json'):
             info_file = "{0}.info.json".format(base_output)
@@ -465,6 +466,30 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
             created_files['thumbnail'] = fileInfo(base_output, ext='jpg', type='thumbnail')      
     except Exception as e:
         print("\033[31m{0}\033[0m".format(e))
+    """
+    ydl_opts = {
+        'skip_download': True,
+        'quiet': True,
+#        'cookiefile': options.get('cookies', None),
+        'writeinfojson': options.get('write_info_json', False),
+        'writedescription': options.get('write_description', False),
+        'writethumbnail': (options.get('write_thumbnail', False) or options.get("embed_thumbnail", False)),
+        'outtmpl': base_output
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        #base_name = ydl.prepare_filename(info_dict)
+        #result = ydl.download_with_info_file(info_dict)
+        thumbnails = ydl._write_thumbnails('video', info_dict, ydl.prepare_filename(info_dict, 'thumbnail'))
+        
+        if thumbnails:
+            thumb_base = str(os.path.splitext(thumbnails[0][0])[0])
+            thumb_ext = str(os.path.splitext(thumbnails[0][0])[1])
+            created_files['thumbnail'] = fileInfo(thumb_base, ext=thumb_ext, file_type='thumbnail')
+        if ydl._write_info_json('video', info_dict, ydl.prepare_filename(info_dict, 'infojson')) or os.path.exists(ydl.prepare_filename(info_dict, 'infojson')):
+            created_files['info_json'] = fileInfo(ydl.prepare_filename(info_dict), ext='info.json', file_type='info_json')
+            
+        if ydl._write_description('video', info_dict, ydl.prepare_filename(info_dict, 'description')) or os.path.exists(ydl.prepare_filename(info_dict, 'description')):
+            created_files['description'] = fileInfo(ydl.prepare_filename(info_dict), ext='description', file_type='description')
         
     return created_files, 'auxiliary'
     
@@ -540,14 +565,14 @@ def create_mp4(file_names, info_dict, options):
     ffmpeg_builder.append(os.path.abspath(base_output))
     
     ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
-    file_names['ffmpeg_cmd'] =  fileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), type='ffmpeg_command')
+    file_names['ffmpeg_cmd'] =  fileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
         
     print("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
     result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
     #print(result.stdout)
     #print(result.stderr)
     
-    file_names['merged'] = fileInfo(base_output, ext=ext, type='merged')
+    file_names['merged'] = fileInfo(base_output, ext=ext, file_type='merged')
     
     # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
@@ -582,7 +607,7 @@ def write_ffmpeg_command(command_array, filename):
     return filename
     
 class fileInfo:
-    def __init__(self, path, ext=None, type=None, size=None, abs_path=None, format=None, cookies_path=None):       
+    def __init__(self, path, ext=None, file_type=None, size=None, abs_path=None, format=None, cookies_path=None):       
         self.path = os.path.splitext(path)[0]
         
         self.basename = os.path.basename(path)
@@ -601,7 +626,7 @@ class fileInfo:
         
         self.ext = str(self.ext).lstrip('.')
             
-        self.type = type
+        self.type = file_type
         
         if size is None and os.path.exists(self.path):
             self.size = os.path.getsize(self.path)
@@ -620,7 +645,7 @@ class fileInfo:
         return "{0}.{1}".format(self.abs_path, self.ext)
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -679,6 +704,8 @@ class DownloadStream:
         self.estimated_segment_duration = 0
         self.refresh_retries = 0
         
+        self.recovery_thread_multiplier = recovery_thread_multiplier
+        
         self.cookies = cookies
         
         self.type = None
@@ -715,7 +742,7 @@ class DownloadStream:
                 if self.detect_manifest_change(info_json=info_dict) is True:
                     return True
                 
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -724,14 +751,18 @@ class DownloadStream:
                 if live_status is not None:
                     self.live_status = live_status
                 
-                if info_dict is not None:
+                if info_dict:
                     self.info_dict = info_dict    
                 
             except PermissionError as e:
-                print(e)
+                print("Permission error: {0}".format(e))
                 self.is_private = True
+            except ValueError as e:
+                print("Value error: {0}".format(e))
+                if self.get_expire_time(self.stream_url) < time.time():
+                    raise TimeoutError("Video is processed and stream url for {0} has expired, unable to continue...".format(self.format))
             except Exception as e:
-                print(e)                       
+                print("Error: {0}".format(e))                     
             self.url_checked = time.time()
                 
     def live_dl(self):
@@ -879,22 +910,25 @@ class DownloadStream:
                                     self.stream_urls.append(stream_url)
                                     self.refresh_retries = 0
                             
-                            if info_dict is not None:
+                            if info_dict:
                                 self.info_dict = info_dict                                                   
                     time.sleep(10)
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(submitted_segments) > 0:
                     print("Video is private, waiting for remaining threads to finish before going to stream recovery")
+                    time.sleep(5)
                     continue
                 elif len(segments_to_download) > 0 and self.is_private:
                     print("Video is private and still has segments remaining, moving to stream recovery")
                     self.commit_batch(self.conn)
                     self.close_connection()
+                    """
                     for i in range(30, 0, -1):
                         print("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
                         time.sleep(60)
-                    downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=(self.max_workers*int(len(self.stream_urls))), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
+                    """
+                    downloader = StreamRecovery(info_dict=self.info_dict, format=self.format, batch_size=self.batch_size, max_workers=(self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
                     downloader.live_dl()
                     downloader.close_connection()
                     self.cursor, self.conn = self.create_connection()
@@ -1043,7 +1077,7 @@ class DownloadStream:
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
         self.check_kill()
-        #time.sleep(120)
+        time.sleep(120)
         try:
             # create an HTTP adapter with the retry strategy and mount it to the session
             adapter = HTTPAdapter(max_retries=self.retry_strategy)
@@ -1715,21 +1749,34 @@ class DownloadStreamDirect:
             os.remove(self.folder)
             
 class StreamRecovery:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[]):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], format=None):        
         from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
         self.max_workers = max_workers
         
+        self.info_dict = info_dict
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
         
-        self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
+        #print("Stream recovery info dict: {0}".format(info_dict))
+        #print("Stream recovery format: {0}".format(resolution))
         
+        # If stream urls and a format have been passed from a live downloader, use those. If not, use the resolution to extract the url from the info_dict given
+        if stream_urls and format:
+            self.stream_urls = stream_urls
+            self.format = format
+        else:
+            self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
+        
+        print("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
+        """        
         if stream_urls:
-            self.stream_urls = list(set(self.stream_urls + stream_urls))
-        
+            if not self.stream_urls:
+                self.stream_urls = []
+            self.stream_urls = list(set(self.stream_urls) | set(stream_urls))
+        """
         if self.stream_urls is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
         
@@ -1913,6 +1960,14 @@ class StreamRecovery:
                     print("All remaining segments have exceeded their retry count, ending...")
                     break
                 
+                elif self.is_401:
+                    print("401s detected for {0}, sleeping for a minute")
+                    time.sleep(60)
+                    for url in self.stream_urls:
+                        if self.live_status == 'post_live':
+                            self.update_latest_segment(url="{0}&sq={1}".format(url, self.latest_sequence+1))
+                        else:
+                            self.update_latest_segment(url=url)
                 # Request base url if receiving 403s
                 elif self.is_403:
                     for url in self.stream_urls:

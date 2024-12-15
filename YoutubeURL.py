@@ -49,31 +49,34 @@ class YoutubeURL:
 class Formats:
     def __init__(self):
         self.video = {
-            "2160p60" : [337, 315, 266, 138], # 2160p60
-            "2160p" : [313, 336], # 2160p
-            "1440p60": [308], # 1440p60
-            "1440p": [271, 264], # 1440p
-            "1080p60": [335, 303, 299], # 1080p60
-            "premium": [312, 311], # Premium 1080p and 720p
-            "1080p": [248, 169, 137], # 1080p
-            "720p60": [334, 302, 298], # 720p60
-            "720p": [247, 136], # 720p
-            "480p": [244, 135], # 480p
-            "360p": [243, 134], # 360p
-            "240p": [242, 133], # 240p
-            "144p": [269, 160]  # 144p 
+            "2160p60" : ['337', '315', '266', '138'], # 2160p60
+            "2160p" : ['313', '336'], # 2160p
+            "1440p60": ['308'], # 1440p60
+            "1440p": ['271', '264'], # 1440p
+            "1080p60": ['335', '303', '299'], # 1080p60
+            "premium": ['312', '311'], # Premium 1080p and 720p
+            "1080p": ['248', '169', '137'], # 1080p
+            "720p60": ['334', '302', '298'], # 720p60
+            "720p": ['247', '136'], # 720p
+            "480p": ['244', '135'], # 480p
+            "360p": ['243', '134'], # 360p
+            "240p": ['242', '133'], # 240p
+            "144p": ['269', '160']  # 144p 
         }
         self.audio = [
-            251, 141, 171, 140, 250, 249, 139, 234, 233
+            '251', '141', '171', '140', '250', '249', '139', '234', '233'
         ]
         best = []
         for key in self.video:
             best.extend(self.video[key])
         self.video['best'] = best
         
-    def getFormatURL(self, info_json, resolution, return_format=False, not_selector=None):        
+    def getFormatURL(self, info_json, resolution, return_format=False, not_selector=None):     
+        resolution = str(resolution)
+        
+        # If resolution is a string, check if it is a number and convert it for
         if resolution in self.video['best'] or resolution in self.audio:
-            resolution = str(resolution)
+            
             
             # Shuffle formats in case of multiple formats in info.json
             shuffle(info_json['formats'])
@@ -104,12 +107,12 @@ class Formats:
                         if len(split) > 1 and not_selector is not None:
                             if split[1] != str(not_selector):
                                 if return_format:
-                                    return ytdlp_format['url'], split[0]
+                                    return ytdlp_format['url'], int(split[0])
                                 else:
                                     return ytdlp_format['url']  
                         else:
                             if return_format:
-                                return ytdlp_format['url'], split[0]
+                                return ytdlp_format['url'], int(split[0])
                             else:
                                 return ytdlp_format['url'] 
                     
@@ -171,7 +174,8 @@ class Formats:
     def getAllFormatURL(self, info_json, resolution, return_format=False, not_selector=None): 
         urls = []   
         format = None    
-        if resolution in self.video['best'] or resolution in self.audio:
+        
+        if (isinstance(resolution, int) or (isinstance(resolution, str) and resolution.isdigit())) and (int(resolution) in self.video['best'] or int(resolution) in self.audio):
             resolution = str(resolution)
             for ytdlp_format in info_json['formats']:
                 
@@ -213,5 +217,8 @@ class Formats:
             else:
                 return urls
         else:
-            return None 
+            if return_format:
+                return None, None
+            else:
+                return None 
             

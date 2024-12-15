@@ -59,7 +59,7 @@ def get_Video_Info(id, wait=True, cookies=None):
             info_dict = ydl.sanitize_info(info_dict)
             # Check if the video is private
             if not (info_dict.get('live_status') == 'is_live' or info_dict.get('live_status') == 'post_live'):
-                print("Video has been processed, please use yt-dlp directly")
+                #print("Video has been processed, please use yt-dlp directly")
                 raise ValueError("Video has been processed, please use yt-dlp directly")
         except yt_dlp.utils.DownloadError as e:
             # If an error occurs, we can assume the video is private or unavailable
