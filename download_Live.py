@@ -1751,16 +1751,18 @@ class DownloadStreamDirect:
             
 class StreamRecovery:
     
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[]):        
+    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live"):        
         from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
         self.max_workers = max_workers
         
-        self.info_dict = info_dict
-        self.id = info_dict.get('id')
-        self.live_status = info_dict.get('live_status')
+        # If info.json is defined, use the value within that, otherwise attempt to extracct ID from the first stream URL
+        self.id = info_dict.get('id', self.get_id_from_url(stream_urls[0]) if stream_urls else None)
+
+        # Use info.json if available, otherwise try using passed live_status value (default is_live)
+        self.live_status = info_dict.get('live_status', live_status)
         
         #print("Stream recovery info dict: {0}".format(info_dict))
         #print("Stream recovery format: {0}".format(resolution))
@@ -1775,7 +1777,7 @@ class StreamRecovery:
                     print("Stream recovery - Found format {0} from itags".format(self.format))
                     break
             
-            self.stream_urls = list(set(stream_urls) | set(YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=self.format, return_format=False)))            
+            self.stream_urls = stream_urls          
         else:
             self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
@@ -1887,6 +1889,12 @@ class StreamRecovery:
         print("Itags from url: {0}".format(query_params.get("itag", [None])))
         itag = query_params.get("itag", [None])[0]
         return str(itag).strip()
+    
+    def get_id_from_url(self, url):
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        id = str(query_params.get("id", [None])[0])[:11].strip()
+        return id
                 
     def live_dl(self):
         #from itertools import groupby
