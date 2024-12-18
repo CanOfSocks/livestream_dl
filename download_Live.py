@@ -658,12 +658,14 @@ class DownloadStream:
         self.live_status = info_dict.get('live_status')
         
         self.info_dict = info_dict
+        self.stream_urls = []
         
         self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
         
+        self.stream_urls.append(self.stream_url)
         # Extract and parse the query parameters into a dictionary
         parsed_url = urlparse(self.stream_url)        
         self.url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
@@ -716,8 +718,6 @@ class DownloadStream:
 
         self.conn, self.cursor = self.create_db(self.temp_db_file)    
         
-        self.stream_urls = [self.stream_url]
-        
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
@@ -746,8 +746,10 @@ class DownloadStream:
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
-                    filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) < time.time()]
+                    
+                    filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
                     self.stream_urls = filtered_array
+                    
                 if live_status is not None:
                     self.live_status = live_status
                 
@@ -782,10 +784,8 @@ class DownloadStream:
             
             # Trackers for optimistic segment downloads 
             optimistic = True
-            optimistic_seg = 0
-            
+            optimistic_seg = 0           
 
-            
             while True:     
                 self.check_kill()
                 if self.refresh_Check() is True:
@@ -930,7 +930,7 @@ class DownloadStream:
                     for i in range(5, 0, -1):
                         print("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
                         time.sleep(60)
-                    
+                    print("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
                     downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
                     downloader.live_dl()
                     downloader.close_connection()
@@ -1078,7 +1078,7 @@ class DownloadStream:
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
         self.check_kill()
-        #time.sleep(120)
+        time.sleep(120)
         try:
             # create an HTTP adapter with the retry strategy and mount it to the session
             adapter = HTTPAdapter(max_retries=self.retry_strategy)
@@ -1765,10 +1765,17 @@ class StreamRecovery:
         #print("Stream recovery info dict: {0}".format(info_dict))
         #print("Stream recovery format: {0}".format(resolution))
         
+        
         # If stream URLs are given, use them to get the format and also try to extract any URLs from the info.json too. If no stream URLs are passed, use the given resolution and the info.json only               
         if stream_urls:
-            self.format = self.get_format_from_url(stream_urls[0])
-            self.stream_urls = list(set(stream_urls) | set(YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=False)))            
+            print("{0} stream urls available".format(len(stream_urls)))
+            for url in stream_urls:
+                self.format = self.get_format_from_url(url)
+                if self.format is not None:
+                    print("Stream recovery - Found format {0} from itags".format(self.format))
+                    break
+            
+            self.stream_urls = list(set(stream_urls) | set(YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=self.format, return_format=False)))            
         else:
             self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
@@ -1875,10 +1882,11 @@ class StreamRecovery:
     def get_format_from_url(self, url):
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
-
+        print(query_params)
         # Get the 'expire' parameter
+        print("Itags from url: {0}".format(query_params.get("itag", [None])))
         itag = query_params.get("itag", [None])[0]
-        return itag
+        return str(itag).strip()
                 
     def live_dl(self):
         #from itertools import groupby
@@ -2111,7 +2119,7 @@ class StreamRecovery:
         self.check_kill()
         
         # Remove expired URLs
-        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) < time.time()]
+        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
         
         if len(filtered_array) > 0:
             self.stream_urls = filtered_array
@@ -2138,7 +2146,7 @@ class StreamRecovery:
         stream_url_info = self.get_Headers(url)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             new_latest = int(stream_url_info.get("X-Head-Seqnum"))
-            if new_latest > self.latest_sequence:
+            if new_latest > self.latest_sequence and self.latest_sequence > -1:
                 self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, new_latest) if key not in self.already_downloaded})
             self.latest_sequence = new_latest
             print("Latest sequence: {0}".format(self.latest_sequence))

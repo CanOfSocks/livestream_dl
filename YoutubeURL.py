@@ -77,7 +77,7 @@ class Formats:
 
         # Get the 'expire' parameter
         itag = query_params.get("itag", [None])[0]
-        return itag
+        return str(itag).strip()
         
     def getFormatURL(self, info_json, resolution, return_format=False, not_selector=None):     
         resolution = str(resolution).strip()
@@ -202,7 +202,7 @@ class Formats:
                         format = itag      
         elif resolution == "audio_only":
             for audio_format in self.audio:
-                audio_format = str(audio_format)
+                audio_format = str(audio_format).strip()
                 #if best['audio'] is None:
                 for ytdlp_format in info_json['formats']:
                     if ytdlp_format['protocol'] == 'https':

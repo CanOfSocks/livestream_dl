@@ -18,7 +18,7 @@ class MyLogger:
 
     def warning(self, msg):
         #
-        if "private" in msg.lower() or "UNAVAILABLE" in msg.upper() or "should already be available" in msg.lower():
+        if "private" in msg.lower() or "UNAVAILABLE" in msg.upper() or "unavailable" in str(msg) or "should already be available" in msg.lower() or "not available" in msg.lower():
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         else:
             print(msg)
