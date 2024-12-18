@@ -723,8 +723,8 @@ class DownloadStream:
         query_params = parse_qs(parsed_url.query)
 
         # Get the 'expire' parameter
-        expire_value = query_params.get('expire', [None])[0]
-        if expire_value is not None:
+        expire_value = query_params.get('expire', [-1])[0]
+        if expire_value >= 0:
             return int(expire_value)
         return expire_value
 
@@ -1775,8 +1775,7 @@ class StreamRecovery:
                 self.format = self.get_format_from_url(url)
                 if self.format is not None:
                     print("Stream recovery - Found format {0} from itags".format(self.format))
-                    break
-            
+                    break            
             self.stream_urls = stream_urls          
         else:
             self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
@@ -1876,8 +1875,8 @@ class StreamRecovery:
         query_params = parse_qs(parsed_url.query)
 
         # Get the 'expire' parameter
-        expire_value = query_params.get('expire', [None])[0]
-        if expire_value is not None:
+        expire_value = query_params.get('expire', [-1])[0]
+        if expire_value >= 0:
             return int(expire_value)
         return expire_value
     
