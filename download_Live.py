@@ -723,8 +723,8 @@ class DownloadStream:
         query_params = parse_qs(parsed_url.query)
 
         # Get the 'expire' parameter
-        expire_value = query_params.get('expire', [-1])[0]
-        if expire_value >= 0:
+        expire_value = query_params.get('expire', [None])[0]
+        if expire_value is not None:
             return int(expire_value)
         return expire_value
 
@@ -1876,7 +1876,7 @@ class StreamRecovery:
 
         # Get the 'expire' parameter
         expire_value = query_params.get('expire', [-1])[0]
-        if expire_value >= 0:
+        if expire_value is not None:
             return int(expire_value)
         return expire_value
     
