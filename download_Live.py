@@ -934,6 +934,8 @@ class DownloadStream:
                     downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
                     downloader.live_dl()
                     downloader.close_connection()
+                    time.sleep(1)
+                    self.create_connection(self.temp_db_file)
                     return True
                 else:
                     wait = 0
@@ -2113,7 +2115,7 @@ class StreamRecovery:
                 if len(submitted_segments) == 0 and len(self.segments_retries) < 11 and time.time() - last_print > self.segment_retry_time:
                     print("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
                     last_print = time.time()
-                elif len(submitted_segments) == 0 and time.time() - last_print > 15:
+                elif len(submitted_segments) == 0 and time.time() - last_print > self.segment_retry_time + 5:
                     print("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
                     last_print = time.time()
                 
