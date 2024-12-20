@@ -935,7 +935,7 @@ class DownloadStream:
                     downloader.live_dl()
                     downloader.close_connection()
                     time.sleep(1)
-                    self.create_connection(self.temp_db_file)
+                    self.conn, self.cursor = self.create_connection(self.temp_db_file)
                     return True
                 else:
                     wait = 0
