@@ -1080,7 +1080,7 @@ class DownloadStream:
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
         self.check_kill()
-        time.sleep(120)
+        #time.sleep(120)
         try:
             # create an HTTP adapter with the retry strategy and mount it to the session
             adapter = HTTPAdapter(max_retries=self.retry_strategy)
