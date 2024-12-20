@@ -107,3 +107,4 @@ While some components have been marked as added, testing of full functionalility
 - [ ] Overhaul file tracking and management to be more robust
 - [ ] Improve ffmpeg command execution
 - [ ] Implement proxy/IP pool options - This will need to be implmented with contributions as I have no way of testing these
+- [ ] Explore alternatives to yt-dlp's live chat downloader
