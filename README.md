@@ -101,7 +101,7 @@ If you would like to contribute, please submit a pull request.
 
 # To-Do
 While some components have been marked as added, testing of full functionalility may be required
-- [ ] Feature parity with all relevant options of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchive-raw-go]([https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go")
+- [ ] Feature parity with all relevant options of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchive-raw-go](https://github.com/HoloArchivists/ytarchive-raw-go "HoloArchivists/ytarchive-raw-go")
 - [ ] Implement proper log levels instead of printing all information to console
 - [ ] Fall to stream recovery if stream goes private during recording
 - [ ] Overhaul file tracking and management to be more robust
