@@ -71,7 +71,7 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
     
     downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries)        
     result = downloader.live_dl()
-    downloader.save_stats()    
+    #downloader.save_stats()    
     if result:
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -81,10 +81,8 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
             file_names['databases'].append(database_file)
     # Explicitly close connection
     downloader.close_connection()
-    file = fileInfo(file_name, file_type=downloader.type, format=downloader.format)
-    
-    
-    
+    file = fileInfo(file_name, file_type=downloader.type, format=downloader.format)   
+        
     return file, downloader.type
 
 # Multithreaded function to download new segments with delayed commit after a batch
@@ -389,11 +387,35 @@ def download_live_chat(info_dict, options):
     print("Downloading live chat to: {0}".format(livechat_filename))
     # Run yt-dlp with the specified options
     # Don't except whole process on live chat fail
+    
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.process_ie_result(info_dict)
-    except Exception as e:
-        print("\033[31m{0}\033[0m".format(e))
+        from chat_downloader import ChatDownloader
+        
+        # URL of the video or stream chat
+        chat_url = 'https://www.youtube.com/watch?v={0}'.format(info_dict.get('id'))
+        print("Attempting to download with chat downloader")
+        # Initialize the ChatDownloader
+        chat_downloader = ChatDownloader()
+
+        # Open a JSON file to save the chat
+
+        # Download the chat
+        chat = chat_downloader.get_chat(chat_url, output=livechat_filename, overwrite=False)
+
+        # Process chat messages for the duration of the timeout
+        for message in chat:
+            if kill_all:
+                print("Killing live chat downloader")
+                chat_downloader.close()
+                break
+    except ImportError as e:
+        print("Unable to import chat-downloader, using yt-dlp")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                #result = ydl.process_ie_result(info_dict)
+                result = ydl.download_with_info_file(info_dict)
+        except Exception as e:
+            print("\033[31m{0}\033[0m".format(e))
     time.sleep(1)
     if os.path.exists("{0}.part".format(livechat_filename)):
         shutil.move("{0}.part", livechat_filename)
