@@ -1,6 +1,10 @@
 import argparse
-import getUrls
-import download_Live
+try:
+    import getUrls
+    import download_Live
+except ModuleNotFoundError as e:
+    from . import getUrls
+    from . import download_Live
 import ast
 
 def parse_string_or_tuple(value):

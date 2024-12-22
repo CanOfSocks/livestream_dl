@@ -7,8 +7,13 @@ from datetime import datetime
 import time
 import concurrent.futures
 import json
-import getUrls
-import YoutubeURL
+
+try:
+    import getUrls
+    import YoutubeURL
+except ModuleNotFoundError as e:
+    from . import getUrls
+    from . import YoutubeURL
 
 import subprocess
 import os  
