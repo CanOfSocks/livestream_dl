@@ -11,9 +11,11 @@ import json
 try:
     import getUrls
     import YoutubeURL
+    from headers import user_agents
 except ModuleNotFoundError as e:
     from . import getUrls
     from . import YoutubeURL
+    from .headers import user_agents
 
 import subprocess
 import os  
@@ -24,7 +26,6 @@ import shutil
 
 import logging
 
-from headers import user_agents
 
 kill_all = False
 
