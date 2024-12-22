@@ -433,7 +433,18 @@ def download_live_chat(info_dict, options):
     except Exception as e:
         print("\033[31m{0}\033[0m".format(e))
     
+def replace_ip_in_json(file_name):
+    import re
+    pattern = re.compile(r'((?:[0-9]{1,3}\.){3}[0-9]{1,3})|((?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4})')
 
+    with open(file_name, 'r', encoding="utf8") as file:
+        content = file.read()
+
+    modified_content = re.sub(pattern, '0.0.0.0', content)
+
+    with open(file_name, 'w', encoding="utf8") as file:
+        file.write(modified_content)
+        
 def download_auxiliary_files(info_dict, options, thumbnail=None):
     if options.get('filename') is not None:
         filename = options.get('filename')
@@ -509,9 +520,12 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
             created_files['thumbnail'] = fileInfo(thumb_base, ext=thumb_ext, file_type='thumbnail')
         if ydl._write_info_json('video', info_dict, ydl.prepare_filename(info_dict, 'infojson')) or os.path.exists(ydl.prepare_filename(info_dict, 'infojson')):
             created_files['info_json'] = fileInfo(ydl.prepare_filename(info_dict), ext='info.json', file_type='info_json')
+            if options.get('remove_ip_from_json'):
+                replace_ip_in_json(created_files['info_json'].getAbsPath())
             
         if ydl._write_description('video', info_dict, ydl.prepare_filename(info_dict, 'description')) or os.path.exists(ydl.prepare_filename(info_dict, 'description')):
             created_files['description'] = fileInfo(ydl.prepare_filename(info_dict), ext='description', file_type='description')
+            
         
     return created_files, 'auxiliary'
     

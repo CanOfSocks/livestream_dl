@@ -18,11 +18,13 @@ def parse_string_or_tuple(value):
     
 
 
-def main(id, resolution='best', options={}):
+def main(id, resolution='best', options={}, info_dict=None):
     if options.get('json_file', None) is not None:
         import json
         with open(options.get('json_file'), 'r', encoding='utf-8') as file:
             info_dict = json.load(file)
+    elif info_dict:
+        pass
     else:
         info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None))
     download_Live.download_segments(info_dict, resolution, options)
@@ -83,6 +85,8 @@ if __name__ == "__main__":
     parser.add_argument("--wait-for-video", type=int, nargs="*", help="(min, max) Minimum and maximum interval to wait for a video")
     
     parser.add_argument('--json-file', type=str, default=None, help="Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs")
+    
+    parser.add_argument('--remove-ip-from-json', action='store_true', help="Replaces IP entries in info.json with 0.0.0.0")
 
     # Parse the arguments
     args = parser.parse_args()
