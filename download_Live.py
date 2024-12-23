@@ -7,6 +7,7 @@ from datetime import datetime
 import time
 import concurrent.futures
 import json
+from pathlib import Path
 
 try:
     import getUrls
@@ -47,12 +48,12 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
         if not keep_database:
             downloader.delete_temp_database()
         elif downloader.temp_db_file != ':memory:':
-            database_file = fileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
+            database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
     finally:
         # Explicitly close connection
         downloader.close_connection()
-        file = fileInfo(file_name, file_type=downloader.type, format=downloader.format)
+        file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
 # Create runner function for each download format
@@ -63,10 +64,10 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
         if not keep_state:
             downloader.delete_state_file()
         else:
-            database_file = fileInfo(downloader.state_file_name, file_type='database', format=downloader.format)
+            database_file = FileInfo(downloader.state_file_name, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
     finally:
-        file = fileInfo(file_name, file_type=downloader.type, format=downloader.format)
+        file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
 def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5):
@@ -79,11 +80,11 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
         if not keep_database:
             downloader.delete_temp_database()
         elif downloader.temp_db_file != ':memory:':
-            database_file = fileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
+            database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
     # Explicitly close connection
     downloader.close_connection()
-    file = fileInfo(file_name, file_type=downloader.type, format=downloader.format)   
+    file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)   
         
     return file, downloader.type
 
@@ -433,7 +434,7 @@ def download_live_chat(info_dict, options):
             zipf.write(livechat_filename, arcname=os.path.basename(livechat_filename))
         os.remove(livechat_filename)
         live_chat = {
-            'live_chat': fileInfo(path=base_output, ext='.live_chat.zip', file_type='live_chat')
+            'live_chat': FileInfo(zip_filename, file_type='live_chat')
         }
         global live_chat_result
         live_chat_result = live_chat
@@ -522,20 +523,18 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         #result = ydl.download_with_info_file(info_dict)
         thumbnails = ydl._write_thumbnails('video', info_dict, ydl.prepare_filename(info_dict, 'thumbnail'))
         
-        if thumbnails:
-            thumb_base = str(os.path.splitext(thumbnails[0][0])[0])
-            thumb_ext = str(os.path.splitext(thumbnails[0][0])[1])
-            created_files['thumbnail'] = fileInfo(thumb_base, ext=thumb_ext, file_type='thumbnail')
+        if thumbnails:            
+            created_files['thumbnail'] = FileInfo(thumbnails[0][0], file_type='thumbnail')
         if ydl._write_info_json('video', info_dict, ydl.prepare_filename(info_dict, 'infojson')) or os.path.exists(ydl.prepare_filename(info_dict, 'infojson')):
-            created_files['info_json'] = fileInfo(ydl.prepare_filename(info_dict), ext='info.json', file_type='info_json')
+            created_files['info_json'] = FileInfo(ydl.prepare_filename(info_dict, 'infojson'), file_type='info_json')
             try:
                 if options.get('remove_ip_from_json'):
-                    replace_ip_in_json(created_files['info_json'].getAbsPath())
+                    replace_ip_in_json(created_files['info_json'].absolute())
             except Exception as e:
                 logging.error(str(e))
             
         if ydl._write_description('video', info_dict, ydl.prepare_filename(info_dict, 'description')) or os.path.exists(ydl.prepare_filename(info_dict, 'description')):
-            created_files['description'] = fileInfo(ydl.prepare_filename(info_dict), ext='description', file_type='description')
+            created_files['description'] = FileInfo(ydl.prepare_filename(info_dict, 'description'), file_type='description')
             
         
     return created_files, 'auxiliary'
@@ -612,14 +611,14 @@ def create_mp4(file_names, info_dict, options):
     ffmpeg_builder.append(os.path.abspath(base_output))
     
     ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
-    file_names['ffmpeg_cmd'] =  fileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+    file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
         
     logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
     result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
     #print(result.stdout)
     #print(result.stderr)
     
-    file_names['merged'] = fileInfo(base_output, ext=ext, file_type='merged')
+    file_names['merged'] = FileInfo(base_output, file_type='merged')
     
     # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
@@ -653,43 +652,31 @@ def write_ffmpeg_command(command_array, filename):
 
     return filename
     
-class fileInfo:
-    def __init__(self, path, ext=None, file_type=None, size=None, abs_path=None, format=None, cookies_path=None):       
-        self.path = os.path.splitext(path)[0]
-        
-        self.basename = os.path.basename(path)
-        
-        if abs_path is None:
-            self.abs_path = os.path.abspath(self.path)
-        else:
-            self.abs_path = abs_path
-            
-        self.cookies_path = cookies_path
-        
-        if ext is None:
-            self.ext = os.path.splitext(path)[1]
-        else:
-            self.ext = ext
-        
-        self.ext = str(self.ext).lstrip('.')
-            
-        self.type = file_type
-        
-        if size is None and os.path.exists(self.path):
-            self.size = os.path.getsize(self.path)
-        else:
-            self.size = None
-            
-        self.format = format
-    
-    def getPath(self):
-        return "{0}.{1}".format(self.path, self.ext)
-    
-    def getName(self):
-        return "{0}.{1}".format(self.basename, self.ext)
-    
-    def getAbsPath(self):
-        return "{0}.{1}".format(self.abs_path, self.ext)
+class FileInfo(Path):
+    _file_type = None  # Class attribute for storing the file type    
+    _format = None
+
+    def __new__(cls, *args, file_type=None, format=None, **kwargs):
+        # Call the parent's constructor
+        instance = super().__new__(cls, *args, **kwargs)
+        # Set the file_type attribute if provided
+        instance._file_type = file_type
+        instance._format = format
+        return instance
+
+    @property
+    def file_type(self):
+        # Getter for file_type
+        return self._file_type
+
+    @file_type.setter
+    def file_type(self, value):
+        # Setter for file_type
+        self._file_type = value
+
+    def __repr__(self):
+        # Custom string representation
+        return f"{super().__repr__()} (file_type={self._file_type})"
 
 class DownloadStream:
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2):        
