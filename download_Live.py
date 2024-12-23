@@ -223,7 +223,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                         raise future.exception()
                     
                     result, type = future.result()
-                    logger.info("\033[31m{0}\033[0m".format(result))
+                    logging.info("\033[31m{0}\033[0m".format(result))
                     
                     if type == 'auxiliary':
                         file_names.update(result)
@@ -242,7 +242,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                     time.sleep(0.9)
             
             if live_chat_thread is not None:
-                logger.info("Waiting for live chat to end")
+                logging.info("Waiting for live chat to end")
                 live_chat_thread.join()
                 if live_chat_result is not None:
                     file_names.update(live_chat_result)
@@ -250,10 +250,10 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
         except KeyboardInterrupt as e:
             global kill_all
             kill_all = True
-            logger.debug("Keyboard interrupt detected")
+            logging.debug("Keyboard interrupt detected")
             done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
             if len(not_done) > 0:
-                logger.debug("Cancelling remaining threads")
+                logging.debug("Cancelling remaining threads")
             for future in not_done:
                 _ = future.cancel()
             done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
@@ -278,89 +278,89 @@ def move_to_final(options, outputFile, file_names):
         if file_names.get('thumbnail'):
             thumbnail = file_names.get('thumbnail')
             thumb_output = "{0}.{1}".format(outputFile, thumbnail.ext)
-            logger.debug("Moving {0} to {1}".format("{0}.{1}".format(thumbnail.path, thumbnail.ext), thumb_output))
+            logging.debug("Moving {0} to {1}".format("{0}.{1}".format(thumbnail.path, thumbnail.ext), thumb_output))
             shutil.move("{0}.{1}".format(thumbnail.path, thumbnail.ext), thumb_output)
     except Exception as e:
-        logger.error("unable to move thumbnail: {0}".format(e))
+        logging.error("unable to move thumbnail: {0}".format(e))
     
     try:
         if file_names.get('info_json'):
             info_json = file_names.get('info_json')
             info_output = "{0}.{1}".format(outputFile, info_json.ext)
-            logger.info("Moving {0} to {1}".format("{0}.{1}".format(info_json.path, info_json.ext), info_output))
+            logging.info("Moving {0} to {1}".format("{0}.{1}".format(info_json.path, info_json.ext), info_output))
             shutil.move("{0}.{1}".format(info_json.path, info_json.ext), info_output)
     except Exception as e:
-        logger.error("unable to move info_json: {0}".format(e))
+        logging.error("unable to move info_json: {0}".format(e))
         
     try:
         if file_names.get('description'):
             description = file_names.get('description')
             description_output = "{0}.{1}".format(outputFile, description.ext)
-            logger.info("Moving {0} to {1}".format("{0}.{1}".format(description.path, description.ext), description_output))
+            logging.info("Moving {0} to {1}".format("{0}.{1}".format(description.path, description.ext), description_output))
             shutil.move("{0}.{1}".format(description.path, description.ext), description_output)
     except Exception as e:
-        logger.error("unable to move description: {0}".format(e))
+        logging.error("unable to move description: {0}".format(e))
     
     try:
         if file_names.get('video'):
             video = file_names.get('video')
             video_output = "{0}.{1}.{2}".format(outputFile, video.format, video.ext)
-            logger.info("Moving {0} to {1}".format("{0}.{1}".format(video.path, video.ext), video_output))
+            logging.info("Moving {0} to {1}".format("{0}.{1}".format(video.path, video.ext), video_output))
             shutil.move("{0}.{1}".format(video.path, video.ext), video_output)
     except Exception as e:
-        logger.error("unable to move video stream: {0}".format(e))
+        logging.error("unable to move video stream: {0}".format(e))
         
     try:
         if file_names.get('audio'):
             audio = file_names.get('audio')
             audio_output = "{0}.{1}.{2}".format(outputFile, audio.format, audio.ext)
-            logger.info("Moving {0} to {1}".format("{0}.{1}".format(audio.path, audio.ext), audio_output))
+            logging.info("Moving {0} to {1}".format("{0}.{1}".format(audio.path, audio.ext), audio_output))
             shutil.move("{0}.{1}".format(audio.path, audio.ext), audio_output)
     except Exception as e:
-        logger.error("unable to move audio stream: {0}".format(e))
+        logging.error("unable to move audio stream: {0}".format(e))
         
     try:
         if file_names.get('merged'):
             merged = file_names.get('merged')
             merged_output = "{0}.{1}".format(outputFile, merged.ext)
-            logger.info("Moving {0} to {1}".format("{0}.{1}".format(merged.path, merged.ext), merged_output))
+            logging.info("Moving {0} to {1}".format("{0}.{1}".format(merged.path, merged.ext), merged_output))
             shutil.move("{0}.{1}".format(merged.path, merged.ext), merged_output)
     except Exception as e:
-        logger.error("unable to move merged video: {0}".format(e))
+        logging.error("unable to move merged video: {0}".format(e))
         
     try:
         if file_names.get('ffmpeg_cmd'):
             ffmpeg_cmd = file_names.get('ffmpeg_cmd')
             ffmpeg_cmd_output = "{0}.{1}".format(outputFile, ffmpeg_cmd.ext)
-            logger.info("Moving {0} to {1}".format("{0}.{1}".format(ffmpeg_cmd.path, ffmpeg_cmd.ext), ffmpeg_cmd_output))
+            logging.info("Moving {0} to {1}".format("{0}.{1}".format(ffmpeg_cmd.path, ffmpeg_cmd.ext), ffmpeg_cmd_output))
             shutil.move("{0}.{1}".format(ffmpeg_cmd.path, ffmpeg_cmd.ext), ffmpeg_cmd_output)
     except Exception as e:
-        logger.error("unable to move merged video: {0}".format(e))
+        logging.error("unable to move merged video: {0}".format(e))
         
     try:
         if file_names.get('live_chat'):
             live_chat = file_names.get('live_chat')
             live_chat_output = "{0}.{1}".format(outputFile, live_chat.ext)
-            logger.info("Moving {0} to {1}".format("{0}.{1}".format(live_chat.path, live_chat.ext), live_chat_output))
+            logging.info("Moving {0} to {1}".format("{0}.{1}".format(live_chat.path, live_chat.ext), live_chat_output))
             shutil.move("{0}.{1}".format(live_chat.path, live_chat.ext), live_chat_output)
     except Exception as e:
-        logger.error("unable to move live chat zip: {0}".format(e))
+        logging.error("unable to move live chat zip: {0}".format(e))
      
     try:
         if file_names.get('databases'):
             for file in file_names.get('databases'):
                 db_output = "{0}.{1}.{2}".format(outputFile, file.format, file.ext)
-                logger.info("Moving {0} to {1}".format("{0}.{1}".format(file.path, file.ext), db_output))
+                logging.info("Moving {0} to {1}".format("{0}.{1}".format(file.path, file.ext), db_output))
                 shutil.move("{0}.{1}".format(file.path, file.ext), db_output)
     except Exception as e:
-        logger.error("unable to move database files: {0}".format(e))
+        logging.error("unable to move database files: {0}".format(e))
         
     try:
         os.rmdir(options.get('temp_folder'))
     except Exception as e:
-        logger.error("Error removing temp folder: {0}".format(e))
+        logging.error("Error removing temp folder: {0}".format(e))
         
-    logger.info("Finished moving files from temporary directory to output destination")
+    logging.info("Finished moving files from temporary directory to output destination")
     
 def download_live_chat(info_dict, options):
     import yt_dlp
@@ -391,7 +391,7 @@ def download_live_chat(info_dict, options):
     livechat_filename = base_output + ".live_chat.json"
     zip_filename = base_output + ".live_chat.zip"
     
-    logger.info("Downloading live chat to: {0}".format(livechat_filename))
+    logging.info("Downloading live chat to: {0}".format(livechat_filename))
     # Run yt-dlp with the specified options
     # Don't except whole process on live chat fail
     
@@ -400,7 +400,7 @@ def download_live_chat(info_dict, options):
         
         # URL of the video or stream chat
         chat_url = 'https://www.youtube.com/watch?v={0}'.format(info_dict.get('id'))
-        logger.debug("Attempting to download with chat downloader")
+        logging.debug("Attempting to download with chat downloader")
         # Initialize the ChatDownloader
         chat_downloader = ChatDownloader(cookies=options.get('cookies', None))
 
@@ -412,20 +412,19 @@ def download_live_chat(info_dict, options):
         # Process chat messages for the duration of the timeout
         for message in chat:
             if kill_all:
-                logger.debug("Killing live chat downloader")
+                logging.debug("Killing live chat downloader")
                 chat_downloader.close()
                 break
     except ImportError as e:
-        logger.warning("Unable to import chat-downloader, using yt-dlp")
+        logging.warning("Unable to import chat-downloader, using yt-dlp")
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 #result = ydl.process_ie_result(info_dict)
                 result = ydl.download_with_info_file(info_dict)
         except Exception as e:
-            logger.error("\033[31m{0}\033[0m".format(e))              
+            logging.error("\033[31m{0}\033[0m".format(e))              
     except Exception as e:
-        logger.error(str(e))
-        
+        logging.error("\033[31m{0}\033[0m".format(e))
     time.sleep(1)
     if os.path.exists("{0}.part".format(livechat_filename)):
         shutil.move("{0}.part", livechat_filename)
@@ -441,7 +440,7 @@ def download_live_chat(info_dict, options):
         live_chat_result = live_chat
         return live_chat, 'live_chat'
     except Exception as e:
-        logger.error("\033[31m{0}\033[0m".format(e))
+        logging.error("\033[31m{0}\033[0m".format(e))
     
 def replace_ip_in_json(file_name):
     import re
@@ -613,7 +612,7 @@ def create_mp4(file_names, info_dict, options):
     ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
     file_names['ffmpeg_cmd'] =  fileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
         
-    logger.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
+    logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
     result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
     #print(result.stdout)
     #print(result.stderr)
@@ -780,7 +779,7 @@ class DownloadStream:
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
         if (time.time() - self.url_checked >= 3600.0 or self.is_403) and not self.is_private:
-            logger.info("Refreshing URL for {0}".format(self.format))
+            logging.info("Refreshing URL for {0}".format(self.format))
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
                 
@@ -803,22 +802,22 @@ class DownloadStream:
                     self.info_dict = info_dict    
                 
             except PermissionError as e:
-                logger.warning("Permission error: {0}".format(e))
+                logging.warning("Permission error: {0}".format(e))
                 if "membership" in str(e) and not self.is_403:
-                    logger.warning("{0} is now members only. Continuing until 403 errors")
+                    logging.warning("{0} is now members only. Continuing until 403 errors")
                 else:
                     self.is_private = True
             except ValueError as e:
-                logger.critical("Value error: {0}".format(e))
+                logging.critical("Value error: {0}".format(e))
                 if self.get_expire_time(self.stream_url) < time.time():
                     raise TimeoutError("Video is processed and stream url for {0} has expired, unable to continue...".format(self.format))
             except Exception as e:
-                logger.error("Error: {0}".format(e))                     
+                logging.error("Error: {0}".format(e))                     
             self.url_checked = time.time()
                 
     def live_dl(self):
         
-        logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
         self.already_downloaded = self.segment_exists_batch()
         wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
@@ -848,13 +847,13 @@ class DownloadStream:
                     
                     # If successful in downloading segments optimistically, continue doing so
                     if seg_num >= self.latest_sequence and (status is None or status != 200):
-                        logger.debug("Unable to optimistically grab segment {1} for {0}".format(self.format, seg_num))
+                        logging.debug("Unable to optimistically grab segment {1} for {0}".format(self.format, seg_num))
                         optimistic = False
                     else: 
                         optimistic = True
                     
                     if head_seg_num > self.latest_sequence:
-                        logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                        logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
                         self.latest_sequence = head_seg_num
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
@@ -868,7 +867,7 @@ class DownloadStream:
                         # If finished threads exceeds batch size, commit the whole batch of threads at once. 
                         # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
                         if uncommitted_inserts >= max(self.batch_size, len(done)):
-                            logger.debug("Writing segments to file...")
+                            logging.debug("Writing segments to file...")
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
@@ -888,12 +887,12 @@ class DownloadStream:
                         # Wait estimated fragment time +0.1s to make sure it would exist
                         time.sleep(self.estimated_segment_duration + 0.1)
                         
-                        logger.debug("Adding segment {1} optimistically ({0})".format(self.format, optimistic_seg))
+                        logging.debug("Adding segment {1} optimistically ({0})".format(self.format, optimistic_seg))
                         segments_to_download.add(optimistic_seg)
                         
                     # If optimistic grab is not successful, revert back to using headers from base stream URL
                     else:
-                        logger.debug("Checking for more segments available for {0}".format(self.format))
+                        logging.debug("Checking for more segments available for {0}".format(self.format))
                         self.update_latest_segment()
                         segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
                         
@@ -901,19 +900,19 @@ class DownloadStream:
                 # If update has no segments and no segments are currently running, wait                              
                 if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                     wait += 1
-                    logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                    logging.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
                     if wait > 20:
-                        logger.debug("Wait time for new fragment exceeded, ending download...")
+                        logging.debug("Wait time for new fragment exceeded, ending download...")
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
                         if self.is_private:
-                            logger.debug("Video is private and no more segments are available. Ending...")
+                            logging.debug("Video is private and no more segments are available. Ending...")
                             break
                         else:
-                            logger.debug("No new fragments found... Getting new url")
+                            logging.debug("No new fragments found... Getting new url")
                             info_dict = None
                             live_status = None
                             try:
@@ -921,21 +920,21 @@ class DownloadStream:
                                 
                             # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
                             except PermissionError as e:
-                                logger.debug(e)
+                                logging.debug(e)
                                 self.is_private = True
                             except Exception as e:
-                                logger.info("Error refreshing URL: {0}".format(e))
-                                logger.debug("Error refreshing URL: {0}".format(e))
+                                logging.info("Error refreshing URL: {0}".format(e))
+                                logging.debug("Error refreshing URL: {0}".format(e))
                             
                             # If status of downloader is not live, assume stream has ended
                             if self.live_status != 'is_live':
-                                logger.debug("Livestream has ended, committing any remaining segments")
+                                logging.debug("Livestream has ended, committing any remaining segments")
                                 #self.catchup()
                                 break
                             
                             # If live has changed, use new URL to get any fragments that may be missing
                             elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
-                                logger.debug("Stream has finished ({0})".format(live_status))
+                                logging.debug("Stream has finished ({0})".format(live_status))
                                 self.live_status = live_status
                                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                                 if stream_url is not None:
@@ -946,7 +945,7 @@ class DownloadStream:
                             
                             # If livestream is still live, use new url
                             elif live_status == 'is_live':
-                                logger.debug("Updating url to new url")
+                                logging.debug("Updating url to new url")
                                 stream_url = None
                                 
                                 # Check for new manifest, if it has, start a nested download session
@@ -965,18 +964,18 @@ class DownloadStream:
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(submitted_segments) > 0:
-                    logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
+                    logging.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
                     time.sleep(5)
                     continue
                 elif len(segments_to_download) > 0 and self.is_private:
-                    logger.debug("Video is private and still has segments remaining, moving to stream recovery")
+                    logging.debug("Video is private and still has segments remaining, moving to stream recovery")
                     self.commit_batch(self.conn)
                     self.close_connection()
                     
                     for i in range(5, 0, -1):
-                        logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
+                        logging.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
                         time.sleep(60)
-                    logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
+                    logging.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
                     downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls)
                     downloader.live_dl()
                     downloader.close_connection()
@@ -1019,7 +1018,7 @@ class DownloadStream:
         stream_url_info = self.get_Headers(self.stream_url)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
-            logger.debug("Latest sequence: {0}".format(self.latest_sequence))
+            logging.debug("Latest sequence: {0}".format(self.latest_sequence))
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
@@ -1035,16 +1034,16 @@ class DownloadStream:
                 #print(json.dumps(dict(response.headers), indent=4))  
                 return response.headers
             elif response.status_code == 403:
-                logger.warning("Received 403 error, marking for URL refresh...")
+                logging.warning("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 return None
             else:
-                logger.debug("Error retrieving headers: {0}".format(response.status_code))
-                logger.debug(json.dumps(dict(response.headers), indent=4))
+                logging.debug("Error retrieving headers: {0}".format(response.status_code))
+                logging.debug(json.dumps(dict(response.headers), indent=4))
                 return None
             
         except requests.exceptions.Timeout as e:
-            logger.info("Timed out updating fragments: {0}".format(e))
+            logging.info("Timed out updating fragments: {0}".format(e))
             #print(e)
             return None
     
@@ -1054,7 +1053,7 @@ class DownloadStream:
             parsed_url = urlparse(temp_stream_url)        
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                logger.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
+                logging.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
                 self.commit_batch()
                 download_stream(info_dict=info_json, resolution=self.format, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
                 return True
@@ -1065,7 +1064,7 @@ class DownloadStream:
             parsed_url = urlparse(temp_stream_url)        
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                logger.warning("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
+                logging.warning("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
                 self.commit_batch()
                 download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
                 return True
@@ -1074,7 +1073,7 @@ class DownloadStream:
             parsed_url = urlparse(temp_stream_url)        
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                logger.warning("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
+                logging.warning("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
                 self.commit_batch()
                 download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
                 return True
@@ -1136,22 +1135,22 @@ class DownloadStream:
             session.mount("https://", adapter)
             response = session.get(segment_url, timeout=30)
             if response.status_code == 200:
-                logger.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
+                logging.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
                 self.is_403 = False
                 #return latest header number and segmqnt content
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
             elif response.status_code == 403:
-                logger.debug("Received 403 error, marking for URL refresh...")
+                logging.debug("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 return -1, None, segment_order, response.status_code, response.headers
             else:
-                logger.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+                logging.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
                 return -1, None, segment_order, response.status_code, response.headers
         except requests.exceptions.Timeout as e:
-            logger.warning("Fragment timeout {1}: {0}".format(e, segment_order))
+            logging.warning("Fragment timeout {1}: {0}".format(e, segment_order))
             return -1, None, segment_order, None, None
         except requests.exceptions.RetryError as e:
-            logger.debug("Retries exceeded downloading fragment: {0}".format(e))
+            logging.debug("Retries exceeded downloading fragment: {0}".format(e))
             if "(Caused by ResponseError('too many 204 error responses')" in str(e):
                 return -1, bytes(), segment_order, 204, None
             elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
@@ -1160,19 +1159,19 @@ class DownloadStream:
             else:
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
-            logger.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, bytes(), segment_order, None, None
         except requests.exceptions.ConnectionError as e:
-            logger.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.Timeout as e:
-            logger.debug("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.HTTPError as e:
-            logger.debug("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except Exception as e:
-            logger.debug("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
     # Function to insert a single segment without committing
@@ -1202,7 +1201,7 @@ class DownloadStream:
         if cursor is None:
             cursor = self.cursor
         
-        logger.info("Merging segments to {0}".format(output_file))
+        logging.info("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
             for segment in cursor:  # Cursor iterates over rows one by one
@@ -1262,7 +1261,7 @@ class DownloadStream:
     def check_kill(self):
         # Kill if keyboard interrupt is detected
         if kill_all:
-            logger.debug("Kill command detected, ending thread")
+            logging.debug("Kill command detected, ending thread")
             raise KeyboardInterrupt("Kill command executed")
         
     def delete_temp_database(self):
@@ -1325,14 +1324,14 @@ class DownloadStreamDirect:
             ts_size = os.path.getsize(self.merged_file_name)
             if ts_size >= loaded_state.get('file_size', 0) and loaded_state.get('last_written', None) is not None:
                 self.state = loaded_state
-            logger.debug(self.state)
+            logging.debug(self.state)
         elif os.path.exists(self.state_file_name) and os.path.exists(self.merged_file_name):
             with open(self.state_file_name, "r") as file:
                 loaded_state = json.load(file)
             ts_size = os.path.getsize(self.merged_file_name)
             if ts_size >= loaded_state.get('file_size', 0) and loaded_state.get('last_written', None) is not None:
                 self.state = loaded_state
-            logger.debug(self.state)
+            logging.debug(self.state)
         
         self.fragment_retries=fragment_retries
         
@@ -1374,7 +1373,7 @@ class DownloadStreamDirect:
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
         if (time.time() - self.url_checked >= 3600.0 or self.is_403) and not self.is_private:
-            logger.debug("Refreshing URL for {0}".format(self.format))
+            logging.debug("Refreshing URL for {0}".format(self.format))
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
                 
@@ -1391,15 +1390,15 @@ class DownloadStreamDirect:
                 if live_status is not None:
                     self.live_status = live_status
             except PermissionError as e:
-                logger.warning(e)
+                logging.warning(e)
                 self.is_private = True
             except Exception as e:
-                logger.warning(e)                       
+                logging.warning(e)                       
             self.url_checked = time.time()
                 
     def live_dl(self):
         
-        logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
         wait = 0   
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
@@ -1428,13 +1427,13 @@ class DownloadStreamDirect:
                     
                     # If successful in downloading segments optimistically, continue doing so
                     if seg_num >= self.latest_sequence and (status is None or status != 200):
-                        logger.debug("Unable to optimistically grab segment {1} for {0}".format(self.format, seg_num))
+                        logging.debug("Unable to optimistically grab segment {1} for {0}".format(self.format, seg_num))
                         optimistic = False
                     else: 
                         optimistic = True
                     
                     if head_seg_num > self.latest_sequence:
-                        logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                        logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
                         self.latest_sequence = head_seg_num
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
@@ -1475,7 +1474,7 @@ class DownloadStreamDirect:
                     with open(self.state_file_name, "w") as file:
                         json.dump(self.state, file, indent=4)
                         
-                    logger.debug("Written {0} segments of {1} to file. Current file size is {2} bytes".format(self.state.get('last_written'),self.format, self.state.get('file_size')))
+                    logging.debug("Written {0} segments of {1} to file. Current file size is {2} bytes".format(self.state.get('last_written'),self.format, self.state.get('file_size')))
                     
                     # Cleanup of leftover segments
                     # Needs to be determined if these are accidental extras or missed segments
@@ -1483,7 +1482,7 @@ class DownloadStreamDirect:
                         seg_keys = list(downloaded_segments.keys())
                         for seg_key in seg_keys:
                             if self.state.get('last_written') - int(seg_key) > self.max_workers*2:
-                                logger.debug("Segment {0} of {1} has been detected as leftover, removing from dictionary".format(seg_key, self.format))
+                                logging.debug("Segment {0} of {1} has been detected as leftover, removing from dictionary".format(seg_key, self.format))
                                 del downloaded_segments[seg_key]
                 
                 segments_to_download = set(range(self.state.get('last_written')+1, self.latest_sequence)) - submitted_segments 
@@ -1498,31 +1497,31 @@ class DownloadStreamDirect:
                         # Wait estimated fragment time +0.1s to make sure it would exist
                         time.sleep(self.estimated_segment_duration + 0.1)
                         
-                        logger.debug("Adding segment {1} optimistically ({0})".format(self.format, optimistic_seg))
+                        logging.debug("Adding segment {1} optimistically ({0})".format(self.format, optimistic_seg))
                         segments_to_download.add(optimistic_seg)
                         
                     # If optimistic grab is not successful, revert back to using headers from base stream URL
                     else:
-                        logger.debug("Checking for more segments available for {0}".format(self.format))
+                        logging.debug("Checking for more segments available for {0}".format(self.format))
                         self.update_latest_segment()
                         segments_to_download = set(range(self.state.get('last_written')+1, self.latest_sequence)) - submitted_segments                             
                         
                 # If update has no segments and no segments are currently running, wait                              
                 if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                     wait += 1
-                    logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                    logging.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
                     if wait > 20:
-                        logger.info("Wait time for new fragment exceeded, ending download...")
+                        logging.info("Wait time for new fragment exceeded, ending download...")
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
                         if self.is_private:
-                            logger.info("Video is private and no more segments are available. Ending...")
+                            logging.info("Video is private and no more segments are available. Ending...")
                             break
                         else:
-                            logger.debug("No new fragments found... Getting new url")
+                            logging.debug("No new fragments found... Getting new url")
                             info_dict = None
                             live_status = None
                             try:
@@ -1530,20 +1529,20 @@ class DownloadStreamDirect:
                                 
                             # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
                             except PermissionError as e:
-                                logger.warning(e)
+                                logging.warning(e)
                                 self.is_private = True
                             except Exception as e:
-                                logger.error("Error refreshing URL: {0}".format(e))
+                                logging.error("Error refreshing URL: {0}".format(e))
                             
                             # If status of downloader is not live, assume stream has ended
                             if self.live_status != 'is_live':
-                                logger.info("Livestream has ended, committing any remaining segments")
+                                logging.info("Livestream has ended, committing any remaining segments")
                                 #self.catchup()
                                 break
                             
                             # If live has changed, use new URL to get any fragments that may be missing
                             elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
-                                logger.info("Stream has finished ({0})".format(live_status))
+                                logging.info("Stream has finished ({0})".format(live_status))
                                 self.live_status = live_status
                                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
                                 if stream_url is not None:
@@ -1554,7 +1553,7 @@ class DownloadStreamDirect:
                             
                             # If livestream is still live, use new url
                             elif live_status == 'is_live':
-                                logger.debug("Updating url to new url")
+                                logging.debug("Updating url to new url")
                                 stream_url = None
                                 # Check for new manifest, if it has, start a nested download session
                                 if self.detect_manifest_change(info_json=info_dict) is True:
@@ -1588,7 +1587,7 @@ class DownloadStreamDirect:
         stream_url_info = self.get_Headers(self.stream_url)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
-            logger.debug("Latest sequence: {0}".format(self.latest_sequence))
+            logging.debug("Latest sequence: {0}".format(self.latest_sequence))
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
@@ -1604,16 +1603,16 @@ class DownloadStreamDirect:
                 #print(json.dumps(dict(response.headers), indent=4))  
                 return response.headers
             elif response.status_code == 403:
-                logger.info("Received 403 error, marking for URL refresh...")
+                logging.info("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 return None
             else:
-                logger.warning("Error retrieving headers: {0}".format(response.status_code))
-                logger.debug(json.dumps(dict(response.headers), indent=4))
+                logging.warning("Error retrieving headers: {0}".format(response.status_code))
+                logging.debug(json.dumps(dict(response.headers), indent=4))
                 return None
             
         except requests.exceptions.Timeout as e:
-            logger.warning("Timed out updating fragments: {0}".format(e))
+            logging.warning("Timed out updating fragments: {0}".format(e))
             return None
 
     # Function to download a single segment
@@ -1628,22 +1627,22 @@ class DownloadStreamDirect:
             session.mount("https://", adapter)
             response = session.get(segment_url, timeout=30)
             if response.status_code == 200:
-                logger.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
+                logging.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
                 self.is_403 = False
                 #return latest header number and segmqnt content
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
             elif response.status_code == 403:
-                logger.info("Received 403 error, marking for URL refresh...")
+                logging.info("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 return -1, None, segment_order, response.status_code, response.headers
             else:
-                logger.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+                logging.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
                 return -1, None, segment_order, response.status_code, response.headers
         except requests.exceptions.Timeout as e:
-            logger.warning("Fragment timeout {1}: {0}".format(e, segment_order))
+            logging.warning("Fragment timeout {1}: {0}".format(e, segment_order))
             return -1, None, segment_order, None, None
         except requests.exceptions.RetryError as e:
-            logger.debug("Retries exceeded downloading fragment: {0}".format(e))
+            logging.debug("Retries exceeded downloading fragment: {0}".format(e))
             if "(Caused by ResponseError('too many 204 error responses')" in str(e):
                 return -1, bytes(), segment_order, 204, None
             #elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
@@ -1652,19 +1651,19 @@ class DownloadStreamDirect:
             else:
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
-            logger.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, bytes(), segment_order, None, None
         except requests.exceptions.ConnectionError as e:
-            logger.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.Timeout as e:
-            logger.debug("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.HTTPError as e:
-            logger.debug("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except Exception as e:
-            logger.debug("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
     def detect_manifest_change(self, info_json):
@@ -1673,7 +1672,7 @@ class DownloadStreamDirect:
             parsed_url = urlparse(temp_stream_url)        
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                logger.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
+                logging.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
                 self.commit_batch()
                 download_stream_direct(info_dict=info_json, resolution=self.format, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
                 return True
@@ -1684,7 +1683,7 @@ class DownloadStreamDirect:
             parsed_url = urlparse(temp_stream_url)        
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                logger.warning("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
+                logging.warning("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
                 self.commit_batch()
                 download_stream_direct(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
                 return True
@@ -1693,7 +1692,7 @@ class DownloadStreamDirect:
             parsed_url = urlparse(temp_stream_url)        
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                logger.warning("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
+                logging.warning("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
                 self.commit_batch()
                 download_stream_direct(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
                 return True
@@ -1703,7 +1702,7 @@ class DownloadStreamDirect:
         if cursor is None:
             cursor = self.cursor
         
-        logger.debug("Merging segments to {0}".format(output_file))
+        logging.debug("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
             for segment in cursor:  # Cursor iterates over rows one by one
@@ -1763,7 +1762,7 @@ class DownloadStreamDirect:
     def check_kill(self):
         # Kill if keyboard interrupt is detected
         if kill_all:
-            logger.debug("Kill command detected, ending thread")
+            logging.debug("Kill command detected, ending thread")
             raise KeyboardInterrupt("Kill command executed")
         
     def delete_state_file(self):
@@ -1802,17 +1801,17 @@ class StreamRecovery:
         
         # If stream URLs are given, use them to get the format and also try to extract any URLs from the info.json too. If no stream URLs are passed, use the given resolution and the info.json only               
         if stream_urls:
-            logger.debug("{0} stream urls available".format(len(stream_urls)))
+            logging.debug("{0} stream urls available".format(len(stream_urls)))
             for url in stream_urls:
                 self.format = self.get_format_from_url(url)
                 if self.format is not None:
-                    logger.debug("Stream recovery - Found format {0} from itags".format(self.format))
+                    logging.debug("Stream recovery - Found format {0} from itags".format(self.format))
                     break            
             self.stream_urls = stream_urls          
         else:
             self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
         
-        logger.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
+        logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
         """        
         if stream_urls:
             if not self.stream_urls:
@@ -1822,7 +1821,7 @@ class StreamRecovery:
         if self.stream_urls is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
         
-        logger.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
+        logging.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
         self.stream_url = random.choice(self.stream_urls)
         
         self.database_in_memory = database_in_memory
@@ -1886,7 +1885,7 @@ class StreamRecovery:
             
         if time.time() > self.expires:
             
-            logger.error("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
+            logging.error("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
             raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
@@ -1915,9 +1914,9 @@ class StreamRecovery:
     def get_format_from_url(self, url):
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
-        logger.debug(query_params)
+        logging.debug(query_params)
         # Get the 'expire' parameter
-        logger.debug("Itags from url: {0}".format(query_params.get("itag", [None])))
+        logging.debug("Itags from url: {0}".format(query_params.get("itag", [None])))
         itag = query_params.get("itag", [None])[0]
         return str(itag).strip()
     
@@ -1929,7 +1928,7 @@ class StreamRecovery:
                 
     def live_dl(self):
         #from itertools import groupby
-        logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
         self.already_downloaded = self.segment_exists_batch()
         #wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
@@ -1953,9 +1952,9 @@ class StreamRecovery:
             if self.expires is not None:
                 from datetime import datetime
                 #print(datetime.fromtimestamp(int(self.expires)))
-                logger.debug("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')))
+                logging.debug("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')))
             else:
-                logger.debug("Recovery mode active")
+                logging.debug("Recovery mode active")
                        
             
             while True:     
@@ -1971,7 +1970,7 @@ class StreamRecovery:
                         submitted_segments.remove(seg_num)
                     
                     if head_seg_num > self.latest_sequence:
-                        logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
+                        logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
                         self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, head_seg_num) if key not in self.already_downloaded})
                         self.latest_sequence = head_seg_num
                         
@@ -1990,7 +1989,7 @@ class StreamRecovery:
                         # If finished threads exceeds batch size, commit the whole batch of threads at once. 
                         # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
                         if uncommitted_inserts >= max(self.batch_size, len(done)):
-                            logger.debug("Writing segments to file...")
+                            logging.debug("Writing segments to file...")
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
@@ -1999,7 +1998,7 @@ class StreamRecovery:
                             self.segments_retries[seg_num]['retries'] = self.segments_retries[seg_num]['retries'] + 1
                             self.segments_retries[seg_num]['last_retry'] = time.time()
                             if self.segments_retries[seg_num]['retries'] >= self.fragment_retries:
-                                logger.debug("Segment {0} of {1} has exceeded maximum number of retries")
+                                logging.debug("Segment {0} of {1} has exceeded maximum number of retries")
                     
                     # Remove completed thread to free RAM
                     del future_to_seg[future]
@@ -2007,19 +2006,19 @@ class StreamRecovery:
                 #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                                        
                 if len(self.segments_retries) <= 0:
-                    logger.info("All segment downloads complete, ending...")
+                    logging.info("All segment downloads complete, ending...")
                     break
                 
                 elif self.is_403 and self.expires is not None and time.time() > self.expires:
-                    logger.fatal("URL(s) have expired and failures being detected, ending...")
+                    logging.fatal("URL(s) have expired and failures being detected, ending...")
                     break
                 
                 elif all(value['retries'] > self.fragment_retries for value in self.segments_retries.values()):
-                    logger.error("All remaining segments have exceeded their retry count, ending...")
+                    logging.error("All remaining segments have exceeded their retry count, ending...")
                     break
                 
                 elif self.is_401:
-                    logger.debug("401s detected for {0}, sleeping for a minute")
+                    logging.debug("401s detected for {0}, sleeping for a minute")
                     time.sleep(60)
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
@@ -2100,7 +2099,7 @@ class StreamRecovery:
                                 self.already_downloaded.add(seg_num)
                                 continue
                             new_download.add(seg_num)
-                            logger.debug("Adding segment {0} of {2} with retries: {1}".format(seg_num, self.segments_retries[seg_num]['retries'], self.format))
+                            logging.debug("Adding segment {0} of {2} with retries: {1}".format(seg_num, self.segments_retries[seg_num]['retries'], self.format))
                         if len(new_download) >= number_to_add:                            
                             break
                     segments_to_download = new_download
@@ -2143,10 +2142,10 @@ class StreamRecovery:
                     )
                 '''
                 if len(submitted_segments) == 0 and len(self.segments_retries) < 11 and time.time() - last_print > self.segment_retry_time:
-                    logger.debug("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
+                    logging.debug("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
                     last_print = time.time()
                 elif len(submitted_segments) == 0 and time.time() - last_print > self.segment_retry_time + 5:
-                    logger.debug("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
+                    logging.debug("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
                     last_print = time.time()
                 
             self.commit_batch(self.conn)
@@ -2171,7 +2170,7 @@ class StreamRecovery:
             
         if time.time() > self.expires:
             
-            logger.fatal("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
+            logging.fatal("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
             raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
@@ -2188,7 +2187,7 @@ class StreamRecovery:
             if new_latest > self.latest_sequence and self.latest_sequence > -1:
                 self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, new_latest) if key not in self.already_downloaded})
             self.latest_sequence = new_latest
-            logger.debug("Latest sequence: {0}".format(self.latest_sequence))
+            logging.debug("Latest sequence: {0}".format(self.latest_sequence))
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
@@ -2213,12 +2212,12 @@ class StreamRecovery:
             elif response.status_code == 401:
                 self.is_401 = True
             else:
-                logger.warning("Error retrieving headers: {0}".format(response.status_code))
-                logger.debug(json.dumps(dict(response.headers), indent=4))
+                logging.warning("Error retrieving headers: {0}".format(response.status_code))
+                logging.debug(json.dumps(dict(response.headers), indent=4))
             return response.headers
             
         except requests.exceptions.Timeout as e:
-            logger.debug("Timed out updating fragments: {0}".format(e))
+            logging.debug("Timed out updating fragments: {0}".format(e))
             return None
     
 
@@ -2278,7 +2277,7 @@ class StreamRecovery:
                 if self.downloader_instance:  # Ensure the instance exists
                     self.downloader_instance.is_403 = True
                 if self.segment_number is not None:
-                    logger.debug("{0} encountered a 403")
+                    logging.debug("{0} encountered a 403")
                     
             return super().increment(method, url, response, error, _pool, _stacktrace)
         
@@ -2318,23 +2317,23 @@ class StreamRecovery:
         try:            
             response = session.get(segment_url, timeout=30, headers=headers)
             if response.status_code == 200:
-                logger.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
+                logging.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
                 self.is_403 = False
                 self.is_401 = False
                 #return latest header number and segment content                
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
             elif response.status_code == 403:
-                logger.debug("Received 403 error, marking for URL refresh...")
+                logging.debug("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 return -1, None, segment_order, response.status_code, response.headers
             else:
-                logger.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+                logging.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
                 return -1, None, segment_order, response.status_code, response.headers
         except requests.exceptions.Timeout as e:
-            logger.debug(e)
+            logging.debug(e)
             return -1, None, segment_order, None, None
         except requests.exceptions.RetryError as e:
-            logger.debug("Retries exceeded downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("Retries exceeded downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             if "(Caused by ResponseError('too many 204 error responses')" in str(e):
                 self.is_403 = False
                 self.is_401 = False
@@ -2350,19 +2349,19 @@ class StreamRecovery:
             else:
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
-            logger.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, bytes(), segment_order, None, None
         except requests.exceptions.ConnectionError as e:
-            logger.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.Timeout as e:
-            logger.warning("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.warning("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.HTTPError as e:
-            logger.warning("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.warning("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except Exception as e:
-            logger.error("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.error("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
     # Function to insert a single segment without committing
@@ -2392,7 +2391,7 @@ class StreamRecovery:
         if cursor is None:
             cursor = self.cursor
         
-        logger.info("Merging segments to {0}".format(output_file))
+        logging.info("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
             for segment in cursor:  # Cursor iterates over rows one by one
@@ -2452,7 +2451,7 @@ class StreamRecovery:
     def check_kill(self):
         # Kill if keyboard interrupt is detected
         if kill_all:
-            logger.debug("Kill command detected, ending thread")
+            logging.debug("Kill command detected, ending thread")
             raise KeyboardInterrupt("Kill command executed")
         
     def delete_temp_database(self):
