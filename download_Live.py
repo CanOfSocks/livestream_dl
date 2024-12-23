@@ -277,81 +277,81 @@ def move_to_final(options, outputFile, file_names):
     try:
         if file_names.get('thumbnail'):
             thumbnail = file_names.get('thumbnail')
-            thumb_output = "{0}.{1}".format(outputFile, thumbnail.ext)
-            logging.debug("Moving {0} to {1}".format("{0}.{1}".format(thumbnail.path, thumbnail.ext), thumb_output))
-            shutil.move("{0}.{1}".format(thumbnail.path, thumbnail.ext), thumb_output)
+            thumb_output = "{0}{1}".format(outputFile, thumbnail.suffix)
+            logging.debug("Moving {0} to {1}".format(thumbnail.absolute(), thumb_output))
+            shutil.move(thumbnail.absolute(), thumb_output)
     except Exception as e:
         logging.error("unable to move thumbnail: {0}".format(e))
     
     try:
         if file_names.get('info_json'):
             info_json = file_names.get('info_json')
-            info_output = "{0}.{1}".format(outputFile, info_json.ext)
-            logging.info("Moving {0} to {1}".format("{0}.{1}".format(info_json.path, info_json.ext), info_output))
-            shutil.move("{0}.{1}".format(info_json.path, info_json.ext), info_output)
+            info_output = "{0}{1}".format(outputFile, '.info.json')
+            logging.info("Moving {0} to {1}".format(info_json.absolute(), info_output))
+            shutil.move(info_json.absolute(), info_output)
     except Exception as e:
         logging.error("unable to move info_json: {0}".format(e))
         
     try:
         if file_names.get('description'):
             description = file_names.get('description')
-            description_output = "{0}.{1}".format(outputFile, description.ext)
-            logging.info("Moving {0} to {1}".format("{0}.{1}".format(description.path, description.ext), description_output))
-            shutil.move("{0}.{1}".format(description.path, description.ext), description_output)
+            description_output = "{0}.{1}".format(outputFile, description.suffix)
+            logging.info("Moving {0} to {1}".format(description.absolute(), description_output))
+            shutil.move(description.absolute(), description_output)
     except Exception as e:
         logging.error("unable to move description: {0}".format(e))
     
     try:
         if file_names.get('video'):
             video = file_names.get('video')
-            video_output = "{0}.{1}.{2}".format(outputFile, video.format, video.ext)
-            logging.info("Moving {0} to {1}".format("{0}.{1}".format(video.path, video.ext), video_output))
-            shutil.move("{0}.{1}".format(video.path, video.ext), video_output)
+            video_output = "{0}.{1}{2}".format(outputFile, video.format, video.suffix)
+            logging.info("Moving {0} to {1}".format(video.absolute(), video_output))
+            shutil.move(video.absolute(), video_output)
     except Exception as e:
         logging.error("unable to move video stream: {0}".format(e))
         
     try:
         if file_names.get('audio'):
             audio = file_names.get('audio')
-            audio_output = "{0}.{1}.{2}".format(outputFile, audio.format, audio.ext)
-            logging.info("Moving {0} to {1}".format("{0}.{1}".format(audio.path, audio.ext), audio_output))
-            shutil.move("{0}.{1}".format(audio.path, audio.ext), audio_output)
+            audio_output = "{0}.{1}{2}".format(outputFile, audio.format, audio.suffix)
+            logging.info("Moving {0} to {1}".format(audio.absolute(), audio_output))
+            shutil.move(audio.absolute(), audio_output)
     except Exception as e:
         logging.error("unable to move audio stream: {0}".format(e))
         
     try:
         if file_names.get('merged'):
             merged = file_names.get('merged')
-            merged_output = "{0}.{1}".format(outputFile, merged.ext)
-            logging.info("Moving {0} to {1}".format("{0}.{1}".format(merged.path, merged.ext), merged_output))
-            shutil.move("{0}.{1}".format(merged.path, merged.ext), merged_output)
+            merged_output = "{0}{1}".format(outputFile, merged.suffix)
+            logging.info("Moving {0} to {1}".format(merged.absolute(), merged_output))
+            shutil.move(merged.absolute(), merged_output)
     except Exception as e:
         logging.error("unable to move merged video: {0}".format(e))
         
     try:
         if file_names.get('ffmpeg_cmd'):
             ffmpeg_cmd = file_names.get('ffmpeg_cmd')
-            ffmpeg_cmd_output = "{0}.{1}".format(outputFile, ffmpeg_cmd.ext)
-            logging.info("Moving {0} to {1}".format("{0}.{1}".format(ffmpeg_cmd.path, ffmpeg_cmd.ext), ffmpeg_cmd_output))
-            shutil.move("{0}.{1}".format(ffmpeg_cmd.path, ffmpeg_cmd.ext), ffmpeg_cmd_output)
+            ffmpeg_cmd_output = "{0}{1}".format(outputFile, '.ffmpeg.txt')
+            logging.info("Moving {0} to {1}".format(ffmpeg_cmd.absolute(), ffmpeg_cmd_output))
+            shutil.move(ffmpeg_cmd.absolute(), ffmpeg_cmd_output)
     except Exception as e:
         logging.error("unable to move merged video: {0}".format(e))
         
     try:
         if file_names.get('live_chat'):
             live_chat = file_names.get('live_chat')
-            live_chat_output = "{0}.{1}".format(outputFile, live_chat.ext)
-            logging.info("Moving {0} to {1}".format("{0}.{1}".format(live_chat.path, live_chat.ext), live_chat_output))
-            shutil.move("{0}.{1}".format(live_chat.path, live_chat.ext), live_chat_output)
+            live_chat_output = "{0}.{1}".format(outputFile, ".live_chat.zip")
+            logging.info("Moving {0} to {1}".format(live_chat.absolute(), live_chat_output))
+            shutil.move(live_chat.absolute(), live_chat_output)
     except Exception as e:
         logging.error("unable to move live chat zip: {0}".format(e))
      
     try:
         if file_names.get('databases'):
             for file in file_names.get('databases'):
-                db_output = "{0}.{1}.{2}".format(outputFile, file.format, file.ext)
-                logging.info("Moving {0} to {1}".format("{0}.{1}".format(file.path, file.ext), db_output))
-                shutil.move("{0}.{1}".format(file.path, file.ext), db_output)
+                db_output = "{0}.{1}{2}".format(outputFile, file.format, file.suffix)
+                logging.info("Moving {0} to {1}".format(file.absolute(), db_output))
+                shutil.move(file.absolute(), db_output)
     except Exception as e:
         logging.error("unable to move database files: {0}".format(e))
         
@@ -553,19 +553,19 @@ def create_mp4(file_names, info_dict, options):
                       ]
     
     if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
-        input = ['-i', "{0}.{1}".format(file_names.get('thumbnail').abs_path, file_names.get('thumbnail').ext), '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('thumbnail').absolute(), file_names.get('thumbnail').ext), '-thread_queue_size', '1024']
         thumbnail = index
         index += 1
     
     # Add input files
     if file_names.get('video'):        
-        input = ['-i', "{0}.{1}".format(file_names.get('video').abs_path, file_names.get('video').ext), '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('video').absolute(), file_names.get('video').ext), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         video = index
         index += 1
             
     if file_names.get('audio'):
-        input = ['-i', "{0}.{1}".format(file_names.get('audio').abs_path, file_names.get('audio').ext), '-thread_queue_size', '1024']
+        input = ['-i', "{0}.{1}".format(file_names.get('audio').absolute(), file_names.get('audio').ext), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         audio = index
         index += 1
