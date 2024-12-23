@@ -31,11 +31,7 @@ kill_all = False
 
 live_chat_result = None
 
-logging.basicConfig(
-    filename='output.log',   # File where the logs will be stored
-    level=logging.INFO,      # Minimum level of messages to log (INFO or higher)
-    format='%(asctime)s - %(levelname)s - %(message)s',  # Log format
-)
+logger = None
 
 # File name dictionary
 file_names = {
@@ -92,9 +88,15 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
     return file, downloader.type
 
 # Multithreaded function to download new segments with delayed commit after a batch
-def download_segments(info_dict, resolution='best', options={}):
+def download_segments(info_dict, resolution='best', options={}, logger_instance=None):
     futures = set()
     #file_names = {}
+    
+    global logger
+    if logger_instance:
+        logger = logger_instance
+    else:
+        logger = setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', False), file=options.get('log_file', None))
        
     print(json.dumps(options, indent=4))
     outputFile = output_filename(info_dict=info_dict, outtmpl=options.get('output'))
@@ -217,7 +219,7 @@ def download_segments(info_dict, resolution='best', options={}):
                 done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
                 # Continuously check for completion or interruption
                 for future in done:
-                    if future.exception() is not None:
+                    if future.exception() is not None and not type == 'auxiliary':
                         raise future.exception()
                     
                     result, type = future.result()
@@ -401,7 +403,7 @@ def download_live_chat(info_dict, options):
         chat_url = 'https://www.youtube.com/watch?v={0}'.format(info_dict.get('id'))
         print("Attempting to download with chat downloader")
         # Initialize the ChatDownloader
-        chat_downloader = ChatDownloader()
+        chat_downloader = ChatDownloader(cookies=options.get('cookies', None))
 
         # Open a JSON file to save the chat
 
@@ -421,7 +423,7 @@ def download_live_chat(info_dict, options):
                 #result = ydl.process_ie_result(info_dict)
                 result = ydl.download_with_info_file(info_dict)
         except Exception as e:
-            print("\033[31m{0}\033[0m".format(e))
+            print("\033[31m{0}\033[0m".format(e))        
     time.sleep(1)
     if os.path.exists("{0}.part".format(livechat_filename)):
         shutil.move("{0}.part", livechat_filename)
@@ -2496,3 +2498,32 @@ class StreamRecovery:
         with open("{0}.{1}_usr_ag_full_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
             json.dump(self.user_agent_full_403s, outfile, indent=4)
  
+ 
+
+def setup_logging(log_level, console, file):
+    # Create a logger
+    logger = logging.getLogger()
+    logger.setLevel(log_level)
+
+    # Define log format
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    # Clear any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    # Add a file handler if needed
+    if file:
+        file_handler = logging.FileHandler(file)
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    # Add a console handler if needed
+    if console:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(log_level)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+    return logger

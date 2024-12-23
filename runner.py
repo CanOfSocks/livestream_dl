@@ -23,6 +23,9 @@ def parse_string_or_tuple(value):
 
 
 def main(id, resolution='best', options={}, info_dict=None):
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', False), file=options.get('log_file', None))
+    
+    
     if options.get('json_file', None) is not None:
         import json
         with open(options.get('json_file'), 'r', encoding='utf-8') as file:
@@ -31,7 +34,7 @@ def main(id, resolution='best', options={}, info_dict=None):
         pass
     else:
         info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None))
-    download_Live.download_segments(info_dict, resolution, options)
+    download_Live.download_segments(info_dict, resolution, options, logger)
     
 if __name__ == "__main__":
     # Create the parser
@@ -91,6 +94,14 @@ if __name__ == "__main__":
     parser.add_argument('--json-file', type=str, default=None, help="Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs")
     
     parser.add_argument('--remove-ip-from-json', action='store_true', help="Replaces IP entries in info.json with 0.0.0.0")
+    
+    parser.add_argument("--log-level", type=str, default="INFO",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                        help="Set the logging level. Default is INFO.")
+    
+    parser.add_argument("--no-console", action="store_false", help="Do not log messages to the console.")
+    
+    parser.add_argument("--log-file", type=str, help="Path to the log file where messages will be saved.")
 
     # Parse the arguments
     args = parser.parse_args()
