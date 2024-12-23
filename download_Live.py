@@ -528,8 +528,11 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
             created_files['thumbnail'] = fileInfo(thumb_base, ext=thumb_ext, file_type='thumbnail')
         if ydl._write_info_json('video', info_dict, ydl.prepare_filename(info_dict, 'infojson')) or os.path.exists(ydl.prepare_filename(info_dict, 'infojson')):
             created_files['info_json'] = fileInfo(ydl.prepare_filename(info_dict), ext='info.json', file_type='info_json')
-            if options.get('remove_ip_from_json'):
-                replace_ip_in_json(created_files['info_json'].getAbsPath())
+            try:
+                if options.get('remove_ip_from_json'):
+                    replace_ip_in_json(created_files['info_json'].getAbsPath())
+            except Exception as e:
+                logging.error(str(e))
             
         if ydl._write_description('video', info_dict, ydl.prepare_filename(info_dict, 'description')) or os.path.exists(ydl.prepare_filename(info_dict, 'description')):
             created_files['description'] = fileInfo(ydl.prepare_filename(info_dict), ext='description', file_type='description')
