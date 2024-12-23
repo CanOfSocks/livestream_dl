@@ -219,11 +219,10 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                 done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
                 # Continuously check for completion or interruption
                 for future in done:
-                    if future.exception() is not None and not type == 'auxiliary':
-                        raise future.exception()
-                    
                     result, type = future.result()
                     logging.info("\033[31m{0}\033[0m".format(result))
+                    if future.exception() is not None and not type == 'auxiliary':
+                        raise future.exception()
                     
                     if type == 'auxiliary':
                         file_names.update(result)
