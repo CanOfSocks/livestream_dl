@@ -98,6 +98,9 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
         logger = logger_instance
     else:
         logger = setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', False), file=options.get('log_file', None))
+        
+    if logger:
+        logging.root = logger
        
     logger.debug(json.dumps(options, indent=4))
     outputFile = output_filename(info_dict=info_dict, outtmpl=options.get('output'))
