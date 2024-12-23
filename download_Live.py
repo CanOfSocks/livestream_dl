@@ -560,19 +560,19 @@ def create_mp4(file_names, info_dict, options):
                       ]
     
     if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
-        input = ['-i', "{0}.{1}".format(file_names.get('thumbnail').absolute(), file_names.get('thumbnail').ext), '-thread_queue_size', '1024']
+        input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
         thumbnail = index
         index += 1
     
     # Add input files
     if file_names.get('video'):        
-        input = ['-i', "{0}.{1}".format(file_names.get('video').absolute(), file_names.get('video').ext), '-thread_queue_size', '1024']
+        input = ['-i', str(file_names.get('video').absolute()), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         video = index
         index += 1
             
     if file_names.get('audio'):
-        input = ['-i', "{0}.{1}".format(file_names.get('audio').absolute(), file_names.get('audio').ext), '-thread_queue_size', '1024']
+        input = ['-i', str(file_names.get('audio').absolute()), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         audio = index
         index += 1
