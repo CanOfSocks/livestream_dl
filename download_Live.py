@@ -221,8 +221,11 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                 for future in done:
                     
                     logging.info("\033[31m{0}\033[0m".format(result))
-                    if not type == 'auxiliary' and future.exception() is not None:
-                        raise future.exception()
+                    if future.exception() is not None:
+                        if type == 'auxiliary': 
+                            logging.error(str(future.exception()))
+                        else:
+                            raise future.exception()
                     
                     result, type = future.result()
                     
