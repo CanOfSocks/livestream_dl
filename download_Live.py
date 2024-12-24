@@ -563,7 +563,7 @@ def create_mp4(file_names, info_dict, options):
         if str(file_names.get('thumbnail').suffix).lower() == '.webp':
             logging.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
             png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
-            thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute), str(png_thumbnail.absolute)]
+            thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
             try:
                 result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
             except subprocess.CalledProcessError as e:
