@@ -266,8 +266,8 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
             done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
             raise
             
-    if options.get('merge', None) or not options.get('no_merge', False):
-        create_mp4(file_names=file_names, info_dict=info_dict, options=options)
+    
+    create_mp4(file_names=file_names, info_dict=info_dict, options=options)
         
     if options.get('temp_folder', None) is not None:
         move_to_final(options=options, outputFile=outputFile, file_names=file_names)               
@@ -618,7 +618,11 @@ def create_mp4(file_names, info_dict, options):
     ffmpeg_builder.append(os.path.abspath(base_output))
     
     ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
-    file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+    
+    # If not merging, save ffmpeg command to file
+    if not (options.get('merge', None) or not options.get('no_merge', False)):    
+        file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+        return file_names
         
     logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
     result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
