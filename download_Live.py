@@ -630,10 +630,10 @@ def create_mp4(file_names, info_dict, options):
     # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
         if file_names.get('video'): 
-            os.remove("{0}.{1}".format(file_names.get('video').path, file_names.get('video').ext))
+            os.remove(file_names.get('video').absolute())
             del file_names['video']
         if file_names.get('audio'): 
-            os.remove("{0}.{1}".format(file_names.get('audio').path, file_names.get('audio').ext))
+            os.remove(file_names.get('audio').absolute())
             del file_names['audio']
     
     return file_names
