@@ -652,7 +652,7 @@ def write_ffmpeg_command(command_array, filename):
                 f.write(f'"{arg}" ' if ' ' in arg else f'{arg} ')
 
         else:  # Assuming it's a Unix-like system (Linux, macOS)
-            for arg in ffmpeg_args:
+            for arg in command_array:
                 # Write each argument for Linux
                 f.write(f'"{arg}" ' if ' ' in arg else f'{arg} ')
             f.write("\n")  # Ensure the last command line ends properly
