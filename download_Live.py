@@ -561,6 +561,7 @@ def create_mp4(file_names, info_dict, options):
     
     if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
         input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
+        ffmpeg_builder.extend(input)
         thumbnail = index
         index += 1
     
@@ -593,8 +594,8 @@ def create_mp4(file_names, info_dict, options):
     ffmpeg_builder.extend(['-c', 'copy'])
         
     # Add metadata
-    ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
-    ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description"))])
+    ffmpeg_builder.extend(['-metadata', '"DATE={0}"'.format(info_dict.get("upload_date"))])
+    ffmpeg_builder.extend(['-metadata', '"COMMENT={0}\n{1}"'.format(info_dict.get("original_url"), info_dict.get("description"))])
     ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
     ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
     
@@ -628,7 +629,7 @@ def create_mp4(file_names, info_dict, options):
     try:
         result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
     except subprocess.CalledProcessError as e:
-        logger.error(e.stderr)
+        logging.error(e.stderr)
         logging.fatal(e)
         raise e
     #print(result.stdout)
