@@ -625,7 +625,12 @@ def create_mp4(file_names, info_dict, options):
         return file_names
         
     logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
-    result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+    try:
+        result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+    except subprocess.CalledProcessError as e:
+        logger.error(e.stderr)
+        logging.fatal(e)
+        raise e
     #print(result.stdout)
     #print(result.stderr)
     
