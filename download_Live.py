@@ -560,6 +560,20 @@ def create_mp4(file_names, info_dict, options):
                       ]
     
     if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
+        if str(file_names.get('thumbnail').suffix).lower() == '.webp':
+            logging.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
+            png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
+            thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute), str(png_thumbnail.absolute)]
+            try:
+                result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+            except subprocess.CalledProcessError as e:
+                logging.error(e.stderr)
+                logging.fatal(e)
+                raise e
+            # Remove webp thumbnail
+            file_names.get('thumbnail').unlink(missing_ok=True)
+            file_names['thumbnail'] = png_thumbnail
+        
         input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         thumbnail = index
@@ -621,8 +635,9 @@ def create_mp4(file_names, info_dict, options):
     ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
     
     # If not merging, save ffmpeg command to file
+    file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
     if not (options.get('merge', None) or not options.get('no_merge', False)):    
-        file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+        
         return file_names
         
     logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
@@ -634,6 +649,9 @@ def create_mp4(file_names, info_dict, options):
         raise e
     #print(result.stdout)
     #print(result.stderr)
+    
+    if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
+        file_names.get('ffmpeg_cmd').unlink()
     
     file_names['merged'] = FileInfo(base_output, file_type='merged')
     
