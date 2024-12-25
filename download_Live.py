@@ -1069,6 +1069,10 @@ class DownloadStream:
             logging.info("Timed out updating fragments: {0}".format(e))
             #print(e)
             return None
+        
+        except Exception as e:
+            logging.error("\033[31m{0}\033[0m".format(e))
+            return None
     
     def detect_manifest_change(self, info_json):
         if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False) is not None:
@@ -1636,6 +1640,10 @@ class DownloadStreamDirect:
             
         except requests.exceptions.Timeout as e:
             logging.warning("Timed out updating fragments: {0}".format(e))
+            return None
+        
+        except Exception as e:
+            logging.error("\033[31m{0}\033[0m".format(e))
             return None
 
     # Function to download a single segment
@@ -2241,6 +2249,10 @@ class StreamRecovery:
             
         except requests.exceptions.Timeout as e:
             logging.debug("Timed out updating fragments: {0}".format(e))
+            return None
+        
+        except Exception as e:
+            logging.error("\033[31m{0}\033[0m".format(e))
             return None
     
 
