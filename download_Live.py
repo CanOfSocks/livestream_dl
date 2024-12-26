@@ -46,6 +46,7 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
+            logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
             downloader.delete_temp_database()
         elif downloader.temp_db_file != ':memory:':
             database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
@@ -62,6 +63,7 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
         downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries)        
         file_name = downloader.live_dl()
         if not keep_state:
+            logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
             downloader.delete_state_file()
         else:
             database_file = FileInfo(downloader.state_file_name, file_type='database', format=downloader.format)
@@ -78,6 +80,7 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
     if result:
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
+            logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
             downloader.delete_temp_database()
         elif downloader.temp_db_file != ':memory:':
             database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
@@ -308,7 +311,7 @@ def move_to_final(options, outputFile, file_names):
     try:
         if file_names.get('description'):
             description = file_names.get('description')
-            description_output = "{0}.{1}".format(outputFile, description.suffix)
+            description_output = "{0}{1}".format(outputFile, description.suffix)
             logging.info("Moving {0} to {1}".format(description.absolute(), description_output))
             shutil.move(description.absolute(), description_output)
     except Exception as e:
@@ -353,7 +356,7 @@ def move_to_final(options, outputFile, file_names):
     try:
         if file_names.get('live_chat'):
             live_chat = file_names.get('live_chat')
-            live_chat_output = "{0}.{1}".format(outputFile, ".live_chat.zip")
+            live_chat_output = "{0}{1}".format(outputFile, ".live_chat.zip")
             logging.info("Moving {0} to {1}".format(live_chat.absolute(), live_chat_output))
             shutil.move(live_chat.absolute(), live_chat_output)
     except Exception as e:
@@ -715,7 +718,7 @@ class DownloadStream:
         parsed_url = urlparse(self.stream_url)        
         self.url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
 
-        print(json.dumps(self.url_params))
+        logging.debug(json.dumps(self.url_params))
         
         self.database_in_memory = database_in_memory
         
