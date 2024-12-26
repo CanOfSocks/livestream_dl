@@ -25,9 +25,9 @@ sed -i '/if fmt.get('\'targetDurationSec\''):$/,/    continue$/s/^/#/' "$(pip sh
 # Usage
 To use, execute `runner.py` with python with any additional options.
 ```
-usage: runner.py [-h] [--resolution RESOLUTION] [--video-format VIDEO_FORMAT] [--audio-format AUDIO_FORMAT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT]
-                 [--temp-folder TEMP_FOLDER] [--write-thumbnail] [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--database-in-memory] [--direct-to-ts]        
-                 [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE]
+usage: runner.py [-h] [--resolution RESOLUTION] [--video-format VIDEO_FORMAT] [--audio-format AUDIO_FORMAT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT]    
+                 [--temp-folder TEMP_FOLDER] [--write-thumbnail] [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--database-in-memory] [--direct-to-ts]
+                 [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE] [--remove-ip-from-json] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE]
                  [ID]
 
 Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)
@@ -70,6 +70,12 @@ options:
                         (min, max) Minimum and maximum interval to wait for a video
   --json-file JSON_FILE
                         Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs
+  --remove-ip-from-json
+                        Replaces IP entries in info.json with 0.0.0.0
+  --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        Set the logging level. Default is INFO.
+  --no-console          Do not log messages to the console.
+  --log-file LOG_FILE   Path to the log file where messages will be saved.
 ```
 
 # Downloader methods
