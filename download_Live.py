@@ -283,10 +283,16 @@ def move_to_final(options, outputFile, file_names):
         os.makedirs(os.path.dirname(outputFile), exist_ok=True)
     try:
         if file_names.get('thumbnail'):
-            thumbnail = file_names.get('thumbnail')
-            thumb_output = "{0}{1}".format(outputFile, thumbnail.suffix)
-            logging.debug("Moving {0} to {1}".format(thumbnail.absolute(), thumb_output))
-            shutil.move(thumbnail.absolute(), thumb_output)
+            # Remove thumbnail if write_thumbnail isn't True as it may have only been requested for embedding      
+            if options.get('write_thumbnail', False):
+                thumbnail = file_names.get('thumbnail')
+                thumb_output = "{0}{1}".format(outputFile, thumbnail.suffix)
+                logging.debug("Moving {0} to {1}".format(thumbnail.absolute(), thumb_output))
+                shutil.move(thumbnail.absolute(), thumb_output)
+            else:
+                logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
+                file_names.get('thumbnail').unlink(missing_ok=True)
+                del file_names['thumbnail']
     except Exception as e:
         logging.error("unable to move thumbnail: {0}".format(e))
     
@@ -629,11 +635,8 @@ def create_mp4(file_names, info_dict, options):
             logging.info("Removing {0}".format(file_names.get('audio').absolute()))
             file_names.get('audio').unlink(missing_ok=True)
             del file_names['audio']
-            
-    if file_names.get('thumbnail', None) and not options.get('write_thumbnail', False):
-        logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
-        file_names.get('thumbnail').unlink(missing_ok=True)
-        del file_names['thumbnail']
+    
+
         
     
     return file_names
