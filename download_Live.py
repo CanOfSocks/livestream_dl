@@ -487,10 +487,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         #base_name = ydl.prepare_filename(info_dict)
         #result = ydl.download_with_info_file(info_dict)
-        thumbnails = ydl._write_thumbnails('video', info_dict, ydl.prepare_filename(info_dict, 'thumbnail'))
         
-        if thumbnails:            
-            created_files['thumbnail'] = FileInfo(thumbnails[0][0], file_type='thumbnail')
         if ydl._write_info_json('video', info_dict, ydl.prepare_filename(info_dict, 'infojson')) or os.path.exists(ydl.prepare_filename(info_dict, 'infojson')):
             created_files['info_json'] = FileInfo(ydl.prepare_filename(info_dict, 'infojson'), file_type='info_json')
             try:
@@ -501,6 +498,11 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
             
         if ydl._write_description('video', info_dict, ydl.prepare_filename(info_dict, 'description')) or os.path.exists(ydl.prepare_filename(info_dict, 'description')):
             created_files['description'] = FileInfo(ydl.prepare_filename(info_dict, 'description'), file_type='description')
+            
+        thumbnails = ydl._write_thumbnails('video', info_dict, ydl.prepare_filename(info_dict, 'thumbnail'))
+        
+        if thumbnails:            
+            created_files['thumbnail'] = FileInfo(thumbnails[0][0], file_type='thumbnail')
             
         
     return created_files, 'auxiliary'
