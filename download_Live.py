@@ -368,6 +368,9 @@ def move_to_final(options, outputFile, file_names):
     except Exception as e:
         logging.error("unable to move database files: {0}".format(e))
         
+    if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
+        file_names.get('ffmpeg_cmd').unlink()
+        
     try:
         os.rmdir(options.get('temp_folder'))
     except Exception as e:
@@ -625,8 +628,7 @@ def create_mp4(file_names, info_dict, options):
     file_names['merged'] = FileInfo(base_output, file_type='merged')
     logging.info("Successfully merged files into: {0}".format(file_names.get('merged').absolute()))
     
-    if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
-        file_names.get('ffmpeg_cmd').unlink()
+    
     # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
         if file_names.get('video'): 
@@ -636,10 +638,7 @@ def create_mp4(file_names, info_dict, options):
         if file_names.get('audio'): 
             logging.info("Removing {0}".format(file_names.get('audio').absolute()))
             file_names.get('audio').unlink(missing_ok=True)
-            del file_names['audio']
-    
-
-        
+            del file_names['audio']       
     
     return file_names
     #for file in file_names:
