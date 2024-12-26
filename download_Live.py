@@ -473,49 +473,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         base_output = filename
     
     created_files = {}
-    """
-    try:
-        if options.get('write_info_json'):
-            info_file = "{0}.info.json".format(base_output)
-            with open(info_file, 'w', encoding='utf-8') as f:
-                f.write(json.dumps(info_dict, indent=4))
-            created_files['info_json'] = fileInfo(base_output, ext='info.json', type='info_json')
-    except Exception as e:
-        print("\033[31m{0}\033[0m".format(e))
-        
-    try:
-        if options.get('write_description'):
-            desc_file = "{0}.description".format(base_output)
-            with open(desc_file, 'w', encoding='utf-8') as f:
-                f.write(info_dict.get('description', ""))    
-            created_files['description'] = fileInfo(desc_file, ext='description', type='description')
-    except Exception as e:
-        print("\033[31m{0}\033[0m".format(e))
-        
-    try:
-        if options.get('write_thumbnail') or options.get("embed_thumbnail") and info_dict.get('thumbnail'):
-            # Filter URLs ending with '.jpg' and sort by preference in descending order
-            jpg_urls = [item for item in info_dict['thumbnails'] if item['url'].endswith('.jpg')]
-            highest_preference_jpg = max(jpg_urls, key=lambda x: x['preference']).get('url')
-            print("Best url: {0}".format(highest_preference_jpg))
-            thumb_file = "{0}.jpg".format(base_output)
-            retry_strategy = Retry(
-                    total=5,  # maximum number of retries
-                    backoff_factor=1, 
-                    status_forcelist=[204, 400, 401, 403, 404, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
-                )
-            adapter = HTTPAdapter(max_retries=retry_strategy)
-            # create a new session object
-            session = requests.Session()
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
-            response = session.get(highest_preference_jpg, timeout=30)
-            with open(thumb_file, 'wb') as f:
-                f.write(response.content)
-            created_files['thumbnail'] = fileInfo(base_output, ext='jpg', type='thumbnail')      
-    except Exception as e:
-        print("\033[31m{0}\033[0m".format(e))
-    """
+
     ydl_opts = {
         'skip_download': True,
         'quiet': True,
@@ -523,7 +481,8 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
         'writeinfojson': options.get('write_info_json', False),
         'writedescription': options.get('write_description', False),
         'writethumbnail': (options.get('write_thumbnail', False) or options.get("embed_thumbnail", False)),
-        'outtmpl': base_output
+        'outtmpl': base_output,
+        'retries': 10
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         #base_name = ydl.prepare_filename(info_dict)
@@ -560,24 +519,27 @@ def create_mp4(file_names, info_dict, options):
                       ]
     
     if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
-        if str(file_names.get('thumbnail').suffix).lower() == '.webp':
-            logging.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
-            png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
-            thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
-            try:
-                result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
-            except subprocess.CalledProcessError as e:
-                logging.error(e.stderr)
-                logging.fatal(e)
-                raise e
-            # Remove webp thumbnail
-            file_names.get('thumbnail').unlink(missing_ok=True)
-            file_names['thumbnail'] = png_thumbnail
-        
-        input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
-        ffmpeg_builder.extend(input)
-        thumbnail = index
-        index += 1
+        if file_names.get('thumbnail').exists():
+            if str(file_names.get('thumbnail').suffix).lower() == '.webp':
+                logging.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
+                png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
+                thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
+                try:
+                    result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+                except subprocess.CalledProcessError as e:
+                    logging.error(e.stderr)
+                    logging.fatal(e)
+                    raise e
+                # Remove webp thumbnail
+                file_names.get('thumbnail').unlink(missing_ok=True)
+                file_names['thumbnail'] = png_thumbnail
+            
+            input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
+            ffmpeg_builder.extend(input)
+            thumbnail = index
+            index += 1
+        else:
+            logging.error("Thumnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
     
     # Add input files
     if file_names.get('video'):        
@@ -654,15 +616,23 @@ def create_mp4(file_names, info_dict, options):
         file_names.get('ffmpeg_cmd').unlink()
     
     file_names['merged'] = FileInfo(base_output, file_type='merged')
-    
+    logging.info("Successfully merged files into: {0}".format())
     # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
         if file_names.get('video'): 
-            os.remove(file_names.get('video').absolute())
+            logging.info("Removing {0}".format(file_names.get('video').absolute()))
+            file_names.get('video').unlink(missing_ok=True)
             del file_names['video']
         if file_names.get('audio'): 
-            os.remove(file_names.get('audio').absolute())
+            logging.info("Removing {0}".format(file_names.get('audio').absolute()))
+            file_names.get('audio').unlink(missing_ok=True)
             del file_names['audio']
+            
+    if file_names.get('thumbnail', None) and not options.get('write_thumbnail', False):
+        logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
+        file_names.get('thumbnail').unlink(missing_ok=True)
+        del file_names['thumbnail']
+        
     
     return file_names
     #for file in file_names:
