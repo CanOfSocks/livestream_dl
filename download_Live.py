@@ -620,11 +620,13 @@ def create_mp4(file_names, info_dict, options):
     #print(result.stdout)
     #print(result.stderr)
     
-    if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
-        file_names.get('ffmpeg_cmd').unlink()
+    
     
     file_names['merged'] = FileInfo(base_output, file_type='merged')
-    logging.info("Successfully merged files into: {0}".format())
+    logging.info("Successfully merged files into: {0}".format(file_names.get('merged').absolute()))
+    
+    if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
+        file_names.get('ffmpeg_cmd').unlink()
     # Remove temp video and audio files
     if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
         if file_names.get('video'): 
