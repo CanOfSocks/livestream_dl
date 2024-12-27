@@ -226,11 +226,11 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                 # Continuously check for completion or interruption
                 for future in done:
                     
-                    if future.exception() is not None:
-                        if type == 'auxiliary': 
-                            logging.error(str(future.exception()))
-                        else:
-                            raise future.exception()
+                    #if future.exception() is not None:
+                    #    if type == 'auxiliary': 
+                            #logging.error(str(future.exception()))
+                     #   else:
+                    #        raise future.exception()
                     
                     result, type = future.result()
                     logging.info("\033[31m{0}\033[0m".format(result))
