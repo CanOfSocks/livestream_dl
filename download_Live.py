@@ -678,11 +678,13 @@ def write_ffmpeg_command(command_array, filename):
             if " " in arg or any(ch in arg for ch in ('&', '^', '%', '$', '#', '"')):
                 arg = f'"{arg.replace("\"", "\\\"")}"'
             quoted_args.append(arg)
+        command_string = f"{' '.join(quoted_args)}"
     else:  # POSIX (Linux/macOS)
         # Use shlex.quote for safe quoting
-        quoted_args = [shlex.quote(arg) for arg in arguments]
+        #quoted_args = [shlex.quote(arg) for arg in arguments]
+        command_string = shlex.join(command_array)
 
-    command_string = f"{' '.join(quoted_args)}"
+    
 
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(command_string + "\n")
