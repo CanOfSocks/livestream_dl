@@ -620,7 +620,7 @@ def create_mp4(file_names, info_dict, options):
         ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
         file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
 
-    if not (options.get('merge', None) or not options.get('no_merge', False)):    
+    if not (options.get('merge', True)):    
         return file_names
         
     logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
