@@ -103,6 +103,8 @@ if __name__ == "__main__":
     
     parser.add_argument("--log-file", type=str, help="Path to the log file where messages will be saved.")
 
+    parser.add_argument('--write-ffmpeg-command', action='store_true', help="Writes FFmpeg command to a txt file")
+
     # Parse the arguments
     args = parser.parse_args()
     

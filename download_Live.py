@@ -370,9 +370,17 @@ def move_to_final(options, outputFile, file_names):
                 shutil.move(file.absolute(), db_output)
     except Exception as e:
         logging.error("unable to move database files: {0}".format(e))
-        
-    if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
-        file_names.get('ffmpeg_cmd').unlink()
+    try:
+        if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
+            if options.get('write_ffmpeg_command', False):
+                ffmpeg_command = file_names.get('ffmpeg_cmd')
+                ffmpeg_command_output = "{0}{1}".format(outputFile, ".ffmpeg.txt")
+                logging.info("Moving {0} to {1}".format(ffmpeg_command.absolute(), ffmpeg_command_output))
+                shutil.move(ffmpeg_command.absolute(), ffmpeg_command_output)
+            else:
+                file_names.get('ffmpeg_cmd').unlink()
+    except Exception as e:
+        logging.error("unable to move ffmpeg command file: {0}".format(e))
         
     try:
         os.rmdir(options.get('temp_folder'))
@@ -608,12 +616,11 @@ def create_mp4(file_names, info_dict, options):
         
     ffmpeg_builder.append(os.path.abspath(base_output))
     
-    ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
-    
-    # If not merging, save ffmpeg command to file
-    file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+    if options.get('write_ffmpeg_command', True):
+        ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
+        file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+
     if not (options.get('merge', None) or not options.get('no_merge', False)):    
-        
         return file_names
         
     logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
@@ -648,21 +655,37 @@ def create_mp4(file_names, info_dict, options):
     #    os.remove(file)
 
 def write_ffmpeg_command(command_array, filename):
+    import shlex
     # Determine the platform
-    
-    with open(filename, 'w', encoding='utf-8') as f:
-        if os.name == 'nt':  # Windows
-            for arg in command_array:
-                # Handle multiline and quotes for Windows
-                if '\n' in arg:
-                    arg = arg.replace('\n', '^ \n')  # Escape newlines
-                f.write(f'"{arg}" ' if ' ' in arg else f'{arg} ')
+    """
+    Builds a platform-compatible FFmpeg command with proper quoting.
 
-        else:  # Assuming it's a Unix-like system (Linux, macOS)
-            for arg in command_array:
-                # Write each argument for Linux
-                f.write(f'"{arg}" ' if ' ' in arg else f'{arg} ')
-            f.write("\n")  # Ensure the last command line ends properly
+    Args:
+        command_array (list): List of arguments to append to the command.
+        filename: Filename to write command to 
+
+    Returns:
+        str: A properly quoted FFmpeg command.
+    """
+    if os.name == "nt":  # Windows
+        # Handle special quoting and escaping for Windows
+        quoted_args = []
+        for arg in command_array:
+            if "\n" in arg:
+                # Replace newlines with literal \n
+                arg = arg.replace("\n", "\\n")
+            # Escape double quotes and wrap in double quotes if necessary
+            if " " in arg or any(ch in arg for ch in ('&', '^', '%', '$', '#', '"')):
+                arg = f'"{arg.replace("\"", "\\\"")}"'
+            quoted_args.append(arg)
+    else:  # POSIX (Linux/macOS)
+        # Use shlex.quote for safe quoting
+        quoted_args = [shlex.quote(arg) for arg in arguments]
+
+    command_string = f"{' '.join(quoted_args)}"
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(command_string + "\n")
 
     return filename
     
