@@ -322,7 +322,7 @@ def move_to_final(options, outputFile, file_names):
     try:
         if file_names.get('video'):
             video = file_names.get('video')
-            video_output = "{0}.{1}{2}".format(outputFile, video.format, video.suffix)
+            video_output = "{0}.{1}{2}".format(outputFile, video._format, video.suffix)
             logging.info("Moving {0} to {1}".format(video.absolute(), video_output))
             shutil.move(video.absolute(), video_output)
     except Exception as e:
@@ -331,7 +331,7 @@ def move_to_final(options, outputFile, file_names):
     try:
         if file_names.get('audio'):
             audio = file_names.get('audio')
-            audio_output = "{0}.{1}{2}".format(outputFile, audio.format, audio.suffix)
+            audio_output = "{0}.{1}{2}".format(outputFile, audio._format, audio.suffix)
             logging.info("Moving {0} to {1}".format(audio.absolute(), audio_output))
             shutil.move(audio.absolute(), audio_output)
     except Exception as e:
@@ -681,8 +681,12 @@ def convert_bytes(bytes):
     # Format and return the result
     return f"{bytes:.2f} {units[unit_index]}"
 
-def print_stats():
-    pass
+def print_stats(options):
+    # If not info log level or below, don't print stats
+    if not options.get("log_level", None) in ["DEBUG", "INFO"]:
+        return
+    
+    
     
 class FileInfo(Path):
     _file_type = None  # Class attribute for storing the file type    
@@ -783,6 +787,8 @@ class DownloadStream:
 
         self.conn, self.cursor = self.create_db(self.temp_db_file)    
         
+        stats[self.type] = {}
+        
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
@@ -875,9 +881,13 @@ class DownloadStream:
                     if head_seg_num > self.latest_sequence:
                         logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
                         self.latest_sequence = head_seg_num
+                        stats[self.type]["latest_sequence"] = self.latest_sequence
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
+                        
+                    if headers and headers.get("X", None):
+                        stats[self.type]["estimated_size"] = headers.get("X", None)
 
                     if segment_data is not None:
                         # Insert segment data in the main thread (database interaction)
@@ -891,6 +901,9 @@ class DownloadStream:
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
+                            
+                        stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
+                    
                     
                     # Remove completed thread to free RAM
                     del future_to_seg[future]
