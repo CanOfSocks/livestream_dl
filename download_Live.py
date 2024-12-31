@@ -39,6 +39,8 @@ file_names = {
     'databases': []
 }
 
+stats = {}
+
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5):
     try:
@@ -665,6 +667,22 @@ def write_ffmpeg_command(command_array, filename):
             f.write("\n")  # Ensure the last command line ends properly
 
     return filename
+
+def convert_bytes(bytes):
+    # List of units in order
+    units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB']
+    
+    # Start with bytes and convert to larger units
+    unit_index = 0
+    while bytes >= 1024 and unit_index < len(units) - 1:
+        bytes /= 1024
+        unit_index += 1
+    
+    # Format and return the result
+    return f"{bytes:.2f} {units[unit_index]}"
+
+def print_stats():
+    pass
     
 class FileInfo(Path):
     _file_type = None  # Class attribute for storing the file type    
