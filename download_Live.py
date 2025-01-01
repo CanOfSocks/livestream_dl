@@ -722,11 +722,15 @@ def print_stats(options):
     print("{0}:".format(stats.get('id')), end=" ")
     
     if stats.get('video'):
-        print("Video: {0}/{1} segments,".format(stats.get('video', {}).get('downloaded_segments', 0), stats.get('video', {}).get('latest_sequence', 0)), end=" ")
-        
+        print("Video: {0}/{1} segments".format(stats.get('video', {}).get('downloaded_segments', 0), stats.get('video', {}).get('latest_sequence', 0)), end="")
+        if stats.get('video', {}).get('status', None):
+            print(" ({0})".format(stats.get('video', {}).get('status', "").capitalize()), end="")
+        print(", ", end="")
     if stats.get('audio'):
-        print("Audio: {0}/{1} segments,".format(stats.get('audio', {}).get('downloaded_segments', 0), stats.get('audio', {}).get('latest_sequence', 0)), end=" ")
-    
+        print("Audio: {0}/{1} segments".format(stats.get('audio', {}).get('downloaded_segments', 0), stats.get('audio', {}).get('latest_sequence', 0)), end="")
+        if stats.get('video', {}).get('status', None):
+            print(" ({0})".format(stats.get('audio', {}).get('status', "").capitalize()), end="")
+        print(", ", end="")
     if stats.get('video', {}).get('current_filesize', None) or stats.get('audio', {}).get('current_filesize', None):
         current_size = stats.get('video', {}).get('current_filesize', 0) + stats.get('audio', {}).get('current_filesize', 0)
         current_size_string = convert_bytes(current_size)
@@ -899,7 +903,7 @@ class DownloadStream:
         wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
-        
+        stats[self.type]['status'] = "recording"
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
             submitted_segments = set()
             future_to_seg = {}
@@ -1288,7 +1292,7 @@ class DownloadStream:
     def combine_segments_to_file(self, output_file, cursor=None):
         if cursor is None:
             cursor = self.cursor
-        
+        stats[self.type]['status'] = "merging"
         logging.info("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
@@ -1297,6 +1301,7 @@ class DownloadStream:
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
                 f.write(cleaned_segment)
+        stats[self.type]['status'] = "merged"
         return output_file
     
     ### Via ytarchive            
@@ -1489,6 +1494,7 @@ class DownloadStreamDirect:
     def live_dl(self):
         
         logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        stats[self.type]['status'] = "recording"
         wait = 0   
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
@@ -1674,7 +1680,7 @@ class DownloadStreamDirect:
                         if seg_num not in submitted_segments and not submitted_segments.add(seg_num)
                     }
                 )
-                
+        stats[self.type]['status'] = "merged"        
         return self.merged_file_name
 
     def update_latest_segment(self):
@@ -1800,6 +1806,7 @@ class DownloadStreamDirect:
         return False
     # Function to combine segments into a single file
     def combine_segments_to_file(self, output_file, cursor=None):
+        stats[self.type]['status'] = "merging"
         if cursor is None:
             cursor = self.cursor
         
@@ -1811,6 +1818,7 @@ class DownloadStreamDirect:
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
                 f.write(cleaned_segment)
+        stats[self.type]['status'] = "merged"
         return output_file
     
     ### Via ytarchive            
@@ -2031,6 +2039,7 @@ class StreamRecovery:
     def live_dl(self):
         #from itertools import groupby
         logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        stats[self.type]['status'] = "recording"
         self.already_downloaded = self.segment_exists_batch()
         #wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
@@ -2509,7 +2518,7 @@ class StreamRecovery:
     def combine_segments_to_file(self, output_file, cursor=None):
         if cursor is None:
             cursor = self.cursor
-        
+        stats[self.type]['status'] = "merging"
         logging.info("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
@@ -2518,6 +2527,7 @@ class StreamRecovery:
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
                 f.write(cleaned_segment)
+        stats[self.type]['status'] = "merged"
         return output_file
     
     ### Via ytarchive            
