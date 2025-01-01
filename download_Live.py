@@ -106,7 +106,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
         
     if logger:
         logging.root = logger
-       
+    stats['id'] = info_dict.get('id', None)
     logger.debug(json.dumps(options, indent=4))
     outputFile = output_filename(info_dict=info_dict, outtmpl=options.get('output'))
     file_name = None
@@ -244,7 +244,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                     elif str(type).lower() == 'audio':
                         file_names['audio'] = result    
                     else:
-                        file_names[result.type] = result
+                        file_names[str(type)] = result
                     
                     futures.remove(future)
                     
@@ -252,6 +252,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                     break
                 else:
                     time.sleep(0.9)
+                print_stats(options=options)
             
             if live_chat_thread is not None:
                 logging.info("Waiting for live chat to end")
@@ -711,6 +712,24 @@ def print_stats(options):
     if not options.get("log_level", None) in ["DEBUG", "INFO"]:
         return
     
+    if not (stats.get('video', None) or stats.get('audio', None)):
+        return
+    
+    print("{0}:".format(stats.get('id')), end=" ")
+    
+    if stats.get('video'):
+        print("Video: {0}/{1} segments,".format(stats.get('video', {}).get('downloaded_segments', 0), stats.get('video', {}).get('latest_sequence', 0)), end=" ")
+        
+    if stats.get('audio'):
+        print("Audio: {0}/{1} segments,".format(stats.get('audio', {}).get('downloaded_segments', 0), stats.get('audio', {}).get('latest_sequence', 0)), end=" ")
+    
+    if stats.get('video', {}).get('current_filesize', None) or stats.get('audio', {}).get('current_filesize', None):
+        current_size = stats.get('video', {}).get('current_filesize', 0) + stats.get('audio', {}).get('current_filesize', 0)
+        current_size_string = convert_bytes(current_size)
+        print("~{0} downloaded".format(current_size_string), end=" ")
+        
+    print("\r",end="")
+    
     
     
 class FileInfo(Path):
@@ -910,9 +929,9 @@ class DownloadStream:
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
-                        
-                    if headers and headers.get("X", None):
-                        stats[self.type]["estimated_size"] = headers.get("X", None)
+                    
+                    if headers and headers.get('X-Bandwidth-Est', None):
+                        stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
 
                     if segment_data is not None:
                         # Insert segment data in the main thread (database interaction)
@@ -1419,6 +1438,8 @@ class DownloadStreamDirect:
         self.url_checked = time.time()   
         self.stream_urls = [self.stream_url]
         
+        stats[self.type] = {}
+        
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
@@ -1500,10 +1521,14 @@ class DownloadStreamDirect:
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
+                        
+                    if headers and headers.get('X-Bandwidth-Est', None):
+                        stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
 
                     if segment_data is not None:
                         downloaded_segments[seg_num] = segment_data
-                                            
+                    
+                    stats[self.type]["latest_sequence"] = self.latest_sequence
                     # Remove completed thread to free RAM
                     del future_to_seg[future]
                 
@@ -1546,6 +1571,9 @@ class DownloadStreamDirect:
                             if self.state.get('last_written') - int(seg_key) > self.max_workers*2:
                                 logging.debug("Segment {0} of {1} has been detected as leftover, removing from dictionary".format(seg_key, self.format))
                                 del downloaded_segments[seg_key]
+                                
+                    stats[self.type]["downloaded_segments"] = self.state.get('last_written', 0)
+                    stats[self.type]["current_filesize"] = self.state.get('file_size', 0)
                 
                 segments_to_download = set(range(self.state.get('last_written')+1, self.latest_sequence)) - submitted_segments 
                                                
@@ -1966,6 +1994,7 @@ class StreamRecovery:
         self.count_403s = {}        
         self.user_agent_403s = {}
         self.user_agent_full_403s = {}
+        stats[self.type] = {}
         
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
@@ -2041,7 +2070,10 @@ class StreamRecovery:
                         self.latest_sequence = head_seg_num
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence                       
+                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
+                        
+                    if headers and headers.get('X-Bandwidth-Est'):
+                        stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est'))
 
                     if segment_data is not None:
                         # Insert segment data in the main thread (database interaction)
@@ -2065,7 +2097,8 @@ class StreamRecovery:
                             self.segments_retries[seg_num]['last_retry'] = time.time()
                             if self.segments_retries[seg_num]['retries'] >= self.fragment_retries:
                                 logging.debug("Segment {0} of {1} has exceeded maximum number of retries")
-                    
+                                
+                    stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
                     # Remove completed thread to free RAM
                     del future_to_seg[future]
                       
@@ -2260,6 +2293,12 @@ class StreamRecovery:
             
         if stream_url_info is not None and stream_url_info.get("X-Head-Time-Sec", None) is not None:
             self.estimated_segment_duration = int(stream_url_info.get("X-Head-Time-Sec"))/max(self.latest_sequence,1)
+        
+        if stats.get(self.type, None):    
+            stats[self.type]["latest_sequence"] = self.latest_sequence
+        else:
+            stats[self.type] = {}
+            stats[self.type]["latest_sequence"] = self.latest_sequence
     
     def get_Headers(self, url):
         try:
