@@ -2069,6 +2069,7 @@ class StreamRecovery:
                         self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, head_seg_num) if key not in self.already_downloaded})
                         self.latest_sequence = head_seg_num
                         
+                        
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
                         
@@ -2098,9 +2099,11 @@ class StreamRecovery:
                             if self.segments_retries[seg_num]['retries'] >= self.fragment_retries:
                                 logging.debug("Segment {0} of {1} has exceeded maximum number of retries")
                                 
-                    stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
+                    
+                    stats[self.type]["latest_sequence"] = self.latest_sequence
                     # Remove completed thread to free RAM
                     del future_to_seg[future]
+                    stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
                       
                 #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
                                        
