@@ -27,7 +27,7 @@ To use, execute `runner.py` with python with any additional options.
 ```
 usage: runner.py [-h] [--resolution RESOLUTION] [--video-format VIDEO_FORMAT] [--audio-format AUDIO_FORMAT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT]    
                  [--temp-folder TEMP_FOLDER] [--write-thumbnail] [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--database-in-memory] [--direct-to-ts]
-                 [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE] [--remove-ip-from-json] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE]
+                 [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE] [--remove-ip-from-json] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json]
                  [ID]
 
 Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)
@@ -76,6 +76,9 @@ options:
                         Set the logging level. Default is INFO.
   --no-console          Do not log messages to the console.
   --log-file LOG_FILE   Path to the log file where messages will be saved.
+  --write-ffmpeg-command
+                        Writes FFmpeg command to a txt file
+  --stats-as-json       Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level
 ```
 
 # Downloader methods

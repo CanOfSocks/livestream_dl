@@ -708,6 +708,10 @@ def convert_bytes(bytes):
     return f"{bytes:.2f} {units[unit_index]}"
 
 def print_stats(options):
+    if options.get('stats_as_json', False):
+        print(json.dumps(stats), end="\r")
+        return
+    
     # If not info log level or below, don't print stats
     if not options.get("log_level", None) in ["DEBUG", "INFO"]:
         return
@@ -729,6 +733,9 @@ def print_stats(options):
         print("~{0} downloaded".format(current_size_string), end=" ")
         
     print("\r",end="")
+    
+
+    
     
     
     
@@ -930,8 +937,8 @@ class DownloadStream:
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
                     
-                    if headers and headers.get('X-Bandwidth-Est', None):
-                        stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
+                    #if headers and headers.get('X-Bandwidth-Est', None):
+                    #    stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
 
                     if segment_data is not None:
                         # Insert segment data in the main thread (database interaction)
@@ -1522,8 +1529,8 @@ class DownloadStreamDirect:
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
                         
-                    if headers and headers.get('X-Bandwidth-Est', None):
-                        stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
+                    #if headers and headers.get('X-Bandwidth-Est', None):
+                    #    stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
 
                     if segment_data is not None:
                         downloaded_segments[seg_num] = segment_data
@@ -2073,8 +2080,8 @@ class StreamRecovery:
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
                         
-                    if headers and headers.get('X-Bandwidth-Est'):
-                        stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est'))
+                    #if headers and headers.get('X-Bandwidth-Est'):
+                    #    stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est'))
 
                     if segment_data is not None:
                         # Insert segment data in the main thread (database interaction)
