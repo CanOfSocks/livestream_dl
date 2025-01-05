@@ -916,7 +916,9 @@ class DownloadStream:
                 self.check_kill()
                 if self.refresh_Check() is True:
                     break
-                        
+                
+                if stats.get(self.type, None) is None:
+                    stats[self.type] = {}
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
@@ -1511,7 +1513,9 @@ class DownloadStreamDirect:
                 self.check_kill()
                 if self.refresh_Check() is True:
                     break
-                        
+                
+                if stats.get(self.type, None) is None:
+                    stats[self.type] = {}
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, _ = concurrent.futures.wait(future_to_seg, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
@@ -2069,7 +2073,9 @@ class StreamRecovery:
                        
             
             while True:     
-                self.check_kill()                                        
+                self.check_kill()     
+                if stats.get(self.type, None) is None:
+                    stats[self.type] = {}                                   
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
