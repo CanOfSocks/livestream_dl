@@ -25,6 +25,10 @@ def parse_string_or_tuple(value):
 def main(id, resolution='best', options={}, info_dict=None):
     logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', False), file=options.get('log_file', None))
     
+    # Convert additional options to dictionary, if it exists
+    if options.get('ytdlp_options', None) is not None:
+        import json
+        options['ytdlp_options'] = json.loads(options.get('ytdlp_options'))
     
     if options.get('json_file', None) is not None:
         import json
@@ -33,7 +37,8 @@ def main(id, resolution='best', options={}, info_dict=None):
     elif info_dict:
         pass
     else:
-        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None))
+        
+        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None))
     download_Live.download_segments(info_dict, resolution, options, logger)
     
 if __name__ == "__main__":
@@ -106,6 +111,8 @@ if __name__ == "__main__":
     parser.add_argument('--write-ffmpeg-command', action='store_true', help="Writes FFmpeg command to a txt file")
     
     parser.add_argument('--stats-as-json', action='store_true', help="Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level")
+    
+    parser.add_argument('--ytdlp-options', type=str, default=None, help="Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183")
 
     # Parse the arguments
     args = parser.parse_args()

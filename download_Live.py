@@ -42,9 +42,9 @@ file_names = {
 stats = {}
 
 # Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5):
+def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None):
     try:
-        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries)        
+        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, yt_dlp_options=yt_dlp_options)        
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -60,9 +60,9 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
     return file, downloader.type
 
 # Create runner function for each download format
-def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5):
+def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None):
     try:
-        downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries)        
+        downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, yt_dlp_options=yt_dlp_options)        
         file_name = downloader.live_dl()
         if not keep_state:
             logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
@@ -74,7 +74,7 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
-def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5):
+def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None):
     
     downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries)        
     result = downloader.live_dl()
@@ -146,7 +146,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                             raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
                         else:
                             video_future = executor.submit(recover_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'))
+                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), yt_dlp_options=options.get('ytdlp_options', None))
                             futures.add(video_future)
                     
                     if options.get('audio_format', None) is not None:
@@ -154,7 +154,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                             raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
                         else:
                             audio_future = executor.submit(recover_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                             futures.add(audio_future)  
                 elif options.get('direct_to_ts', False) is True:
                     if options.get('video_format', None) is not None:
@@ -162,7 +162,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                             raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
                         else:
                             video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'))
+                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), yt_dlp_options=options.get('ytdlp_options', None))
                             futures.add(video_future)
                     
                     if options.get('audio_format', None) is not None:
@@ -170,7 +170,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                             raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
                         else:
                             audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                             futures.add(audio_future)  
                 else:
                     if options.get('video_format', None) is not None:
@@ -178,7 +178,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                             raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
                         else:
                             video_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'))
+                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), yt_dlp_options=options.get('ytdlp_options', None))
                             futures.add(video_future)
                     
                     if options.get('audio_format', None) is not None:
@@ -186,7 +186,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                             raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
                         else:
                             audio_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                             futures.add(audio_future)                        
                     
             elif resolution.lower() != "audio_only":                
@@ -194,19 +194,19 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                     # Submit tasks for both video and audio downloads   
                     if options.get('recovery', False) is True:
                         video_future = executor.submit(recover_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                         audio_future = executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                     elif options.get('direct_to_ts', False) is True:
                         video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                         audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                     else:
                         video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                         audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None))
                     
                             # Wait for both downloads to finish
                     futures.add(video_future)
@@ -217,11 +217,14 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                             
             elif resolution.lower() == "audio_only":
                 if options.get('recovery', False) is True:
-                    futures.add(executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies')))
+                    futures.add(executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
+                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None)))
                 elif options.get('direct_to_ts', False) is True:
-                    futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies')))
+                    futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
+                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None)))
                 else:
-                    futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies')))
+                    futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
+                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None)))
                 
             while True:
                 done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
@@ -770,12 +773,13 @@ class FileInfo(Path):
         return f"{super().__repr__()} (file_type={self._file_type})"
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
         self.max_workers = max_workers
+        self.yt_dlp_options = yt_dlp_options
         
         self.resolution = resolution
         
@@ -862,7 +866,7 @@ class DownloadStream:
         if (time.time() - self.url_checked >= 3600.0 or self.is_403) and not self.is_private:
             logging.info("Refreshing URL for {0}".format(self.format))
             try:
-                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
+                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
                 
                 # Check for new manifest, if it has, start a nested download session
                 if self.detect_manifest_change(info_json=info_dict) is True:
@@ -1373,12 +1377,13 @@ class DownloadStream:
             os.remove(self.folder)
             
 class DownloadStreamDirect:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, cookies=None):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, cookies=None, yt_dlp_options=None):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
         self.max_workers = max_workers
+        self.yt_dlp_options = yt_dlp_options
         
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
@@ -1472,7 +1477,7 @@ class DownloadStreamDirect:
         if (time.time() - self.url_checked >= 3600.0 or self.is_403) and not self.is_private:
             logging.debug("Refreshing URL for {0}".format(self.format))
             try:
-                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies)
+                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
                 
                 # Check for new manifest, if it has, start a nested download session
                 if self.detect_manifest_change(info_json=info_dict) is True:

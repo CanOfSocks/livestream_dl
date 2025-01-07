@@ -28,7 +28,7 @@ class MyLogger:
         print(msg)
         pass
             
-def get_Video_Info(id, wait=True, cookies=None):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
     logger = MyLogger()
@@ -51,6 +51,9 @@ def get_Video_Info(id, wait=True, cookies=None):
         ydl_opts['wait_for_video'] = wait
     elif wait is True:
         ydl_opts['wait_for_video'] = (5,300)
+        
+    if additional_options:
+        ydl_opts.update(additional_options)
 
     info_dict = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
