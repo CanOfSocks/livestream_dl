@@ -1016,6 +1016,11 @@ class DownloadStream:
                             except PermissionError as e:
                                 logging.debug(e)
                                 self.is_private = True
+                            except ValueError as e:
+                                # Livestream has been processed
+                                logging.error("Error refreshing URL: {0}".format(e))
+                                logging.info("Livestream has ended and processed, commiting remaining segments")
+                                break
                             except Exception as e:
                                 logging.info("Error refreshing URL: {0}".format(e))
                                 logging.debug("Error refreshing URL: {0}".format(e))
@@ -1643,6 +1648,11 @@ class DownloadStreamDirect:
                             except PermissionError as e:
                                 logging.warning(e)
                                 self.is_private = True
+                            except ValueError as e:
+                                # Livestream has been processed
+                                logging.error("Error refreshing URL: {0}".format(e))
+                                logging.info("Livestream has ended and processed, commiting remaining segments")
+                                break
                             except Exception as e:
                                 logging.error("Error refreshing URL: {0}".format(e))
                             
