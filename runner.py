@@ -12,7 +12,7 @@ def process_proxies(proxy_string):
     
     if proxy_string is None:
         return None
-    
+    print(proxy_string)
     if proxy_string == "":
         return {
             "http": None, 
@@ -36,7 +36,7 @@ def process_proxies(proxy_string):
     auth = f"{username}:{password}@" if username and password else ""
     
     # Adjust scheme for SOCKS
-    if scheme.startswith("socks") and not scheme.startswith("socksh"):
+    if scheme.startswith("socks") and not scheme.startswith("socks5h"):
         scheme += "h"  # Ensure DNS resolution via proxy
         
     # Construct final proxy string

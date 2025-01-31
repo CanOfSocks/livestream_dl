@@ -854,7 +854,7 @@ class DownloadStream:
         
         self.update_latest_segment()
         self.url_checked = time.time()
-
+        
         self.conn, self.cursor = self.create_db(self.temp_db_file)    
         
         stats[self.type] = {}

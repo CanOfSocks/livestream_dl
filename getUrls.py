@@ -18,6 +18,7 @@ class MyLogger:
 
     def warning(self, msg):
         #
+        print(msg)
         if "private" in msg.lower() or "UNAVAILABLE" in msg.upper() or "unavailable" in str(msg) or "should already be available" in msg.lower() or "not available" in msg.lower():
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         else:
@@ -56,6 +57,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
         ydl_opts.update(additional_options)
         
     if proxy is not None:
+        print(proxy)
         ydl_opts['proxy'] = next(iter(proxy.values()), None)
 
     info_dict = {}
