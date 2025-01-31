@@ -6,6 +6,47 @@ except ModuleNotFoundError as e:
     from . import getUrls
     from . import download_Live
 import ast
+import json
+
+def process_proxies(proxy_string):
+    
+    if proxy_string is None:
+        return None
+    
+    if proxy_string == "":
+        return {
+            "http": None, 
+            "https": None
+        }
+    
+    proxy_string = str(proxy_string)
+    if proxy_string.startswith('{'):
+        return json.loads(proxy_string)
+    
+    from urllib.parse import urlparse
+    parsed = urlparse(proxy_string)
+    
+    # Extract components
+    scheme = parsed.scheme  # socks5
+    username = parsed.username  # user
+    password = parsed.password  # pass
+    hostname = parsed.hostname  # 127.0.0.1
+    port = parsed.port  # 1080
+    
+    auth = f"{username}:{password}@" if username and password else ""
+    
+    # Adjust scheme for SOCKS
+    if scheme.startswith("socks") and not scheme.startswith("socksh"):
+        scheme += "h"  # Ensure DNS resolution via proxy
+        
+    # Construct final proxy string
+    proxy_address = f"{scheme}://{auth}{hostname}:{port}"
+    
+    return {
+        "https": proxy_address,
+        "http": proxy_address,        
+    }
+    
 
 def parse_string_or_tuple(value):
     try:
@@ -27,18 +68,17 @@ def main(id, resolution='best', options={}, info_dict=None):
     
     # Convert additional options to dictionary, if it exists
     if options.get('ytdlp_options', None) is not None:
-        import json
+        
         options['ytdlp_options'] = json.loads(options.get('ytdlp_options'))
     
     if options.get('json_file', None) is not None:
-        import json
         with open(options.get('json_file'), 'r', encoding='utf-8') as file:
             info_dict = json.load(file)
     elif info_dict:
         pass
     else:
         
-        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None))
+        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None))
     download_Live.download_segments(info_dict, resolution, options, logger)
     
 if __name__ == "__main__":
@@ -114,6 +154,8 @@ if __name__ == "__main__":
     
     parser.add_argument('--ytdlp-options', type=str, default=None, help="Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183")
 
+    parser.add_argument('--proxy', type=str, default=None, nargs="?", help="(Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy specified will be used for yt-dlp and live chat functions.")
+
     # Parse the arguments
     args = parser.parse_args()
     
@@ -128,6 +170,9 @@ if __name__ == "__main__":
                
     if options.get('wait_for_video', None) is not None:        
         options['wait_for_video'] = tuple(options.get('wait_for_video')[:2])
+        
+    if options.get('proxy', None) is not None:
+        options['proxy'] = process_proxies(options.get('proxy', None))
         
     id = options.get('ID')
     resolution = options.get('resolution')

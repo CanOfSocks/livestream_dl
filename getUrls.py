@@ -28,7 +28,7 @@ class MyLogger:
         print(msg)
         pass
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
     logger = MyLogger()
@@ -54,6 +54,9 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None):
         
     if additional_options:
         ydl_opts.update(additional_options)
+        
+    if proxy is not None:
+        ydl_opts['proxy'] = next(iter(proxy.values()), None)
 
     info_dict = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
