@@ -607,8 +607,8 @@ def create_mp4(file_names, info_dict, options):
     ffmpeg_builder.extend(['-c', 'copy'])
         
     # Add metadata
-    ffmpeg_builder.extend(['-metadata', '"DATE={0}"'.format(info_dict.get("upload_date"))])
-    ffmpeg_builder.extend(['-metadata', '"COMMENT={0}\n{1}"'.format(info_dict.get("original_url"), info_dict.get("description"))])
+    ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
+    ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description"))])
     ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
     ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
     
