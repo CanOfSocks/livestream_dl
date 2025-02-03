@@ -491,6 +491,40 @@ def replace_ip_in_json(file_name):
 
     with open(file_name, 'w', encoding="utf8") as file:
         file.write(modified_content)
+
+def remove_urls_from_json(file_name):
+    with open(file_name, 'r', encoding="utf8") as file:
+        data = json.load(file)
+        
+    if data.get('formats', None) is not None:
+        for format in data['formats']:
+            if format.get('url') is not None:
+                format['url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+                
+            if format.get('manifest_url') is not None:
+                format['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+            
+            if format.get('fragment_base_url') is not None:
+                del format['fragment_base_url']
+            if format.get('fragments') is not None:
+                del format['fragments']
+                
+    if data.get('thumbnails', None) is not None:
+        for thumbnail in data['thumbnails']:
+            if thumbnail.get('url', None) is not None:
+                parsed_url = urlparse(thumbnail.get('url', ""))
+                thumbnail['url'] = "{0}://{1}{2}".format(parsed_url.scheme, parsed_url.netloc, parsed_url.path)
+                
+    if data.get('url', None) is not None:
+        data['url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+
+    if data.get('manifest_url', None) is not None:
+        data['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+        
+    data['removed_urls'] = True
+    
+    with open(file_name, "w", encoding='utf-8') as file:
+        json.dump(data, file)
         
 def download_auxiliary_files(info_dict, options, thumbnail=None):
     if options.get('filename') is not None:
@@ -528,6 +562,8 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
             try:
                 if options.get('remove_ip_from_json'):
                     replace_ip_in_json(created_files['info_json'].absolute())
+                if options.get('clean_urls'):
+                    remove_urls_from_json(created_files['info_json'].absolute())
             except Exception as e:
                 logging.error(str(e))
             

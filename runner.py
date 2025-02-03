@@ -140,6 +140,8 @@ if __name__ == "__main__":
     
     parser.add_argument('--remove-ip-from-json', action='store_true', help="Replaces IP entries in info.json with 0.0.0.0")
     
+    parser.add_argument('--clean-urls', action='store_true', help="Removes stream URLs from info.json that contain potentially identifiable information. These URLs are usually useless once they have expired")
+    
     parser.add_argument("--log-level", type=str, default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level. Default is INFO.")
