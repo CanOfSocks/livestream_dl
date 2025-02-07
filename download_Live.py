@@ -727,9 +727,9 @@ def write_ffmpeg_command(command_array, filename):
                 arg = arg.replace("\n", "\\n")
             # Escape double quotes and wrap in double quotes if necessary
             if " " in arg or any(ch in arg for ch in ('&', '^', '%', '$', '#', '"')):
-                arg = f'"{arg.replace("\"", "\\\"")}"'
+                arg = '"{0}"'.format(arg.replace("\"", "\\\""))
             quoted_args.append(arg)
-        command_string = f"{' '.join(quoted_args)}"
+        command_string = "{0}".format(' '.join(quoted_args))
     else:  # POSIX (Linux/macOS)
         # Use shlex.quote for safe quoting
         #quoted_args = [shlex.quote(arg) for arg in arguments]
