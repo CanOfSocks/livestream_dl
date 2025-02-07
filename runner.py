@@ -1,3 +1,4 @@
+import socket
 import argparse
 try:
     import getUrls
@@ -7,6 +8,22 @@ except ModuleNotFoundError as e:
     from . import download_Live
 import ast
 import json
+
+_original_getaddrinfo = socket.getaddrinfo
+
+def force_ipv4():
+    """Modify getaddrinfo to use only IPv4."""
+    def ipv4_getaddrinfo(host, port, family=socket.AF_INET, *args, **kwargs):
+        return _original_getaddrinfo(host, port, socket.AF_INET, *args, **kwargs)
+    
+    socket.getaddrinfo = ipv4_getaddrinfo
+
+def force_ipv6():
+    """Modify getaddrinfo to use only IPv6."""
+    def ipv6_getaddrinfo(host, port, family=socket.AF_INET6, *args, **kwargs):
+        return _original_getaddrinfo(host, port, socket.AF_INET6, *args, **kwargs)
+    
+    socket.getaddrinfo = ipv6_getaddrinfo
 
 def process_proxies(proxy_string):
     
@@ -158,9 +175,16 @@ if __name__ == "__main__":
 
     parser.add_argument('--proxy', type=str, default=None, nargs="?", help="(Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy specified will be used for yt-dlp and live chat functions.")
 
+    ip_group = parser.add_mutually_exclusive_group()
+    ip_group.add_argument("--ipv4", action="store_true", help="Force IPv4 only")
+    ip_group.add_argument("--ipv6", action="store_true", help="Force IPv6 only")
     # Parse the arguments
     args = parser.parse_args()
-    
+
+    if args.ipv4:
+        force_ipv4()
+    elif args.ipv6:
+        force_ipv6() 
 
     # Access the 'ID' value
     options = vars(args)
