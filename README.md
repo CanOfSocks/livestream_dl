@@ -25,9 +25,9 @@ sed -i '/if fmt.get('\'targetDurationSec\''):$/,/    continue$/s/^/#/' "$(pip sh
 # Usage
 To use, execute `runner.py` with python with any additional options.
 ```
-usage: runner.py [-h] [--resolution RESOLUTION] [--video-format VIDEO_FORMAT] [--audio-format AUDIO_FORMAT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT]    
-                 [--temp-folder TEMP_FOLDER] [--write-thumbnail] [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--database-in-memory] [--direct-to-ts]
-                 [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE] [--remove-ip-from-json] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json]
+usage: runner.py [-h] [--resolution RESOLUTION] [--video-format VIDEO_FORMAT] [--audio-format AUDIO_FORMAT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--temp-folder TEMP_FOLDER]
+                 [--write-thumbnail] [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--database-in-memory] [--direct-to-ts] [--wait-for-video [WAIT_FOR_VIDEO ...]]
+                 [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--proxy [PROXY]] [--ipv4 | --ipv6] 
                  [ID]
 
 Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)
@@ -38,8 +38,8 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --resolution RESOLUTION
-                        Desired resolution. Can be best, audio_only or specific resolution. Possible values best, 2160p60, 2160p, 1440p60, 1440p, 1080p60, premium, 1080p, 720p60, 720p, 480p, 360p, 240p, 144p. '*' can be used as a wildcard e.g. 1080* for
-                        1080p60 or 1080p. Default: best
+                        Desired resolution. Can be best, audio_only or specific resolution. Possible values best, 2160p60, 2160p, 1440p60, 1440p, 1080p60, premium, 1080p, 720p60, 720p, 480p, 360p, 240p, 144p. '*' can be used as a wildcard e.g. 1080* for 1080p60 or 1080p. Default:      
+                        best
   --video-format VIDEO_FORMAT
                         Specify specific video format. Resolution will be ignored if used
   --audio-format AUDIO_FORMAT
@@ -72,6 +72,7 @@ options:
                         Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs
   --remove-ip-from-json
                         Replaces IP entries in info.json with 0.0.0.0
+  --clean-urls          Removes stream URLs from info.json that contain potentially identifiable information. These URLs are usually useless once they have expired
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Set the logging level. Default is INFO.
   --no-console          Do not log messages to the console.
@@ -79,6 +80,12 @@ options:
   --write-ffmpeg-command
                         Writes FFmpeg command to a txt file
   --stats-as-json       Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level
+  --ytdlp-options YTDLP_OPTIONS
+                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183
+  --proxy [PROXY]       (Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy  
+                        specified will be used for yt-dlp and live chat functions.
+  --ipv4                Force IPv4 only
+  --ipv6                Force IPv6 only
 ```
 
 # Downloader methods
