@@ -178,6 +178,9 @@ if __name__ == "__main__":
     ip_group = parser.add_mutually_exclusive_group()
     ip_group.add_argument("--ipv4", action="store_true", help="Force IPv4 only")
     ip_group.add_argument("--ipv6", action="store_true", help="Force IPv6 only")
+    
+    parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. Default: 300. This is useful if waiting for chat to end causes hanging.")
+    
     # Parse the arguments
     args = parser.parse_args()
 

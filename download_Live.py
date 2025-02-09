@@ -32,6 +32,8 @@ kill_all = False
 
 live_chat_result = None
 
+chat_timeout = None
+
 logger = None
 
 # File name dictionary
@@ -260,6 +262,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
             
             if live_chat_thread is not None:
                 logging.info("Waiting for live chat to end")
+                chat_timeout = time.time()
                 live_chat_thread.join()
                 if live_chat_result is not None:
                     file_names.update(live_chat_result)
@@ -449,6 +452,11 @@ def download_live_chat(info_dict, options):
                 logging.debug("Killing live chat downloader")
                 chat_downloader.close()
                 break
+            if chat_timeout is not None and time.time() - chat_timeout >= options.stop_chat_when_done:
+                chat_downloader.close()
+                break
+        chat_downloader.close()    
+        
     except ImportError as e:
         logging.warning("Unable to import chat-downloader, using yt-dlp")
         if options.get('proxy', None) is not None:
