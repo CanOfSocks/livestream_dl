@@ -453,6 +453,7 @@ def download_live_chat(info_dict, options):
                 chat_downloader.close()
                 break
             if chat_timeout is not None and time.time() - chat_timeout >= options.get('stop_chat_when_done', 300):
+                logging.warning("Stopping chat download for {0}, timeout ({1}s) exceeded".format(options.get('id', "N/A"), options.get('stop_chat_when_done', 300)))
                 chat_downloader.close()
                 break
         chat_downloader.close()    
