@@ -182,6 +182,7 @@ if __name__ == "__main__":
     
     parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. Default: 300. This is useful if waiting for chat to end causes hanging.")
     
+    parser.add_argument('--new-line', action='store_true', help="Console messages always print to new line. (Currently only ensured for stats output)")
     
     # Parse the arguments
     args = parser.parse_args()

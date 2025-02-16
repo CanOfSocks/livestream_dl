@@ -753,8 +753,10 @@ def print_stats(options):
         current_size = stats.get('video', {}).get('current_filesize', 0) + stats.get('audio', {}).get('current_filesize', 0)
         current_size_string = convert_bytes(current_size)
         print("~{0} downloaded".format(current_size_string), end=" ")
-        
-    print("\r",end="")
+    if options.get("new_line", False):
+        print()
+    else:
+        print("\r",end="")
     
 
     
