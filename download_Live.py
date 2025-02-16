@@ -1715,13 +1715,15 @@ class DownloadStreamDirect:
                     wait = 0
                     
                 # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
-                future_to_seg.update(
-                    {
-                        executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
-                        for seg_num in segments_to_download
-                        if seg_num not in submitted_segments and not submitted_segments.add(seg_num)
-                    }
-                )
+                for seg_num in segments_to_download:
+                    if seg_num not in submitted_segments:
+                        future_to_seg.update({
+                            executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                        })
+                        submitted_segments.add(seg_num)
+                    # Have up to 2x max workers of threads submitted
+                    if len(future_to_seg) > 2*self.max_workers:
+                        break
         stats[self.type]['status'] = "merged"        
         return self.merged_file_name
 
