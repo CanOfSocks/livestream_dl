@@ -1414,7 +1414,7 @@ class DownloadStreamDirect:
         self.live_status = info_dict.get('live_status')
         
         self.resolution=resolution
-        self.yt_dlp_options = yt_dlp_options
+        self.yt_dlp_sort = yt_dlp_sort
         
         self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort) 
         
@@ -1945,6 +1945,8 @@ class StreamRecovery:
 
         # Use info.json if available, otherwise try using passed live_status value (default is_live)
         self.live_status = info_dict.get('live_status', live_status)
+        
+        self.yt_dlp_sort = yt_dlp_sort
         
         #print("Stream recovery info dict: {0}".format(info_dict))
         #print("Stream recovery format: {0}".format(resolution))
