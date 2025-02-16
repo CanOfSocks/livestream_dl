@@ -144,8 +144,8 @@ class Formats:
         
         resolution = "({0})[protocol=https]".format(resolution)
         
-        if original_res != "audio_only":
-            resolution = "({0})[vcodec!=none]".format(resolution)
+        #if original_res != "audio_only":
+        #    resolution = "({0})[vcodec!=none]".format(resolution)
         
         ydl_opts = {
             'skip_download': True,
