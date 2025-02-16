@@ -120,9 +120,9 @@ If you would like to contribute, please submit a pull request.
 # To-Do
 While some components have been marked as added, testing of full functionalility may be required
 - [ ] Feature parity with all relevant options of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchive-raw-go](https://github.com/HoloArchivists/ytarchive-raw-go "HoloArchivists/ytarchive-raw-go")
-- [ ] Implement proper log levels instead of printing all information to console
-- [ ] Fall to stream recovery if stream goes private during recording
+- [x] Implement proper log levels instead of printing all information to console
+- [x] Fall to stream recovery if stream goes private during recording
 - [ ] Overhaul file tracking and management to be more robust
-- [ ] Improve ffmpeg command execution
+- [x] Improve ffmpeg command execution
 - [ ] Implement proxy/IP pool options - This will need to be implmented with contributions as I have no way of testing these
-- [ ] Explore alternatives to yt-dlp's live chat downloader
+- [x] Explore alternatives to yt-dlp's live chat downloader
