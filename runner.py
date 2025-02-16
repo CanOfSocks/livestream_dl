@@ -104,14 +104,15 @@ if __name__ == "__main__":
 
     parser.add_argument('ID', type=str, nargs='?', default=None, help='The video URL or ID')
     
-    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="""Desired resolution. Can be best, audio_only or specific resolution.
-                        Possible values best, 2160p60, 2160p, 1440p60, 1440p, 1080p60, premium, 1080p, 720p60, 720p, 480p, 360p, 240p, 144p.
-                        '*' can be used as a wildcard e.g. 1080* for 1080p60 or 1080p.
-                        Default: best""")
+    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="""Desired resolution. Can be best, audio_only or a custom filter based off yt-dlp's format filtering: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#filtering-formats.
+                        Audio will always be set as "ba" (best audio) regardless of filters set. "best" will be converted to "bv"
+                        A prompt will be displayed if no value is entered""")
     
-    parser.add_argument('--video-format', type=int, help="Specify specific video format. Resolution will be ignored if used")
+    parser.add_argument('--custom-sort', type=str, default=None, help="Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats")
     
-    parser.add_argument('--audio-format', type=int, help="Specify specific audio format. Resolution will be ignored if used")
+    #parser.add_argument('--video-format', type=int, help="Specify specific video format. Resolution will be ignored if used")
+    
+    #parser.add_argument('--audio-format', type=int, help="Specify specific audio format. Resolution will be ignored if used")
     
     parser.add_argument('--threads', type=int, default=1, help="Number of download threads per format. This will be 2x for an video and audio download. Default: 1")
     
@@ -180,6 +181,7 @@ if __name__ == "__main__":
     ip_group.add_argument("--ipv6", action="store_true", help="Force IPv6 only")
     
     parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. Default: 300. This is useful if waiting for chat to end causes hanging.")
+    
     
     # Parse the arguments
     args = parser.parse_args()

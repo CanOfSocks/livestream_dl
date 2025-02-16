@@ -2,6 +2,8 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from typing import Optional
 from random import shuffle
 
+from yt_dlp import YoutubeDL
+
 __all__ = ["YoutubeURL", "Formats"]
 
 
@@ -9,8 +11,8 @@ def _get_one(qs: dict[str, list[str]], field: str) -> str:
     l = qs.get(field)
     if not l or len(l) == 0:
         raise ValueError(f"URL missing required parameter '{field}'")
-    if len(l) != 1:
-        raise ValueError(f"URL contains multiple copies of parameter '{field}'")
+    #if len(l) != 1:
+    #    raise ValueError(f"URL contains multiple copies of parameter '{field}'")
     return l[0]
 
 class YoutubeURL:
@@ -49,6 +51,7 @@ class YoutubeURL:
 class Formats:
     def __init__(self):
         self.video = {
+            """ OLD:
             "2160p60" : ['337', '315', '266', '138'], # 2160p60
             "2160p" : ['313', '336'], # 2160p
             "1440p60": ['308'], # 1440p60
@@ -62,6 +65,54 @@ class Formats:
             "360p": ['243', '134'], # 360p
             "240p": ['242', '133'], # 240p
             "144p": ['269', '160']  # 144p 
+            """
+            """
+            "2160p60": {"VP9": ['337', '315'], "H264": ['138', '266']},  # 2160p60
+            "2160p": {"VP9": ['313', '336'], "H264": []},  # 2160p
+            "1440p60": {"VP9": ['308'], "H264": ['304']},  # 1440p60
+            "1440p": {"VP9": ['271'], "H264": ['264']},  # 1440p
+            "1080p60": {"VP9": ['335', '303'], "H264": ['299']},  # 1080p60
+            "premium": {"VP9": ['312', '311'], "H264": []},  # Premium 1080p and 720p
+            "1080p": {"VP9": ['248', '169'], "H264": ['137']},  # 1080p
+            "720p60": {"VP9": ['334', '302'], "H264": ['298']},  # 720p60
+            "720p": {"VP9": ['247'], "H264": ['136']},  # 720p
+            "480p": {"VP9": ['244'], "H264": ['135']},  # 480p
+            "360p": {"VP9": ['243'], "H264": ['134']},  # 360p
+            "240p": {"VP9": ['242'], "H264": ['133']},  # 240p
+            "144p": {"VP9": ['269'], "H264": ['160']}  # 144p
+            """
+            '337': {'resolution': '2160p60', 'codec': 'VP9'},
+            '315': {'resolution': '2160p60', 'codec': 'VP9'},
+            '138': {'resolution': '2160p60', 'codec': 'H264'},
+            '266': {'resolution': '2160p60', 'codec': 'H264'},
+            '313': {'resolution': '2160p', 'codec': 'VP9'},
+            '336': {'resolution': '2160p', 'codec': 'VP9'},
+            '308': {'resolution': '1440p60', 'codec': 'VP9'},
+            '304': {'resolution': '1440p60', 'codec': 'H264'},
+            '271': {'resolution': '1440p', 'codec': 'VP9'},
+            '264': {'resolution': '1440p', 'codec': 'H264'},
+            '335': {'resolution': '1080p60', 'codec': 'VP9'},
+            '303': {'resolution': '1080p60', 'codec': 'VP9'},
+            '299': {'resolution': '1080p60', 'codec': 'H264'},
+            '312': {'resolution': 'premium', 'codec': 'VP9'},
+            '311': {'resolution': 'premium', 'codec': 'VP9'},
+            '248': {'resolution': '1080p', 'codec': 'VP9'},
+            '169': {'resolution': '1080p', 'codec': 'VP9'},
+            '137': {'resolution': '1080p', 'codec': 'H264'},
+            '334': {'resolution': '720p60', 'codec': 'VP9'},
+            '302': {'resolution': '720p60', 'codec': 'VP9'},
+            '298': {'resolution': '720p60', 'codec': 'H264'},
+            '247': {'resolution': '720p', 'codec': 'VP9'},
+            '136': {'resolution': '720p', 'codec': 'H264'},
+            '244': {'resolution': '480p', 'codec': 'VP9'},
+            '135': {'resolution': '480p', 'codec': 'H264'},
+            '243': {'resolution': '360p', 'codec': 'VP9'},
+            '134': {'resolution': '360p', 'codec': 'H264'},
+            '242': {'resolution': '240p', 'codec': 'VP9'},
+            '133': {'resolution': '240p', 'codec': 'H264'},
+            '269': {'resolution': '144p', 'codec': 'VP9'},
+            '160': {'resolution': '144p', 'codec': 'H264'}            
+            
         }
         self.audio = [
             '251', '141', '171', '140', '250', '249', '139', '234', '233'
@@ -79,101 +130,57 @@ class Formats:
         itag = query_params.get("itag", [None])[0]
         return str(itag).strip()
         
-    def getFormatURL(self, info_json, resolution, return_format=False, not_selector=None):     
+    def getFormatURL(self, info_json, resolution, return_format=False, sort=None):     
         resolution = str(resolution).strip()
         
-        # If resolution is a string, check if it is a number and convert it for
-        if resolution in self.video['best'] or resolution in self.audio:           
-            
-            # Shuffle formats in case of multiple formats in info.json
-            shuffle(info_json['formats'])
-            for ytdlp_format in info_json['formats']:                
-                if ytdlp_format['protocol'] == 'https':
-                    itag = str(self.get_itag(ytdlp_format['url'])).strip() 
-                    if resolution == itag:                  
-                        # Split by dash to handle multiple instances of a format in the info.json
-                        split = ytdlp_format['format_id'].split('-')
-                        if len(split) > 1 and not_selector is not None:
-                            if split[1] != str(not_selector):
-                                if return_format:
-                                    return ytdlp_format['url'], itag
-                                else:
-                                    return ytdlp_format['url']  
-                        else:
-                            if return_format:
-                                return ytdlp_format['url'], itag
-                            else:
-                                return ytdlp_format['url']           
-        elif resolution == "audio_only":
-            for audio_format in self.audio:
-                audio_format = str(audio_format).strip()
-                #if best['audio'] is None:
-                # Shuffle formats in case of multiple formats in info.json
-                shuffle(info_json['formats'])
-                for ytdlp_format in info_json['formats']:
-                    if ytdlp_format['protocol'] == 'https':
-                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
-                        if audio_format == itag:  
-                            split = ytdlp_format['format_id'].split('-')
-                            if len(split) > 1 and not_selector is not None:
-                                if split[1] != str(not_selector):
-                                    if return_format:
-                                        return ytdlp_format['url'], itag
-                                    else:
-                                        return ytdlp_format['url']  
-                            else:
-                                if return_format:
-                                    return ytdlp_format['url'], itag
-                                else:
-                                    return ytdlp_format['url'] 
-                    
-        elif self.video.get(resolution, None) is not None:  
-            format_list = self.video.get(resolution)
-            for video_format in format_list:
-                video_format = str(video_format)
-                # Shuffle formats in case of multiple formats in info.json
-                shuffle(info_json['formats'])
-                for ytdlp_format in info_json['formats']:
-                    if ytdlp_format['protocol'] == 'https':
-                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
-                        if video_format == itag:  
-                            split = ytdlp_format['format_id'].split('-')
-                            if len(split) > 1 and not_selector is not None:
-                                if split[1] != str(not_selector):
-                                    if return_format:
-                                        return ytdlp_format['url'], itag
-                                    else:
-                                        return ytdlp_format['url']  
-                            else:
-                                if return_format:
-                                    return ytdlp_format['url'], itag
-                                else:
-                                    return ytdlp_format['url'] 
-                    
-        elif resolution.endswith('*'):
-            format_list = self.wildcard_search(resolution)
-            for video_format in format_list:
-                video_format = str(video_format)
-                # Shuffle formats in case of multiple formats in info.json
-                shuffle(info_json['formats'])
-                for ytdlp_format in info_json['formats']:
-                    if ytdlp_format['protocol'] == 'https':
-                        itag = str(self.get_itag(ytdlp_format['url'])).strip() 
-                        if video_format == itag:  
-                            split = ytdlp_format['format_id'].split('-')
-                            if len(split) > 1 and not_selector is not None:
-                                if split[1] != str(not_selector):
-                                    if return_format:
-                                        return ytdlp_format['url'], itag
-                                    else:
-                                        return ytdlp_format['url']  
-                            else:
-                                if return_format:
-                                    return ytdlp_format['url'], itag
-                                else:
-                                    return ytdlp_format['url'] 
+        original_res = resolution
         
-        return None 
+        shuffle(info_json['formats'])
+        
+        if resolution.lower() == "best":
+            resolution = "bv"
+        elif resolution.lower() == "audio_only":
+            resolution = "ba"
+        
+        resolution = "({0})[protocol=https]".format(resolution)
+        
+        if original_res != "audio_only":
+            resolution = "({0})[vcodec!=none]".format(resolution)
+        
+        ydl_opts = {
+            'skip_download': True,
+            "format": resolution
+        }
+        
+        if sort:
+            ydl_opts.update({"format_sort": str(sort).split(',')})
+            
+        print("Original: {0}, passed: {1}".format(original_res, ydl_opts))
+        
+        #try:
+        with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.process_ie_result(info_json)
+                format = info.get('requested_downloads', info.get('requested_formats', [{}]))
+                format_url = format[0].get('url')
+                format_id = format[0].get('format_id')
+                print(format)
+        #except Exception as e:
+        #    print(e)
+            
+            
+        #ydl_opts.update({'listformats': True})
+        #with YoutubeDL(ydl_opts) as ydl:
+        #    info = ydl.process_ie_result(info_json)
+        
+                if return_format:
+                        return format_url, format_id
+                else:
+                        return format_url
+            
+        if return_format:
+            return None, None
+        else:
+            return None
     
     def wildcard_search(self, resolution):
         combined_list = []

@@ -44,9 +44,10 @@ file_names = {
 stats = {}
 
 # Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None):
+def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):
     try:
-        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, yt_dlp_options=yt_dlp_options, proxies=proxies)        
+        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -62,9 +63,10 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
     return file, downloader.type
 
 # Create runner function for each download format
-def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None):
+def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):
     try:
-        downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, yt_dlp_options=yt_dlp_options, proxies=proxies)        
+        downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
         file_name = downloader.live_dl()
         if not keep_state:
             logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
@@ -76,9 +78,9 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
-def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None):
+def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):
     
-    downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, proxies=proxies)        
+    downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
     result = downloader.live_dl()
     #downloader.save_stats()    
     if result:
@@ -142,74 +144,30 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
             
             format_parser = YoutubeURL.Formats()
             # For use of specificed format. Expects two values, but can work with more
-            if options.get('video_format', None) is not None or options.get('audio_format', None) is not None:
-                if options.get('recovery', False) is True:
-                    if options.get('video_format', None) is not None:
-                        if int(options.get('video_format')) not in format_parser.video.get('best'):    
-                            raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
-                        else:
-                            video_future = executor.submit(recover_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
-                            futures.add(video_future)
-                    
-                    if options.get('audio_format', None) is not None:
-                        if int(options.get('audio_format')) not in format_parser.audio: 
-                            raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
-                        else:
-                            audio_future = executor.submit(recover_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
-                            futures.add(audio_future)  
-                elif options.get('direct_to_ts', False) is True:
-                    if options.get('video_format', None) is not None:
-                        if int(options.get('video_format')) not in format_parser.video.get('best'):    
-                            raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
-                        else:
-                            video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
-                            futures.add(video_future)
-                    
-                    if options.get('audio_format', None) is not None:
-                        if int(options.get('audio_format')) not in format_parser.audio: 
-                            raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
-                        else:
-                            audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
-                            futures.add(audio_future)  
-                else:
-                    if options.get('video_format', None) is not None:
-                        if int(options.get('video_format')) not in format_parser.video.get('best'):    
-                            raise ValueError("Video format not valid, please use one from {0}".format(format_parser.video))
-                        else:
-                            video_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('video_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), cookies=options.get('cookies'), retries=options.get('segment_retries'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
-                            futures.add(video_future)
-                    
-                    if options.get('audio_format', None) is not None:
-                        if int(options.get('audio_format')) not in format_parser.audio: 
-                            raise ValueError("Audio format not valid, please use one from {0}".format(format_parser.audio))
-                        else:
-                            audio_future = executor.submit(download_stream, info_dict=info_dict, resolution=int(options.get('audio_format')), batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                        keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
-                            futures.add(audio_future)                        
-                    
-            elif resolution.lower() != "audio_only":                
-                if YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution) is not None:
+            if resolution.lower() != "audio_only":                
+                if YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None)) is not None:
                     # Submit tasks for both video and audio downloads   
                     if options.get('recovery', False) is True:
                         video_future = executor.submit(recover_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None))
                         audio_future = executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None))
                     elif options.get('direct_to_ts', False) is True:
                         video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
+                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
                         audio_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
+                                            keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None))
                     else:
                         video_future = executor.submit(download_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None))
                         audio_future = executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
-                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None))
+                                            keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None))
                     
                             # Wait for both downloads to finish
                     futures.add(video_future)
@@ -221,13 +179,16 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
             elif resolution.lower() == "audio_only":
                 if options.get('recovery', False) is True:
                     futures.add(executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
-                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None)))
+                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                                yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None)))
                 elif options.get('direct_to_ts', False) is True:
                     futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
-                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None)))
+                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                                yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None)))
                 else:
                     futures.add(executor.submit(download_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
-                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None)))
+                                                folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), 
+                                                yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None)))
                 
             while True:
                 done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
@@ -827,7 +788,7 @@ class FileInfo(Path):
         return f"{super().__repr__()} (file_type={self._file_type})"
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -836,6 +797,7 @@ class DownloadStream:
         self.yt_dlp_options = yt_dlp_options
         
         self.resolution = resolution
+        self.yt_dlp_sort = yt_dlp_sort
         
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
@@ -843,7 +805,7 @@ class DownloadStream:
         self.info_dict = info_dict
         self.stream_urls = []
         
-        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
+        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort) 
         
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
@@ -919,7 +881,7 @@ class DownloadStream:
         #print("Refresh check ({0})".format(self.format))  
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
-        if (time.time() - self.url_checked >= 3600.0 or self.is_403) and not self.is_private:
+        if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403)) and not self.is_private:
             logging.info("Refreshing URL for {0}".format(self.format))
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
@@ -928,7 +890,7 @@ class DownloadStream:
                 if self.detect_manifest_change(info_json=info_dict) is True:
                     return True
                 
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, sort=self.yt_dlp_sort)
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -1091,7 +1053,7 @@ class DownloadStream:
                             elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
                                 logging.debug("Stream has finished ({0})".format(live_status))
                                 self.live_status = live_status
-                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False) 
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.refresh_retries = 0
@@ -1107,7 +1069,7 @@ class DownloadStream:
                                 if self.detect_manifest_change(info_json=info_dict) is True:
                                     break
                                 else:
-                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False)
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.stream_urls.append(stream_url)
@@ -1131,7 +1093,7 @@ class DownloadStream:
                         logging.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
                         time.sleep(60)
                     logging.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
-                    downloader = StreamRecovery(info_dict=self.info_dict, resolution=self.format, batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
+                    downloader = StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
                     downloader.live_dl()
                     downloader.close_connection()
                     time.sleep(1)
@@ -1207,14 +1169,14 @@ class DownloadStream:
             return None
     
     def detect_manifest_change(self, info_json):
-        if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False) is not None:
-            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False)
+        if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format).format(self.format), return_format=False) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format).format(self.format), return_format=False)
             parsed_url = urlparse(temp_stream_url)        
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
                 self.commit_batch()
-                download_stream(info_dict=info_json, resolution=self.format, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
+                download_stream(info_dict=info_json, resolution=str(self.format).format(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
                 return True
             else:
                 return False
@@ -1438,7 +1400,7 @@ class DownloadStream:
             os.remove(self.folder)
             
 class DownloadStreamDirect:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -1450,8 +1412,9 @@ class DownloadStreamDirect:
         self.live_status = info_dict.get('live_status')
         
         self.resolution=resolution
+        self.yt_dlp_options = yt_dlp_options
         
-        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
+        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort) 
         
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
@@ -1537,7 +1500,7 @@ class DownloadStreamDirect:
         #print("Refresh check ({0})".format(self.format))  
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
-        if (time.time() - self.url_checked >= 3600.0 or self.is_403) and not self.is_private:
+        if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403)) and not self.is_private:
             logging.debug("Refreshing URL for {0}".format(self.format))
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
@@ -1546,7 +1509,7 @@ class DownloadStreamDirect:
                 if self.detect_manifest_change(info_json=info_dict) is True:
                     return True
                 
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, sort=self.yt_dlp_sort)
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -1724,7 +1687,7 @@ class DownloadStreamDirect:
                             elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
                                 logging.info("Stream has finished ({0})".format(live_status))
                                 self.live_status = live_status
-                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False) 
+                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False) 
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.refresh_retries = 0
@@ -1739,7 +1702,7 @@ class DownloadStreamDirect:
                                 if self.detect_manifest_change(info_json=info_dict) is True:
                                     break
                                 else:
-                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=self.format, return_format=False)
+                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False)
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.refresh_retries = 0
@@ -1851,14 +1814,14 @@ class DownloadStreamDirect:
             return -1, None, segment_order, None, None
             
     def detect_manifest_change(self, info_json):
-        if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False) is not None:
-            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.format, return_format=False)
+        if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False)
             parsed_url = urlparse(temp_stream_url)        
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
                 self.commit_batch()
-                download_stream_direct(info_dict=info_json, resolution=self.format, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
+                download_stream_direct(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
                 return True
             else:
                 return False
@@ -1968,7 +1931,7 @@ class DownloadStreamDirect:
             
 class StreamRecovery:
     
-    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None):        
+    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None):        
         from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -1995,7 +1958,7 @@ class StreamRecovery:
                     break            
             self.stream_urls = stream_urls          
         else:
-            self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True) 
+            self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort) 
         
         logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
         """        

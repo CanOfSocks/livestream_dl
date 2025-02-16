@@ -17,8 +17,6 @@ class MyLogger:
         print(msg)
 
     def warning(self, msg):
-        #
-        print(msg)
         if "private" in msg.lower() or "UNAVAILABLE" in msg.upper() or "unavailable" in str(msg) or "should already be available" in msg.lower() or "not available" in msg.lower():
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         else:
@@ -29,7 +27,7 @@ class MyLogger:
         print(msg)
         pass
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
     logger = MyLogger()
@@ -44,7 +42,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
         'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
 #        'quiet': True,
 #        'no_warnings': True,
-#        'extractor_args': 'youtube:player_client=web;skip=dash;formats=incomplete,duplicate',
+#        'extractor_args': 'skip=dash,hls;',
         'logger': logger
     }
     
