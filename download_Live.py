@@ -1962,7 +1962,7 @@ class StreamRecovery:
                     break            
             self.stream_urls = stream_urls          
         else:
-            self.stream_urls, self.format = YoutubeURL.Formats().getAllFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort) 
+            self.stream_urls, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort, get_all=True)
         
         logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
         """        

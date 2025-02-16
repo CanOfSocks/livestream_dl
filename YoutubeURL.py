@@ -130,7 +130,7 @@ class Formats:
         itag = query_params.get("itag", [None])[0]
         return str(itag).strip()
         
-    def getFormatURL(self, info_json, resolution, return_format=False, sort=None):     
+    def getFormatURL(self, info_json, resolution, return_format=False, sort=None, get_all=False):     
         resolution = str(resolution).strip()
         
         original_res = resolution
@@ -163,14 +163,11 @@ class Formats:
                 format = info.get('requested_downloads', info.get('requested_formats', [{}]))
                 format_url = format[0].get('url')
                 format_id = format[0].get('format_id')
-                print(format)
-        #except Exception as e:
-        #    print(e)
-            
-            
-        #ydl_opts.update({'listformats': True})
-        #with YoutubeDL(ydl_opts) as ydl:
-        #    info = ydl.process_ie_result(info_json)
+                #print(format)
+                
+                # Retrieves all URLs of found format, this converts format_url to a list
+                if get_all:
+                    format_url = self.getAllFormatURL(info_json=info_json, format=format_id)
         
                 if return_format:
                         return format_url, format_id
@@ -193,11 +190,22 @@ class Formats:
                 combined_list.extend(self.video[key])
         return combined_list
     
-    def getAllFormatURL(self, info_json, resolution, return_format=False, not_selector=None): 
-        resolution = str(resolution).strip()
+    
+    # Get all URLs of a given format
+    def getAllFormatURL(self, info_json, format): 
+        format = str(format).strip()
         urls = []   
-        format = None    
         
+        format = str(format)
+        for ytdlp_format in info_json['formats']:                
+            # If format has yet to be found, match the first matching format ID, otherwise only grab URLs of the same format
+            if ytdlp_format['protocol'] == 'https':
+                itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                if format == itag:   
+                    urls.append(ytdlp_format['url'])
+        
+        return urls
+        """#Legacy code
         if resolution in self.video['best'] or resolution in self.audio:
             resolution = str(resolution)
             for ytdlp_format in info_json['formats']:                
@@ -251,4 +259,4 @@ class Formats:
                 return None, None
             else:
                 return None 
-            
+        """
