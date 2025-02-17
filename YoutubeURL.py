@@ -148,6 +148,7 @@ class Formats:
         #    resolution = "({0})[vcodec!=none]".format(resolution)
         
         ydl_opts = {
+            'quiet': True,
             'skip_download': True,
             "format": resolution
         }
@@ -155,7 +156,7 @@ class Formats:
         if sort:
             ydl_opts.update({"format_sort": str(sort).split(',')})
             
-        print("Original: {0}, passed: {1}".format(original_res, ydl_opts))
+        #print("Original: {0}, passed: {1}".format(original_res, ydl_opts))
         
         #try:
         with YoutubeDL(ydl_opts) as ydl:
