@@ -1177,7 +1177,7 @@ class DownloadStream:
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
-                self.commit_batch()
+                self.commit_batch(self.conn)
                 download_stream(info_dict=info_json, resolution=str(self.format).format(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
                 return True
             else:
@@ -1188,7 +1188,7 @@ class DownloadStream:
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
-                self.commit_batch()
+                self.commit_batch(self.conn)
                 download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
                 return True
         elif self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False) is not None:
@@ -1197,7 +1197,7 @@ class DownloadStream:
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
-                self.commit_batch()
+                self.commit_batch(self.conn)
                 download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
                 return True
         return False
@@ -1824,7 +1824,7 @@ class DownloadStreamDirect:
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
-                self.commit_batch()
+                #self.commit_batch(self.conn)
                 download_stream_direct(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
                 return True
             else:
@@ -1835,7 +1835,7 @@ class DownloadStreamDirect:
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
-                self.commit_batch()
+                #self.commit_batch(self.conn)
                 download_stream_direct(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
                 return True
         elif self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False) is not None:
@@ -1844,7 +1844,7 @@ class DownloadStreamDirect:
             temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
-                self.commit_batch()
+                #self.commit_batch(self.conn)
                 download_stream_direct(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
                 return True
         return False
