@@ -150,6 +150,7 @@ class Formats:
         ydl_opts = {
             'quiet': True,
             'skip_download': True,
+            'no_warnings': True,
             "format": resolution
         }
         
@@ -160,20 +161,20 @@ class Formats:
         
         #try:
         with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.process_ie_result(info_json)
-                format = info.get('requested_downloads', info.get('requested_formats', [{}]))
-                format_url = format[0].get('url')
-                format_id = format[0].get('format_id')
-                #print(format)
-                
-                # Retrieves all URLs of found format, this converts format_url to a list
-                if get_all:
-                    format_url = self.getAllFormatURL(info_json=info_json, format=format_id)
-        
-                if return_format:
-                        return format_url, format_id
-                else:
-                        return format_url
+            info = ydl.process_ie_result(info_json)
+            format = info.get('requested_downloads', info.get('requested_formats', [{}]))
+            format_url = format[0].get('url')
+            format_id = format[0].get('format_id')
+            #print(format)
+            
+            # Retrieves all URLs of found format, this converts format_url to a list
+            if get_all:
+                format_url = self.getAllFormatURL(info_json=info_json, format=format_id)
+    
+            if return_format:
+                    return format_url, format_id
+            else:
+                    return format_url
             
         if return_format:
             return None, None

@@ -900,6 +900,9 @@ class DownloadStream:
                     filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
                     self.stream_urls = filtered_array
                     
+                else:
+                    logging.warning("Unable to refresh URLs for {0} on format {1}".format(self.id, self.format))
+                    
                 if live_status is not None:
                     self.live_status = live_status
                 
@@ -1517,6 +1520,9 @@ class DownloadStreamDirect:
                     self.stream_urls.append(stream_url)
                     filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) < time.time()]
                     self.stream_urls = filtered_array
+                else:
+                    logging.warning("Unable to refresh URLs for {0} on format {1}".format(self.id, self.format))
+                    
                 if live_status is not None:
                     self.live_status = live_status
             except PermissionError as e:
@@ -2656,7 +2662,26 @@ class StreamRecovery:
  
  
 
-def setup_logging(log_level, console, file):
+def setup_logging(log_level, console, file):   
+
+    def disable_quick_edit():
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        hStdin = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        mode = ctypes.c_ulong()
+
+        # Get the current console mode
+        kernel32.GetConsoleMode(hStdin, ctypes.byref(mode))
+
+        # Disable Quick Edit Mode (value 0x40)
+        mode.value &= ~0x40  # Remove ENABLE_QUICK_EDIT_MODE
+
+        # Set the new console mode
+        kernel32.SetConsoleMode(hStdin, mode)
+
+    if os.name == "nt":  # Windows check
+        disable_quick_edit()
+
     # Create a logger
     logger = logging.getLogger()
     logger.setLevel(log_level)
