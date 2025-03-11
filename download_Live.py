@@ -1337,9 +1337,11 @@ class DownloadStream:
             for segment in cursor:  # Cursor iterates over rows one by one
                 segment_piece = segment[0]
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
-                cleaned_segment = self.remove_sidx(segment_piece)
-                #f.write(cleaned_segment)
-                f.write(segment_piece)
+                if self.ext == "webm":
+                    cleaned_segment = self.remove_sidx(segment_piece)
+                    f.write(cleaned_segment)
+                else:
+                    f.write(segment_piece)
         stats[self.type]['status'] = "merged"
         return output_file
     
