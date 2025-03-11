@@ -3,7 +3,7 @@ Garbage youtube livestream downloader combining the principles of [ytarchive](ht
 This project aims to combine the features of live recording and stream recovery when a stream becomes unavailable.
 
 # Requirements
-- [python](https://www.python.org/) 3.12.5+ (May work on earlier version, but a dependency requires at least 3.9+)
+- [python](https://www.python.org/) 3.12+
 - [ffmpeg](https://ffmpeg.org/)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) via pip (or another method where yt-dlp can be imported to a python script)
 - Packages within [requirements.txt](https://github.com/CanOfSocks/livestream_dl/blob/main/requirements.txt)
