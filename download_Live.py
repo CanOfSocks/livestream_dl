@@ -1338,7 +1338,8 @@ class DownloadStream:
                 segment_piece = segment[0]
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
-                f.write(cleaned_segment)
+                #f.write(cleaned_segment)
+                f.write(segment_piece)
         stats[self.type]['status'] = "merged"
         return output_file
     
@@ -2587,6 +2588,7 @@ class StreamRecovery:
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
                 cleaned_segment = self.remove_sidx(segment_piece)
                 f.write(cleaned_segment)
+                #f.write(segment_piece)
         stats[self.type]['status'] = "merged"
         return output_file
     
