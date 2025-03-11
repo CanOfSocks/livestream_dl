@@ -130,7 +130,7 @@ class Formats:
         itag = query_params.get("itag", [None])[0]
         return str(itag).strip()
         
-    def getFormatURL(self, info_json, resolution, return_format=False, sort=None, get_all=False):     
+    def getFormatURL(self, info_json, resolution, return_format=False, sort=None, get_all=False, raw=False):     
         resolution = str(resolution).strip()
         
         original_res = resolution
@@ -141,8 +141,9 @@ class Formats:
             resolution = "bv"
         elif resolution.lower() == "audio_only":
             resolution = "ba"
-        
-        resolution = "({0})[protocol=https]".format(resolution)
+            
+        if not raw:
+            resolution = "({0})[protocol=https]".format(resolution)
         
         #if original_res != "audio_only":
         #    resolution = "({0})[vcodec!=none]".format(resolution)

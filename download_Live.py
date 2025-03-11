@@ -378,6 +378,8 @@ def download_live_chat(info_dict, options):
         'skip_download': True,               # Skip downloading video/audio
         'quiet': True,
         'cookiefile': options.get('cookies'),
+        'retries': 25,
+        'concurrent_fragment_downloads': 3,
         #'live_from_start': True,
         'writesubtitles': True,              # Extract subtitles (live chat)
         'subtitlesformat': 'json',           # Set format to JSON
@@ -428,11 +430,13 @@ def download_live_chat(info_dict, options):
                 #result = ydl.process_ie_result(info_dict)
                 result = ydl.download_with_info_file(info_dict)
         except Exception as e:
-            logging.error("\033[31m{0}\033[0m".format(e))              
+            logging.error("\033[31m{0}\033[0m".format(e)) 
+            import traceback
+            logging.error("\033[31m{0}\033[0m".format(traceback.format_exc()))             
     except Exception as e:
         logging.error("\033[31m{0}\033[0m".format(e))
         import traceback
-        traceback.print_exc()
+        logging.error("\033[31m{0}\033[0m".format(traceback.format_exc()))
     time.sleep(1)
     if os.path.exists("{0}.part".format(livechat_filename)):
         shutil.move("{0}.part", livechat_filename)
