@@ -213,7 +213,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
                     else:
                         file_names[str(type)] = result
                     
-                    futures.remove(future)
+                    futures.discard(future)
                     
                 if len(not_done) <= 0:
                     break
@@ -849,7 +849,8 @@ class DownloadStream:
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
             backoff_factor=1, 
-            status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+            status_forcelist=[204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
+            backoff_max=4
         )        
         
         self.is_403 = False
@@ -931,6 +932,7 @@ class DownloadStream:
         
         logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
         self.already_downloaded = self.segment_exists_batch()
+        latest_downloaded_segment = -1
         wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
@@ -940,8 +942,10 @@ class DownloadStream:
             future_to_seg = {}
             
             # Trackers for optimistic segment downloads 
-            optimistic = True
+            optimistic_fails_max = max(2, int(40/4*self.fragment_retries))
+            optimistic_fails = 0
             optimistic_seg = 0           
+            latest_downloaded_segment = -1
 
             while True:     
                 self.check_kill()
@@ -956,15 +960,18 @@ class DownloadStream:
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
                     
-                    # Remove from submitted segments in case it neeeds to be regrabbed
-                    submitted_segments.remove(seg_num)
-                    
-                    # If successful in downloading segments optimistically, continue doing so
-                    if seg_num >= self.latest_sequence and (status is None or status != 200):
-                        logging.debug("Unable to optimistically grab segment {1} for {0}".format(self.format, seg_num))
-                        optimistic = False
-                    else: 
-                        optimistic = True
+                    logging.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                            seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes(?)", self.format
+                        ))
+
+                    if seg_num >= optimistic_seg and (status is None or status != 200):
+                        optimistic_fails += 1
+                        logging.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
+                        
+                    elif seg_num >= optimistic_seg and status == 200:
+                        optimistic_fails = 0
+                        if seg_num >= latest_downloaded_segment:
+                            latest_downloaded_segment = seg_num
                     
                     if head_seg_num > self.latest_sequence:
                         logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
@@ -991,31 +998,40 @@ class DownloadStream:
                             self.cursor.execute('BEGIN TRANSACTION') 
                             
                         stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
+
+                        if status == 200 and seg_num > latest_downloaded_segment:
+                            latest_downloaded_segment = seg_num
                     
-                    
+                    # Remove from submitted segments in case it neeeds to be regrabbed
+                    submitted_segments.discard(seg_num)
+
                     # Remove completed thread to free RAM
                     del future_to_seg[future]
                       
-                segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
+                segments_to_download = set(range(0, max(self.latest_sequence, latest_downloaded_segment))) - self.already_downloaded  
+
+                optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1  
                                         
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 if len(segments_to_download) <= 0:
                     
                     # Only attempt to grab optimistic segment once to ensure it does not cause a loop at the end of a stream
-                    if optimistic and optimistic_seg <= self.latest_sequence and (self.latest_sequence+1) not in submitted_segments:
-                        optimistic_seg = (self.latest_sequence+1)
+                    if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
                         
-                        # Wait estimated fragment time +0.1s to make sure it would exist
-                        time.sleep(self.estimated_segment_duration + 0.1)
+                        # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
+                        time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
                         
-                        logging.debug("Adding segment {1} optimistically ({0})".format(self.format, optimistic_seg))
+                        #logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                         segments_to_download.add(optimistic_seg)
                         
                     # If optimistic grab is not successful, revert back to using headers from base stream URL
                     else:
                         logging.debug("Checking for more segments available for {0}".format(self.format))
+                        current_latest = max(self.latest_sequence, latest_downloaded_segment)
                         self.update_latest_segment()
-                        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded                              
+                        segments_to_download = set(range(0, max(self.latest_sequence, latest_downloaded_segment))) - self.already_downloaded        
+                        if current_latest == max(self.latest_sequence, latest_downloaded_segment):      
+                            time.sleep(5)                 
                         
 
                 # If update has no segments and no segments are currently running, wait                              
@@ -1110,19 +1126,29 @@ class DownloadStream:
                     return True
                 else:
                     wait = 0
-                    
+                
                 # Check if segments already exist within database (used to not create more connections). Needs fixing upstream
-                existing = set()
                 for seg_num in segments_to_download:
                     if self.segment_exists(self.cursor, seg_num):
                         self.already_downloaded.add(seg_num)
-                        existing.add(seg_num)
-                segments_to_download = segments_to_download - existing
+                # Check if optimistic segment has already downloaded or not
+                if optimistic_seg not in self.already_downloaded and self.segment_exists(self.cursor, optimistic_seg):
+                    self.already_downloaded.add(optimistic_seg)
+
+                segments_to_download = segments_to_download - self.already_downloaded
+
+                #print("Segments to download: {0}".format(segments_to_download))
+                #print("remaining threads: {0}".format(future_to_seg))
+
+                # Add optimistic segment if conditions are right
+                if self.max_workers > 1 and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in submitted_segments:
+                    logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
+                    future_to_seg.update({
+                        executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, optimistic_seg), optimistic_seg): optimistic_seg
+                    })
+                    submitted_segments.add(optimistic_seg)
                 
-
-
                 # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
-                
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
                         future_to_seg.update({
@@ -1185,7 +1211,7 @@ class DownloadStream:
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
                 self.commit_batch(self.conn)
-                download_stream(info_dict=info_json, resolution=str(self.format).format(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
+                download_stream(info_dict=info_json, resolution=str(self.format).format(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies)
                 return True
             else:
                 return False
@@ -1196,7 +1222,7 @@ class DownloadStream:
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
                 self.commit_batch(self.conn)
-                download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
+                download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies)
                 return True
         elif self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False) is not None:
             temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False)
@@ -1205,7 +1231,7 @@ class DownloadStream:
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
                 self.commit_batch(self.conn)
-                download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, reties=self.fragment_retries, cookies=self.cookies)
+                download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies)
                 return True
         return False
 
@@ -1569,7 +1595,7 @@ class DownloadStreamDirect:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
                     
                     # Remove from submitted segments in case it neeeds to be regrabbed
-                    submitted_segments.remove(seg_num)
+                    submitted_segments.discard(seg_num)
                     
                     # If successful in downloading segments optimistically, continue doing so
                     if seg_num >= self.latest_sequence and (status is None or status != 200):
@@ -1838,7 +1864,7 @@ class DownloadStreamDirect:
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format))
                 #self.commit_batch(self.conn)
-                download_stream_direct(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
+                download_stream_direct(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), retries=self.fragment_retries, cookies=self.cookies)
                 return True
             else:
                 return False
@@ -1849,7 +1875,7 @@ class DownloadStreamDirect:
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format))
                 #self.commit_batch(self.conn)
-                download_stream_direct(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
+                download_stream_direct(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), retries=self.fragment_retries, cookies=self.cookies)
                 return True
         elif self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False) is not None:
             temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False)
@@ -1858,7 +1884,7 @@ class DownloadStreamDirect:
             if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 logging.warning("New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format))
                 #self.commit_batch(self.conn)
-                download_stream_direct(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), reties=self.fragment_retries, cookies=self.cookies)
+                download_stream_direct(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), retries=self.fragment_retries, cookies=self.cookies)
                 return True
         return False
     # Function to combine segments into a single file
@@ -2018,7 +2044,7 @@ class StreamRecovery:
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
             downloader_instance=self,
-            retry_time_clamp=4
+            backoff_max=4
         )  
         
         self.fragment_retries = fragment_retries  
@@ -2141,7 +2167,7 @@ class StreamRecovery:
                     
                     # Remove from submitted segments in case it neeeds to be regrabbed
                     if seg_num in submitted_segments:
-                        submitted_segments.remove(seg_num)
+                        submitted_segments.discard(seg_num)
                     
                     if head_seg_num > self.latest_sequence:
                         logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
