@@ -1964,7 +1964,7 @@ class DownloadStreamDirect:
     def clean_segments(self, data, first=True):
         bad_atoms = ["sidx"]
         if first is False:
-            badAtoms = badAtoms.append("ftyp")
+            bad_atoms.append("ftyp")
 
         return self.remove_atoms(data=data, atom_list=bad_atoms)
     
@@ -2691,7 +2691,7 @@ class StreamRecovery:
     def clean_segments(self, data, first=True):
         bad_atoms = ["sidx"]
         if first is False:
-            badAtoms = badAtoms.append("ftyp")
+            bad_atoms.append("ftyp")
 
         return self.remove_atoms(data=data, atom_list=bad_atoms)
     
