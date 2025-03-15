@@ -1350,22 +1350,22 @@ class DownloadStream:
     def close_connection(self):
         self.conn.close()
 
-    # Function to combine segments into a single file
     def combine_segments_to_file(self, output_file, cursor=None):
+        stats[self.type]['status'] = "merging"
         if cursor is None:
             cursor = self.cursor
-        stats[self.type]['status'] = "merging"
-        logging.info("Merging segments to {0}".format(output_file))
+        
+        logging.debug("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
+            first = True
             for segment in cursor:  # Cursor iterates over rows one by one
                 segment_piece = segment[0]
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
-                if self.ext == "webm":
-                    cleaned_segment = self.remove_sidx(segment_piece)
-                    f.write(cleaned_segment)
-                else:
-                    f.write(segment_piece)
+                if str(self.ext).lower().endswith("mp4") or not str(self.ext):
+                    segment_piece = self.clean_segments(segment_piece, first)
+                first = False
+                f.write(segment_piece)
         stats[self.type]['status'] = "merged"
         return output_file
     
@@ -1381,10 +1381,12 @@ class DownloadStream:
         ofs = 0
 
         while True:
-            # We should be fine and not run into errors, but I do dumb things
             try:
+                if ofs + 8 > len(data):
+                    break
+
                 alen = int(data[ofs:ofs + 4].hex(), 16)
-                if alen > len(data):
+                if alen > len(data) or alen < 8:
                     break
 
                 aname = data[ofs + 4:ofs + 8].decode()
@@ -1393,28 +1395,34 @@ class DownloadStream:
             except Exception:
                 break
 
-            if ofs + 8 >= len(data):
-                break
-
         return atoms
 
-    ### Via ytarchive  
-    def remove_sidx(self, data):
+    def remove_atoms(self, data, atom_list):
         """
-        Remove the sidx atom from a chunk of data
+        Remove specified atoms from a chunk of data
 
-        :param data:
+        :param data: The byte data containing atoms
+        :param atom_list: List of atom names to remove
         """
         atoms = self.get_atoms(data)
-        if not "sidx" in atoms:
-            return data
+        atoms_to_remove = [atoms[name] for name in atom_list if name in atoms]
+        
+        # Sort by offset in descending order to avoid shifting issues
+        atoms_to_remove.sort(key=lambda x: x["ofs"], reverse=True)
+        
+        for atom in atoms_to_remove:
+            ofs = atom["ofs"]
+            rlen = ofs + atom["len"]
+            data = data[:ofs] + data[rlen:]
+        
+        return data
+    
+    def clean_segments(self, data, first=True):
+        bad_atoms = ["sidx"]
+        if first is False:
+            badAtoms = badAtoms.append("ftyp")
 
-        sidx = atoms["sidx"]
-        ofs = sidx["ofs"]
-        rlen = sidx["ofs"] + sidx["len"]
-        new_data = data[:ofs] + data[rlen:]
-
-        return new_data
+        return self.remove_atoms(data=data, atom_list=bad_atoms)
     
     def check_kill(self):
         # Kill if keyboard interrupt is detected
@@ -1632,7 +1640,7 @@ class DownloadStreamDirect:
                         for _ in range(0, len(downloaded_segments)):
                             segment = downloaded_segments.pop(self.state.get('last_written') + 1, None)
                             if segment is not None:
-                                cleaned_segment = self.remove_sidx(segment)
+                                cleaned_segment = self.clean_segments(segment)
                                 file.write(cleaned_segment)
                                 self.state['last_written'] = self.state.get('last_written') + 1
                             else:
@@ -1894,11 +1902,14 @@ class DownloadStreamDirect:
         logging.debug("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
+            first = True
             for segment in cursor:  # Cursor iterates over rows one by one
                 segment_piece = segment[0]
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
-                cleaned_segment = self.remove_sidx(segment_piece)
-                f.write(cleaned_segment)
+                if str(self.ext).lower().endswith("mp4") or not str(self.ext):
+                    segment_piece = self.clean_segments(segment_piece, first)
+                first = False
+                f.write(segment_piece)
         stats[self.type]['status'] = "merged"
         return output_file
     
@@ -1914,10 +1925,12 @@ class DownloadStreamDirect:
         ofs = 0
 
         while True:
-            # We should be fine and not run into errors, but I do dumb things
             try:
+                if ofs + 8 > len(data):
+                    break
+
                 alen = int(data[ofs:ofs + 4].hex(), 16)
-                if alen > len(data):
+                if alen > len(data) or alen < 8:
                     break
 
                 aname = data[ofs + 4:ofs + 8].decode()
@@ -1926,28 +1939,34 @@ class DownloadStreamDirect:
             except Exception:
                 break
 
-            if ofs + 8 >= len(data):
-                break
-
         return atoms
 
-    ### Via ytarchive  
-    def remove_sidx(self, data):
+    def remove_atoms(self, data, atom_list):
         """
-        Remove the sidx atom from a chunk of data
+        Remove specified atoms from a chunk of data
 
-        :param data:
+        :param data: The byte data containing atoms
+        :param atom_list: List of atom names to remove
         """
         atoms = self.get_atoms(data)
-        if not "sidx" in atoms:
-            return data
+        atoms_to_remove = [atoms[name] for name in atom_list if name in atoms]
+        
+        # Sort by offset in descending order to avoid shifting issues
+        atoms_to_remove.sort(key=lambda x: x["ofs"], reverse=True)
+        
+        for atom in atoms_to_remove:
+            ofs = atom["ofs"]
+            rlen = ofs + atom["len"]
+            data = data[:ofs] + data[rlen:]
+        
+        return data
+    
+    def clean_segments(self, data, first=True):
+        bad_atoms = ["sidx"]
+        if first is False:
+            badAtoms = badAtoms.append("ftyp")
 
-        sidx = atoms["sidx"]
-        ofs = sidx["ofs"]
-        rlen = sidx["ofs"] + sidx["len"]
-        new_data = data[:ofs] + data[rlen:]
-
-        return new_data
+        return self.remove_atoms(data=data, atom_list=bad_atoms)
     
     def check_kill(self):
         # Kill if keyboard interrupt is detected
@@ -2603,18 +2622,21 @@ class StreamRecovery:
 
     # Function to combine segments into a single file
     def combine_segments_to_file(self, output_file, cursor=None):
+        stats[self.type]['status'] = "merging"
         if cursor is None:
             cursor = self.cursor
-        stats[self.type]['status'] = "merging"
-        logging.info("Merging segments to {0}".format(output_file))
+        
+        logging.debug("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
+            first = True
             for segment in cursor:  # Cursor iterates over rows one by one
                 segment_piece = segment[0]
                 # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
-                cleaned_segment = self.remove_sidx(segment_piece)
-                f.write(cleaned_segment)
-                #f.write(segment_piece)
+                if str(self.ext).lower().endswith("mp4") or not str(self.ext):
+                    segment_piece = self.clean_segments(segment_piece, first)
+                first = False
+                f.write(segment_piece)
         stats[self.type]['status'] = "merged"
         return output_file
     
@@ -2630,10 +2652,12 @@ class StreamRecovery:
         ofs = 0
 
         while True:
-            # We should be fine and not run into errors, but I do dumb things
             try:
+                if ofs + 8 > len(data):
+                    break
+
                 alen = int(data[ofs:ofs + 4].hex(), 16)
-                if alen > len(data):
+                if alen > len(data) or alen < 8:
                     break
 
                 aname = data[ofs + 4:ofs + 8].decode()
@@ -2642,28 +2666,34 @@ class StreamRecovery:
             except Exception:
                 break
 
-            if ofs + 8 >= len(data):
-                break
-
         return atoms
 
-    ### Via ytarchive  
-    def remove_sidx(self, data):
+    def remove_atoms(self, data, atom_list):
         """
-        Remove the sidx atom from a chunk of data
+        Remove specified atoms from a chunk of data
 
-        :param data:
+        :param data: The byte data containing atoms
+        :param atom_list: List of atom names to remove
         """
         atoms = self.get_atoms(data)
-        if not "sidx" in atoms:
-            return data
+        atoms_to_remove = [atoms[name] for name in atom_list if name in atoms]
+        
+        # Sort by offset in descending order to avoid shifting issues
+        atoms_to_remove.sort(key=lambda x: x["ofs"], reverse=True)
+        
+        for atom in atoms_to_remove:
+            ofs = atom["ofs"]
+            rlen = ofs + atom["len"]
+            data = data[:ofs] + data[rlen:]
+        
+        return data
+    
+    def clean_segments(self, data, first=True):
+        bad_atoms = ["sidx"]
+        if first is False:
+            badAtoms = badAtoms.append("ftyp")
 
-        sidx = atoms["sidx"]
-        ofs = sidx["ofs"]
-        rlen = sidx["ofs"] + sidx["len"]
-        new_data = data[:ofs] + data[rlen:]
-
-        return new_data
+        return self.remove_atoms(data=data, atom_list=bad_atoms)
     
     def check_kill(self):
         # Kill if keyboard interrupt is detected
