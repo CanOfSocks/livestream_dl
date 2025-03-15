@@ -266,7 +266,7 @@ def move_to_final(options, outputFile, file_names):
             else:
                 logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
                 file_names.get('thumbnail').unlink(missing_ok=True)
-                del file_names['thumbnail']
+                file_names.pop('thumbnail',None)
     except Exception as e:
         logging.error("unable to move thumbnail: {0}".format(e))
     
@@ -478,10 +478,8 @@ def remove_urls_from_json(file_name):
             if format.get('manifest_url') is not None:
                 format['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
             
-            if format.get('fragment_base_url') is not None:
-                del format['fragment_base_url']
-            if format.get('fragments') is not None:
-                del format['fragments']
+            format.pop('fragment_base_url', None)
+            format.pop('fragments', None)
                 
     if data.get('thumbnails', None) is not None:
         for thumbnail in data['thumbnails']:
@@ -669,11 +667,11 @@ def create_mp4(file_names, info_dict, options):
         if file_names.get('video'): 
             logging.info("Removing {0}".format(file_names.get('video').absolute()))
             file_names.get('video').unlink(missing_ok=True)
-            del file_names['video']
+            file_names.pop('video',None)
         if file_names.get('audio'): 
             logging.info("Removing {0}".format(file_names.get('audio').absolute()))
             file_names.get('audio').unlink(missing_ok=True)
-            del file_names['audio']       
+            file_names.pop('audio',None)       
     
     return file_names
     #for file in file_names:
@@ -1006,7 +1004,7 @@ class DownloadStream:
                     submitted_segments.discard(seg_num)
 
                     # Remove completed thread to free RAM
-                    del future_to_seg[future]
+                    future_to_seg.pop(future,None)
                       
                 segments_to_download = set(range(0, max(self.latest_sequence, latest_downloaded_segment))) - self.already_downloaded  
 
@@ -1619,7 +1617,7 @@ class DownloadStreamDirect:
                     
                     stats[self.type]["latest_sequence"] = self.latest_sequence
                     # Remove completed thread to free RAM
-                    del future_to_seg[future]
+                    future_to_seg.pop(future,None)
                 
                 if downloaded_segments.get(self.state.get('last_written') + 1, None) is not None:
                     # If filesize is 0 or the placeholder for not existing (-1), start in write mode
@@ -1659,7 +1657,7 @@ class DownloadStreamDirect:
                         for seg_key in seg_keys:
                             if self.state.get('last_written') - int(seg_key) > self.max_workers*2:
                                 logging.debug("Segment {0} of {1} has been detected as leftover, removing from dictionary".format(seg_key, self.format))
-                                del downloaded_segments[seg_key]
+                                downloaded_segments.pop(seg_key,None)
                                 
                     stats[self.type]["downloaded_segments"] = self.state.get('last_written', 0)
                     stats[self.type]["current_filesize"] = self.state.get('file_size', 0)
@@ -2188,7 +2186,7 @@ class StreamRecovery:
                         
                         # Assume segment will be added
                         if self.segments_retries.get(seg_num, None) is not None:
-                            del self.segments_retries[seg_num]
+                            self.segments_retries.pop(seg_num,None)
                         
                         # If finished threads exceeds batch size, commit the whole batch of threads at once. 
                         # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
@@ -2207,7 +2205,7 @@ class StreamRecovery:
                     
                     stats[self.type]["latest_sequence"] = self.latest_sequence
                     # Remove completed thread to free RAM
-                    del future_to_seg[future]
+                    future_to_seg.pop(future,None)
                     stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
                       
                 #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
@@ -2300,7 +2298,7 @@ class StreamRecovery:
                         #print("{0}: {1} seconds since last retry".format(seg_num,time.time() - segments_retries[seg_num]['last_retry']))
                         if seg_num not in submitted_segments and self.segments_retries[seg_num]['retries'] <= self.fragment_retries and time.time() - self.segments_retries[seg_num]['last_retry'] > self.segment_retry_time:                            
                             if seg_num in self.already_downloaded:
-                                del self.segments_retries[seg_num]
+                                self.segments_retries.pop(seg_num,None)
                                 continue
                             if self.segment_exists(self.cursor, seg_num):
                                 self.already_downloaded.add(seg_num)
