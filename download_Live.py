@@ -2215,14 +2215,14 @@ class StreamRecovery:
                 if len(self.segments_retries) <= 0:
                     logging.info("All segment downloads complete, ending...")
                     break
-                
-                elif self.is_403 and self.expires is not None and time.time() > self.expires:
-                    logging.fatal("URL(s) have expired and failures being detected, ending...")
-                    break
-                
+
                 elif all(value['retries'] > self.fragment_retries for value in self.segments_retries.values()):
                     logging.error("All remaining segments have exceeded their retry count, ending...")
                     break
+                
+                elif self.is_403 and self.expires is not None and time.time() > self.expires:
+                    logging.fatal("URL(s) have expired and failures being detected, ending...")
+                    break               
                 
                 elif self.is_401:
                     logging.debug("401s detected for {0}, sleeping for a minute")
@@ -2298,7 +2298,7 @@ class StreamRecovery:
                     """
                     for seg_num in potential_segments_to_download:
                         #print("{0}: {1} seconds since last retry".format(seg_num,time.time() - segments_retries[seg_num]['last_retry']))
-                        if seg_num not in submitted_segments and self.segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - self.segments_retries[seg_num]['last_retry'] > self.segment_retry_time:                            
+                        if seg_num not in submitted_segments and self.segments_retries[seg_num]['retries'] <= self.fragment_retries and time.time() - self.segments_retries[seg_num]['last_retry'] > self.segment_retry_time:                            
                             if seg_num in self.already_downloaded:
                                 del self.segments_retries[seg_num]
                                 continue
