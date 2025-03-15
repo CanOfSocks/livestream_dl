@@ -942,7 +942,7 @@ class DownloadStream:
             future_to_seg = {}
             
             # Trackers for optimistic segment downloads 
-            optimistic_fails_max = max(2, int(40/4*self.fragment_retries))
+            optimistic_fails_max = max(2, int(40/max(1, 4*self.fragment_retries)))
             optimistic_fails = 0
             optimistic_seg = 0           
             latest_downloaded_segment = -1
