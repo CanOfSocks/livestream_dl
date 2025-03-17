@@ -8,6 +8,9 @@ This project aims to combine the features of live recording and stream recovery 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) via pip (or another method where yt-dlp can be imported to a python script)
 - Packages within [requirements.txt](https://github.com/CanOfSocks/livestream_dl/blob/main/requirements.txt)
 
+### Optional
+- [chat-downloader](https://github.com/xenova/chat-downloader) - Live chat downloader that has the ability to resume if interrupted at cost of different format
+
 ## Modification of yt-dlp
 For the downloader to work, the [YouTube extractor from yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube.py) must be modified to save formats that would usually be discarded. You can find the install location of the package with `pip show yt-dlp`.
 
