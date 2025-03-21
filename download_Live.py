@@ -58,7 +58,10 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
             file_names['databases'].append(database_file)
     finally:
         # Explicitly close connection
-        downloader.close_connection()
+        try:
+            downloader.close_connection()
+        except Exception as e:
+            logging.error("Failed to close connection for {0}".format(resolution))
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
