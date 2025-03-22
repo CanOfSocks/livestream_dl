@@ -12,9 +12,9 @@ This project aims to combine the features of live recording and stream recovery 
 - [chat-downloader](https://github.com/xenova/chat-downloader) - Live chat downloader that has the ability to resume if interrupted at cost of different format
 
 ## Modification of yt-dlp
-For the downloader to work, the [YouTube extractor from yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube.py) must be modified to save formats that would usually be discarded. You can find the install location of the package with `pip show yt-dlp`.
+For the downloader to work, the [YouTube extractor from yt-dlp (`_video.py`)](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_video.py#L3078-L3079) must be modified to save formats that would usually be discarded. You can find the install location of the package with `pip show yt-dlp`.
 
-To do this comment/remove the [following lines](https://github.com/yt-dlp/yt-dlp/blob/cfa76f35d25eaf993437df8b833befbbf9255331/yt_dlp/extractor/youtube.py#L4031-L4032):
+To do this comment/remove the [following lines](https://github.com/yt-dlp/yt-dlp/blob/b4488a9e128bf826c3ffbf2d2809ce3141016adb/yt_dlp/extractor/youtube/_video.py#L3078-L3079):
 ```python
             if fmt.get('targetDurationSec'):
                 continue
