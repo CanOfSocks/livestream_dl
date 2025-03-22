@@ -20,7 +20,7 @@ To do this comment/remove the [following lines](https://github.com/yt-dlp/yt-dlp
                 continue
 ```
 
-As of March 2025, the following sed command works on Linux, ***be aware the location of the file may change and future versions of yt-dlp may change the extractor logic***:
+As of 22 March 2025, the following sed command works on Linux, ***be aware the location of the file may change and future versions of yt-dlp may change the extractor logic***:
 ```bash
 sed -i '/if fmt.get('\'targetDurationSec\''):$/,/    continue$/s/^/#/' "$(pip show yt-dlp | grep Location | awk '{print $2}')/yt_dlp/extractor/youtube/_video.py"
 ```
