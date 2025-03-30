@@ -126,6 +126,8 @@ if __name__ == "__main__":
     
     parser.add_argument('--output', type=str, default="%(fulltitle)s (%(id)s)", help="Path/file name for output files. Supports yt-dlp output formatting")
 
+    parser.add_argument('--ext', action='store_true', help="Force extension of video file. E.g. '.mp4'")
+
     parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files. Supports yt-dlp output formatting")    
     
     parser.add_argument('--write-thumbnail', action='store_true', help="Write thumbnail to file")
