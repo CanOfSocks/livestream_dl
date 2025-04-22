@@ -461,16 +461,16 @@ def replace_ip_in_json(file_name):
     import re
     pattern = re.compile(r'((?:[0-9]{1,3}\.){3}[0-9]{1,3})|((?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4})')
 
-    with open(file_name, 'r', encoding="utf8") as file:
+    with open(file_name, 'r', encoding="utf-8") as file:
         content = file.read()
 
     modified_content = re.sub(pattern, '0.0.0.0', content)
 
-    with open(file_name, 'w', encoding="utf8") as file:
+    with open(file_name, 'w', encoding="utf-8") as file:
         file.write(modified_content)
 
 def remove_urls_from_json(file_name):
-    with open(file_name, 'r', encoding="utf8") as file:
+    with open(file_name, 'r', encoding="utf-8") as file:
         data = json.load(file)
         
     if data.get('formats', None) is not None:
@@ -636,7 +636,7 @@ def create_mp4(file_names, info_dict, options):
     if ext is None:
         ext = info_dict.get('ext', '.mp4')
     if ext is not None and not str(ext).startswith("."):
-        ext = "." + ext
+        ext = "." + str(ext)
     if not base_output.endswith(ext):
         base_output = base_output + ext  
         
@@ -2760,7 +2760,7 @@ def setup_logging(log_level, console, file):
 
     # Add a file handler if needed
     if file:
-        file_handler = logging.FileHandler(file)
+        file_handler = logging.FileHandler(file, encoding="utf-8")
         file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
