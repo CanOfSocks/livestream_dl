@@ -2747,6 +2747,11 @@ def setup_logging(log_level, console, file):
     if os.name == "nt":  # Windows check
         disable_quick_edit()
 
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s [%(levelname)s] - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
     # Create a logger
     logger = logging.getLogger()
     logger.setLevel(log_level)
@@ -2754,9 +2759,7 @@ def setup_logging(log_level, console, file):
     # Define log format
     formatter = logging.Formatter('[%(levelname)s] %(asctime)s - %(message)s')
 
-    # Clear any existing handlers
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
+
 
     # Add a file handler if needed
     if file:
