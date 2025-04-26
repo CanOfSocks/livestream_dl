@@ -28,10 +28,9 @@ sed -i '/if fmt.get('\'targetDurationSec\''):$/,/    continue$/s/^/#/' "$(pip sh
 # Usage
 To use, execute `runner.py` with python with any additional options.
 ```
-usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--temp-folder TEMP_FOLDER] [--write-thumbnail]
-                 [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--database-in-memory] [--direct-to-ts] [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE]
-                 [--remove-ip-from-json] [--clean-urls] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--proxy [PROXY]] [--ipv4 | --ipv6]
-                 [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line]
+usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--ext EXT] [--temp-folder TEMP_FOLDER] [--write-thumbnail] [--embed-thumbnail]
+                 [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--database-in-memory] [--direct-to-ts] [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls]
+                 [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--proxy [PROXY]] [--ipv4 | --ipv6] [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line]
                  [ID]
 
 Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)
@@ -42,8 +41,8 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --resolution RESOLUTION
-                        Desired resolution. Can be best, audio_only or a custom filter based off yt-dlp's format filtering: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#filtering-formats. Audio will always be set as "ba" (best audio) regardless of filters set. "best" will be     
-                        converted to "bv" A prompt will be displayed if no value is entered
+                        Desired resolution. Can be best, audio_only or a custom filter based off yt-dlp's format filtering: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#filtering-formats. Audio will always be set as "ba" (best audio) regardless of filters set. "best" will be converted to "bv" A prompt     
+                        will be displayed if no value is entered
   --custom-sort CUSTOM_SORT
                         Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats
   --threads THREADS     Number of download threads per format. This will be 2x for an video and audio download. Default: 1
@@ -55,6 +54,7 @@ options:
   --merge               Merge video using ffmpeg, overrides --no-merge
   --cookies COOKIES     Path to cookies file
   --output OUTPUT       Path/file name for output files. Supports yt-dlp output formatting
+  --ext EXT             Force extension of video file. E.g. '.mp4'
   --temp-folder TEMP_FOLDER
                         Path for temporary files. Supports yt-dlp output formatting
   --write-thumbnail     Write thumbnail to file
@@ -83,9 +83,10 @@ options:
                         Writes FFmpeg command to a txt file
   --stats-as-json       Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level
   --ytdlp-options YTDLP_OPTIONS
-                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183
-  --proxy [PROXY]       (Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy   
-                        specified will be used for yt-dlp and live chat functions.
+                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"getpot_bgutil_baseurl":
+                        ["http://10.0.67.10:4416"]}}}' if you have installed the potoken plugin
+  --proxy [PROXY]       (Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy specified will be used for   
+                        yt-dlp and live chat functions.
   --ipv4                Force IPv4 only
   --ipv6                Force IPv6 only
   --stop-chat-when-done STOP_CHAT_WHEN_DONE
