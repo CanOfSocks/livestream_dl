@@ -1,36 +1,55 @@
 #!/usr/local/bin/python
 import yt_dlp
+import logging
 
 class MyLogger:
-    def __init__(self):
-        pass
+    def __init__(self, logger=None):
+        self.logger = logger
 
     def debug(self, msg):
-        #print(msg)
         if str(msg).startswith('[DEBUG]'):
-            pass
+            return
         elif str(msg).startswith('[wait] R'):
-            print(msg, end='\r')
+            if self.logger:
+                self.logger.debug(msg)
+            else:
+                print(msg, end='\r')
+        else:
+            if self.logger:
+                self.logger.debug(msg)
+            else:
+                print(msg)
+
+    def info(self, msg):
+        if self.logger:
+            self.logger.info(msg)
         else:
             print(msg)
-    def info(self, msg):
-        print(msg)
 
     def warning(self, msg):
-        if "private" in msg.lower() or "UNAVAILABLE" in msg.upper() or "unavailable" in str(msg) or "should already be available" in msg.lower() or "not available" in msg.lower():
+        msg_str = str(msg)
+        if ("private" in msg_str.lower() or
+            "unavailable" in msg_str.lower() or
+            "should already be available" in msg_str.lower()):
+            import yt_dlp
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
+        
+        if self.logger:
+            self.logger.warning(msg)
         else:
             print(msg)
-        
 
     def error(self, msg):
-        print(msg)
-        pass
+        if self.logger:
+            self.logger.error(msg)
+        else:
+            print(msg)
+
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, logger_instance=None):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
-    logger = MyLogger()
+    logger = MyLogger(logger=logger_instance)
     
     ydl_opts = {
         #'live_from_start': True,

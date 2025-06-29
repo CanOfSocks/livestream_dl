@@ -109,7 +109,7 @@ def download_segments(info_dict, resolution='best', options={}, logger_instance=
     if logger_instance:
         logger = logger_instance
     else:
-        logger = setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', False), file=options.get('log_file', None))
+        logger = setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None))
         
     if logger:
         logging.root = logger
@@ -2727,7 +2727,7 @@ class StreamRecovery:
  
  
 
-def setup_logging(log_level, console, file):   
+def setup_logging(log_level="INFO", console=True, file=None):   
 
     def disable_quick_edit():
         import ctypes
