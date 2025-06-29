@@ -34,8 +34,6 @@ live_chat_result = None
 
 chat_timeout = None
 
-logger = None
-
 # File name dictionary
 file_names = {
     'databases': []
@@ -101,20 +99,13 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
     return file, downloader.type
 
 # Multithreaded function to download new segments with delayed commit after a batch
-def download_segments(info_dict, resolution='best', options={}, logger_instance=None):
+def download_segments(info_dict, resolution='best', options={}):
     futures = set()
     #file_names = {}
         
-    global logger
-    if logger_instance:
-        logger = logger_instance
-    else:
-        logger = setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None))
-        
-    if logger:
-        logging.root = logger
+    setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None))
     stats['id'] = info_dict.get('id', None)
-    logger.debug(json.dumps(options, indent=4))
+    logging.debug(json.dumps(options, indent=4))
     outputFile = output_filename(info_dict=info_dict, outtmpl=options.get('output'))
     file_name = None
     # Requires testing

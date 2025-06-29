@@ -81,7 +81,7 @@ def parse_string_or_tuple(value):
 
 
 def main(id, resolution='best', options={}, info_dict=None):
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', False), file=options.get('log_file', None))
+    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None))
     
     # Convert additional options to dictionary, if it exists
     if options.get('ytdlp_options', None) is not None:        
@@ -94,7 +94,7 @@ def main(id, resolution='best', options={}, info_dict=None):
         pass
     else:        
         info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None))
-    download_Live.download_segments(info_dict, resolution, options, logger)
+    download_Live.download_segments(info_dict, resolution, options)
     
 if __name__ == "__main__":
     # Create the parser
@@ -194,6 +194,7 @@ if __name__ == "__main__":
 
     # Access the 'ID' value
     options = vars(args)
+    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True)
     if options.get('ID', None) is None and options.get('json_file', None) is None:
         options['ID'] = str(input("Please enter a video URL: ")).strip()
 

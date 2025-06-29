@@ -3,28 +3,14 @@ import yt_dlp
 import logging
 
 class MyLogger:
-    def __init__(self, logger=None):
-        self.logger = logger
+    def __init__(self):
+        pass
 
     def debug(self, msg):
-        if str(msg).startswith('[DEBUG]'):
-            return
-        elif str(msg).startswith('[wait] R'):
-            if self.logger:
-                self.logger.debug(msg)
-            else:
-                print(msg, end='\r')
-        else:
-            if self.logger:
-                self.logger.debug(msg)
-            else:
-                print(msg)
+        logging.debug(msg)
 
     def info(self, msg):
-        if self.logger:
-            self.logger.info(msg)
-        else:
-            print(msg)
+        logging.info(msg)
 
     def warning(self, msg):
         msg_str = str(msg)
@@ -34,22 +20,16 @@ class MyLogger:
             import yt_dlp
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         
-        if self.logger:
-            self.logger.warning(msg)
-        else:
-            print(msg)
+        logging.warning(msg)
 
     def error(self, msg):
-        if self.logger:
-            self.logger.error(msg)
-        else:
-            print(msg)
+        logging.error(msg)
 
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, logger_instance=None):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
-    logger = MyLogger(logger=logger_instance)
+    logger = MyLogger()
     
     ydl_opts = {
         #'live_from_start': True,
