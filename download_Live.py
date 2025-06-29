@@ -2727,52 +2727,44 @@ class StreamRecovery:
  
  
 
-def setup_logging(log_level="INFO", console=True, file=None):   
-
+def setup_logging(log_level="INFO", console=True, file=None, force=False):   
     def disable_quick_edit():
         import ctypes
         kernel32 = ctypes.windll.kernel32
         hStdin = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
         mode = ctypes.c_ulong()
-
-        # Get the current console mode
         kernel32.GetConsoleMode(hStdin, ctypes.byref(mode))
-
-        # Disable Quick Edit Mode (value 0x40)
         mode.value &= ~0x40  # Remove ENABLE_QUICK_EDIT_MODE
-
-        # Set the new console mode
         kernel32.SetConsoleMode(hStdin, mode)
 
-    if os.name == "nt":  # Windows check
+    if os.name == "nt":
         disable_quick_edit()
 
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s [%(levelname)s] - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    # Create a logger
+    # Get the root logger
     logger = logging.getLogger()
-    logger.setLevel(log_level)
+    if force:
+        logger.handlers.clear()
+    elif logger.hasHandlers():
+        return logger
 
-    # Define log format
-    formatter = logging.Formatter('[%(levelname)s] %(asctime)s - %(message)s')
+    # Convert string level to actual logging level
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    logger.setLevel(level)
 
+    formatter = logging.Formatter('[%(levelname)s] %(asctime)s - %(message)s',
+                                  datefmt='%Y-%m-%d %H:%M:%S')
 
-
-    # Add a file handler if needed
-    if file:
-        file_handler = logging.FileHandler(file, encoding="utf-8")
-        file_handler.setLevel(log_level)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    # Add a console handler if needed
     if console:
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(log_level)
+        console_handler.setLevel(level)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
+    if file:
+        file_handler = logging.FileHandler(file, mode='a')
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
     return logger
+
