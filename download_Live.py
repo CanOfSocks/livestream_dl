@@ -59,7 +59,7 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
         try:
             downloader.close_connection()
         except Exception as e:
-            logging.error("Failed to close connection for {0}".format(resolution))
+            logging.exception("Failed to close connection for {0}".format(resolution))
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
@@ -262,7 +262,7 @@ def move_to_final(options, outputFile, file_names):
                 file_names.get('thumbnail').unlink(missing_ok=True)
                 file_names.pop('thumbnail',None)
     except Exception as e:
-        logging.error("unable to move thumbnail: {0}".format(e))
+        logging.exception("unable to move thumbnail: {0}".format(e))
     
     try:
         if file_names.get('info_json'):
@@ -271,7 +271,7 @@ def move_to_final(options, outputFile, file_names):
             logging.info("Moving {0} to {1}".format(info_json.absolute(), info_output))
             shutil.move(info_json.absolute(), info_output)
     except Exception as e:
-        logging.error("unable to move info_json: {0}".format(e))
+        logging.exception("unable to move info_json: {0}".format(e))
         
     try:
         if file_names.get('description'):
@@ -280,7 +280,7 @@ def move_to_final(options, outputFile, file_names):
             logging.info("Moving {0} to {1}".format(description.absolute(), description_output))
             shutil.move(description.absolute(), description_output)
     except Exception as e:
-        logging.error("unable to move description: {0}".format(e))
+        logging.exception("unable to move description: {0}".format(e))
     
     try:
         if file_names.get('video'):
@@ -289,7 +289,7 @@ def move_to_final(options, outputFile, file_names):
             logging.info("Moving {0} to {1}".format(video.absolute(), video_output))
             shutil.move(video.absolute(), video_output)
     except Exception as e:
-        logging.error("unable to move video stream: {0}".format(e))
+        logging.exception("unable to move video stream: {0}".format(e))
         
     try:
         if file_names.get('audio'):
@@ -298,7 +298,7 @@ def move_to_final(options, outputFile, file_names):
             logging.info("Moving {0} to {1}".format(audio.absolute(), audio_output))
             shutil.move(audio.absolute(), audio_output)
     except Exception as e:
-        logging.error("unable to move audio stream: {0}".format(e))
+        logging.exception("unable to move audio stream: {0}".format(e))
         
     try:
         if file_names.get('merged'):
@@ -307,7 +307,7 @@ def move_to_final(options, outputFile, file_names):
             logging.info("Moving {0} to {1}".format(merged.absolute(), merged_output))
             shutil.move(merged.absolute(), merged_output)
     except Exception as e:
-        logging.error("unable to move merged video: {0}".format(e))
+        logging.exception("unable to move merged video: {0}".format(e))
         
     try:
         if file_names.get('ffmpeg_cmd'):
@@ -316,7 +316,7 @@ def move_to_final(options, outputFile, file_names):
             logging.info("Moving {0} to {1}".format(ffmpeg_cmd.absolute(), ffmpeg_cmd_output))
             shutil.move(ffmpeg_cmd.absolute(), ffmpeg_cmd_output)
     except Exception as e:
-        logging.error("unable to move merged video: {0}".format(e))
+        logging.exception("unable to move merged video: {0}".format(e))
         
     try:
         if file_names.get('live_chat'):
@@ -325,7 +325,7 @@ def move_to_final(options, outputFile, file_names):
             logging.info("Moving {0} to {1}".format(live_chat.absolute(), live_chat_output))
             shutil.move(live_chat.absolute(), live_chat_output)
     except Exception as e:
-        logging.error("unable to move live chat zip: {0}".format(e))
+        logging.exception("unable to move live chat zip: {0}".format(e))
      
     try:
         if file_names.get('databases'):
@@ -334,7 +334,7 @@ def move_to_final(options, outputFile, file_names):
                 logging.info("Moving {0} to {1}".format(file.absolute(), db_output))
                 shutil.move(file.absolute(), db_output)
     except Exception as e:
-        logging.error("unable to move database files: {0}".format(e))
+        logging.exception("unable to move database files: {0}".format(e))
     try:
         if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
             if options.get('write_ffmpeg_command', False):
@@ -345,12 +345,12 @@ def move_to_final(options, outputFile, file_names):
             else:
                 file_names.get('ffmpeg_cmd').unlink()
     except Exception as e:
-        logging.error("unable to move ffmpeg command file: {0}".format(e))
+        logging.exception("unable to move ffmpeg command file: {0}".format(e))
         
     try:
         os.rmdir(options.get('temp_folder'))
     except Exception as e:
-        logging.error("Error removing temp folder: {0}".format(e))
+        logging.exception("Error removing temp folder: {0}".format(e))
         
     logging.info("Finished moving files from temporary directory to output destination")
     
@@ -424,13 +424,10 @@ def download_live_chat(info_dict, options):
                 #result = ydl.process_ie_result(info_dict)
                 result = ydl.download_with_info_file(info_dict)
         except Exception as e:
-            logging.error("\033[31m{0}\033[0m".format(e)) 
-            import traceback
-            logging.error("\033[31m{0}\033[0m".format(traceback.format_exc()))             
+            logging.exception("\033[31m{0}\033[0m".format(e)) 
+         
     except Exception as e:
-        logging.error("\033[31m{0}\033[0m".format(e))
-        import traceback
-        logging.error("\033[31m{0}\033[0m".format(traceback.format_exc()))
+        logging.exception("\033[31m{0}\033[0m".format(e))
     time.sleep(1)
     if os.path.exists("{0}.part".format(livechat_filename)):
         shutil.move("{0}.part", livechat_filename)
@@ -446,7 +443,7 @@ def download_live_chat(info_dict, options):
         live_chat_result = live_chat
         return live_chat, 'live_chat'
     except Exception as e:
-        logging.error("\033[31m{0}\033[0m".format(e))
+        logging.exception("\033[31m{0}\033[0m".format(e))
     
 def replace_ip_in_json(file_name):
     import re
@@ -531,7 +528,7 @@ def download_auxiliary_files(info_dict, options, thumbnail=None):
                 if options.get('clean_urls'):
                     remove_urls_from_json(created_files['info_json'].absolute())
             except Exception as e:
-                logging.error(str(e))
+                logging.exception(str(e))
             
         if ydl._write_description('video', info_dict, ydl.prepare_filename(info_dict, 'description')) or os.path.exists(ydl.prepare_filename(info_dict, 'description')):
             created_files['description'] = FileInfo(ydl.prepare_filename(info_dict, 'description'), file_type='description')
@@ -1053,7 +1050,7 @@ class DownloadStream:
                                 self.is_private = True
                             except ValueError as e:
                                 # Livestream has been processed
-                                logging.error("Error refreshing URL: {0}".format(e))
+                                logging.exception("Error refreshing URL: {0}".format(e))
                                 logging.info("Livestream has ended and processed, commiting remaining segments")
                                 break
                             except Exception as e:
@@ -1192,7 +1189,7 @@ class DownloadStream:
             return None
         
         except Exception as e:
-            logging.error("\033[31m{0}\033[0m".format(e))
+            logging.exception("\033[31m{0}\033[0m".format(e))
             return None
     
     def detect_manifest_change(self, info_json):
@@ -1716,7 +1713,7 @@ class DownloadStreamDirect:
                                 logging.info("Livestream has ended and processed, commiting remaining segments")
                                 break
                             except Exception as e:
-                                logging.error("Error refreshing URL: {0}".format(e))
+                                logging.exception("Error refreshing URL: {0}".format(e))
                             
                             # If status of downloader is not live, assume stream has ended
                             if self.live_status != 'is_live':
@@ -1802,7 +1799,7 @@ class DownloadStreamDirect:
             return None
         
         except Exception as e:
-            logging.error("\033[31m{0}\033[0m".format(e))
+            logging.exception("\033[31m{0}\033[0m".format(e))
             return None
 
     # Function to download a single segment
@@ -2445,7 +2442,7 @@ class StreamRecovery:
             return None
         
         except Exception as e:
-            logging.error("\033[31m{0}\033[0m".format(e))
+            logging.exception("\033[31m{0}\033[0m".format(e))
             return None
     
 
@@ -2589,7 +2586,7 @@ class StreamRecovery:
             logging.warning("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except Exception as e:
-            logging.error("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.exception("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
     # Function to insert a single segment without committing
