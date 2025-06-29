@@ -6,6 +6,17 @@ from yt_dlp import YoutubeDL
 
 __all__ = ["YoutubeURL", "Formats"]
 
+import logging
+
+class YTDLPLogger:
+    def debug(self, msg):
+        logging.debug(msg)
+    def info(self, msg):
+        logging.info(msg)
+    def warning(self, msg):
+        logging.warning(msg)
+    def error(self, msg):
+        logging.error(msg)
 
 def _get_one(qs: dict[str, list[str]], field: str) -> str:
     l = qs.get(field)
@@ -129,6 +140,8 @@ class Formats:
         # Get the 'expire' parameter
         itag = query_params.get("itag", [None])[0]
         return str(itag).strip()
+    
+    
         
     def getFormatURL(self, info_json, resolution, return_format=False, sort=None, get_all=False, raw=False):     
         resolution = str(resolution).strip()
@@ -152,7 +165,8 @@ class Formats:
             'quiet': True,
             'skip_download': True,
             'no_warnings': True,
-            "format": resolution
+            "format": resolution,
+            "logger": YTDLPLogger()
         }
         
         if sort:
