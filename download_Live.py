@@ -26,7 +26,7 @@ from urllib.parse import urlparse, parse_qs
 import shutil
 
 import logging
-
+import logging.handlers
 
 kill_all = False
 
@@ -2715,7 +2715,7 @@ class StreamRecovery:
  
  
 
-def setup_logging(log_level="INFO", console=True, file=None, force=False):   
+def setup_logging(log_level="INFO", console=True, file=None, force=False, file_options={}, logger=None):   
     def disable_quick_edit():
         import ctypes
         kernel32 = ctypes.windll.kernel32
@@ -2728,8 +2728,10 @@ def setup_logging(log_level="INFO", console=True, file=None, force=False):
     if os.name == "nt":
         disable_quick_edit()
 
-    # Get the root logger
-    logger = logging.getLogger()
+    # Get the root logger if no logger provided
+    if logger is None:
+        logger = logging.getLogger()
+
     if force:
         logger.handlers.clear()
     elif logger.hasHandlers():
@@ -2749,10 +2751,33 @@ def setup_logging(log_level="INFO", console=True, file=None, force=False):
         logger.addHandler(console_handler)
 
     if file:
-        file_handler = logging.FileHandler(file, mode='a')
-        file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        handler = None
+
+        # Check for size-based rotation
+        if file_options.get("maxBytes", None):
+            handler = logging.handlers.RotatingFileHandler(
+                file,
+                mode='a',
+                maxBytes=file_options.get("maxBytes", 10 * 1024 * 1024),  # 10MB default
+                backupCount=file_options.get("backupCount", 5),
+                encoding='utf-8'
+            )
+        # Check for time-based rotation
+        elif file_options.get("when", None):
+            handler = logging.handlers.TimedRotatingFileHandler(
+                file,
+                when=file_options.get("when", "midnight"),
+                interval=file_options.get("interval", 1),
+                backupCount=file_options.get("backupCount", 7),
+                encoding='utf-8'
+            )
+        # No rotation
+        else:
+            handler = logging.FileHandler(file, mode='a', encoding='utf-8')
+
+        handler.setLevel(level)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
 
     return logger
 
