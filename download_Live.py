@@ -103,7 +103,7 @@ def download_segments(info_dict, resolution='best', options={}):
     futures = set()
     #file_names = {}
         
-    setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None))
+    setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}))
     stats['id'] = info_dict.get('id', None)
     logging.debug(json.dumps(options, indent=4))
     outputFile = output_filename(info_dict=info_dict, outtmpl=options.get('output'))
