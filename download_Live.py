@@ -1219,6 +1219,8 @@ class DownloadStream:
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
                     return True
+                else:
+                    return False
         except yt_dlp.utils.ExtractorError as e:
             logging.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
 
@@ -1232,6 +1234,8 @@ class DownloadStream:
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
                     return True
+                else:
+                    return False
         except yt_dlp.utils.ExtractorError as e:
             logging.warning("Unable to find any stream for {1} when attempting to find 'best' stream".format(self.resolution, self.id))
         return False
@@ -1891,6 +1895,8 @@ class DownloadStreamDirect:
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
                     return True
+                else:
+                    return False
         except yt_dlp.utils.ExtractorError as e:
             logging.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
 
@@ -1904,6 +1910,8 @@ class DownloadStreamDirect:
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
                     return True
+                else:
+                    return False
         except yt_dlp.utils.ExtractorError as e:
             logging.warning("Unable to find any stream for {1} when attempting to find 'best' stream".format(self.resolution, self.id))
         return False
