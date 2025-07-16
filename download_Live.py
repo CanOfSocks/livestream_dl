@@ -1200,7 +1200,7 @@ class DownloadStream:
                 parsed_url = urlparse(temp_stream_url)        
                 temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                    logging.warning("({2}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
+                    logging.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_url_params.get("id")).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
                     return True
@@ -1332,7 +1332,7 @@ class DownloadStream:
             logging.debug("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except Exception as e:
-            logging.debug("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            logging.warning("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
     # Function to insert a single segment without committing
