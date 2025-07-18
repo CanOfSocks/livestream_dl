@@ -20,7 +20,10 @@ class MyLogger:
             import yt_dlp
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         
-        logging.warning(msg)
+        elif "this live event will begin in" in msg_str.lower():
+            logging.info(msg)
+        else:
+            logging.warning(msg)
 
     def error(self, msg):
         logging.error(msg)
