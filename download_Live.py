@@ -2532,8 +2532,8 @@ class StreamRecovery:
             if response and response.status == 403:
                 if self.downloader_instance:  # Ensure the instance exists
                     self.downloader_instance.is_403 = True
-                if self.segment_number is not None:
-                    logging.debug("{0} encountered a 403")
+            if response and response.status and self.segment_number is not None:
+                logging.debug("{0} encountered a {1} code".format(self.segment_number, response.status))
                     
             return super().increment(method, url, response, error, _pool, _stacktrace)
         
