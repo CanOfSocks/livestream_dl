@@ -903,18 +903,18 @@ class DownloadStream:
                 if info_dict:
                     self.info_dict = info_dict    
                 
-            except PermissionError as e:
-                logging.warning("Permission error: {0}".format(e))
+            except getUrls.VideoInaccessibleError as e:
+                logging.warning("Video Inaccessible error: {0}".format(e))
                 if "membership" in str(e) and not self.is_403:
                     logging.warning("{0} is now members only. Continuing until 403 errors")
                 else:
                     self.is_private = True
-            except ValueError as e:
-                logging.critical("Value error: {0}".format(e))
+            except getUrls.VideoUnavailableError as e:
+                logging.critical("Video Unavailable error: {0}".format(e))
                 if self.get_expire_time(self.stream_url) < time.time():
                     raise TimeoutError("Video is processed and stream url for {0} has expired, unable to continue...".format(self.format))
             except Exception as e:
-                logging.error("Error: {0}".format(e))                     
+                logging.exception("Error: {0}".format(e))                     
             self.url_checked = time.time()
                 
     def live_dl(self):
@@ -1045,10 +1045,10 @@ class DownloadStream:
                                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
                                 
                             # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
-                            except PermissionError as e:
+                            except getUrls.VideoInaccessibleError as e:
                                 logging.debug(e)
                                 self.is_private = True
-                            except ValueError as e:
+                            except getUrls.VideoProcessedError as e:
                                 # Livestream has been processed
                                 logging.exception("Error refreshing URL: {0}".format(e))
                                 logging.info("Livestream has ended and processed, commiting remaining segments")
@@ -1571,7 +1571,7 @@ class DownloadStreamDirect:
                     
                 if live_status is not None:
                     self.live_status = live_status
-            except PermissionError as e:
+            except getUrls.VideoInaccessibleError as e:
                 logging.warning(e)
                 self.is_private = True
             except Exception as e:
@@ -1720,10 +1720,10 @@ class DownloadStreamDirect:
                                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
                                 
                             # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
-                            except PermissionError as e:
+                            except getUrls.VideoInaccessibleError as e:
                                 logging.warning(e)
                                 self.is_private = True
-                            except ValueError as e:
+                            except getUrls.VideoProcessedError as e:
                                 # Livestream has been processed
                                 logging.error("Error refreshing URL: {0}".format(e))
                                 logging.info("Livestream has ended and processed, commiting remaining segments")
