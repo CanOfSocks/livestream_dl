@@ -489,7 +489,7 @@ def remove_urls_from_json(file_name):
     with open(file_name, "w", encoding='utf-8') as file:
         json.dump(data, file)
         
-def download_auxiliary_files(info_dict, options, thumbnail=None):
+def download_auxiliary_files(info_dict, options):
     if options.get('filename') is not None:
         filename = options.get('filename')
     else:
