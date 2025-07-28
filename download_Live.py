@@ -8,6 +8,7 @@ import time
 import concurrent.futures
 import json
 from pathlib import Path
+import errno
 
 try:
     import getUrls
@@ -349,6 +350,12 @@ def move_to_final(options, outputFile, file_names):
         
     try:
         os.rmdir(options.get('temp_folder'))
+    except OSError as e:
+        if e.errno == errno.ENOTEMPTY:
+            logging.warning(f"Error: Directory not empty: {e.filename}")
+            # Optional: handle non-empty directory (e.g., log, retry, or remove contents)
+        else:
+            logging.exception("Error removing temp folder: {0}".format(e))
     except Exception as e:
         logging.exception("Error removing temp folder: {0}".format(e))
         

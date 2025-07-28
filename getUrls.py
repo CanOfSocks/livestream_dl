@@ -17,10 +17,10 @@ class MyLogger:
         if ("private" in msg_str.lower() or
             "unavailable" in msg_str.lower() or
             "should already be available" in msg_str.lower()):
-            import yt_dlp
+            logging.info(msg_str)
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         
-        elif "this live event will begin in" in msg_str.lower():
+        elif "this live event will begin in" in msg_str.lower() or "premieres in" in msg_str.lower():
             logging.info(msg)
         else:
             logging.warning(msg)
