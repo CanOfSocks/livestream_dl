@@ -1,6 +1,7 @@
 #!/usr/local/bin/python
 import yt_dlp
 import logging
+import json
 
 class MyLogger:
     def __init__(self):
@@ -89,5 +90,5 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
             else:
                 raise e
         
-      
+    logging.debug("Info.json: {0}".format(json.dumps(info_dict)))
     return info_dict, info_dict.get('live_status')

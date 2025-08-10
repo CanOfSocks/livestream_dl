@@ -172,8 +172,8 @@ class Formats:
         if sort:
             ydl_opts.update({"format_sort": str(sort).split(',')})
             
-        print("Original: {0}, passed: {1}".format(original_res, ydl_opts))
-        
+        logging.debug("Original: {0}, passed: {1}".format(original_res, ydl_opts))
+
         #try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.process_ie_result(info_json)
