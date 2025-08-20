@@ -23,6 +23,9 @@ class MyLogger:
         
         elif "this live event will begin in" in msg_str.lower() or "premieres in" in msg_str.lower():
             logging.info(msg)
+        elif "not available on this app" in msg_str:
+            logging.error(msg)
+            raise yt_dlp.utils.DownloadError(msg_str)
         else:
             logging.warning(msg)
 
@@ -87,6 +90,8 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
             #elif "This video is available to this channel's members on level" in str(e) or "members-only content" in str(e):
             elif " members " in str(e) or " members-only " in str(e):
                 raise VideoInaccessibleError("Video {0} is a membership video. Requires valid cookies".format(id))
+            elif "not available on this app" in str(e):
+                raise VideoInaccessibleError("Video {0} not available on this player".format(id))
             else:
                 raise e
         
