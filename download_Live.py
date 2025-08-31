@@ -565,7 +565,7 @@ def create_mp4(file_names, info_dict, options):
                       '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats'
                       ]
     
-    if file_names.get('thumbnail') and options.get('embed_thumbnail', True):
+    if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
         if file_names.get('thumbnail').exists():
             if str(file_names.get('thumbnail').suffix).lower() == '.webp':
                 logging.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
@@ -589,13 +589,13 @@ def create_mp4(file_names, info_dict, options):
             logging.error("Thumnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
     
     # Add input files
-    if file_names.get('video'):        
+    if file_names.get('video', None):        
         input = ['-i', str(file_names.get('video').absolute()), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         video = index
         index += 1
             
-    if file_names.get('audio'):
+    if file_names.get('audio', None):
         input = ['-i', str(file_names.get('audio').absolute()), '-thread_queue_size', '1024']
         ffmpeg_builder.extend(input)
         audio = index
