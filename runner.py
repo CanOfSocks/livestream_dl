@@ -147,6 +147,8 @@ if __name__ == "__main__":
     parser.add_argument('--keep-database-file', action='store_true', help="Keep database file. If using with --direct-to-ts, this keeps the state file")
     
     parser.add_argument('--recovery', action='store_true', help="Puts downloader into stream recovery mode")
+
+    parser.add_argument('--force-recover-merge', action='store_true', help="Forces merging to final file even if all segements could not be recovered")
     
     parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments database in memory. Requires a lot of RAM (Not recommended)")
     
