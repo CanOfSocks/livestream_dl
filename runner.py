@@ -149,6 +149,8 @@ if __name__ == "__main__":
     parser.add_argument('--recovery', action='store_true', help="Puts downloader into stream recovery mode")
 
     parser.add_argument('--force-recover-merge', action='store_true', help="Forces merging to final file even if all segements could not be recovered")
+
+    parser.add_argument('--recovery-failure-tolerance', type=int, default=0, help="Maximum number of fragments that fail to download (exceed the retry limit) and not throw an error. May cause unexpected issues when merging to .ts file and remuxing. Default: 0")
     
     parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments database in memory. Requires a lot of RAM (Not recommended)")
     

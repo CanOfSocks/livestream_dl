@@ -84,12 +84,12 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
-def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False):
+def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0):
     try:
         downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
         result = downloader.live_dl()
         #downloader.save_stats()    
-        if force_merge or result <= 0:
+        if force_merge or result <= 0 or result <= recovery_failure_tolerance:
             if result > 0:
                 logging.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
             file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
@@ -160,7 +160,7 @@ def download_segments(info_dict, resolution='best', options={}):
                                             yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False))
                         audio_future = executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
-                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False))
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False), recovery_failure_tolerance=options.get('recovery_failure_tolerance', 0))
                     elif options.get('direct_to_ts', False) is True:
                         video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
@@ -187,7 +187,7 @@ def download_segments(info_dict, resolution='best', options={}):
                 if options.get('recovery', False) is True:
                     futures.add(executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
                                                 folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), 
-                                                yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False)))
+                                                yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False), recovery_failure_tolerance=options.get('recovery_failure_tolerance', 0)))
                 elif options.get('direct_to_ts', False) is True:
                     futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
                                                 folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), 
