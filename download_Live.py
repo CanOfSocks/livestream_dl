@@ -91,7 +91,7 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
         #downloader.save_stats()    
         if force_merge or result <= 0:
             if result > 0:
-                logging.warning("Stream recovery of format {0} has outstanding segments which were not able to complete. Continuing with merge".format(downloader.format))
+                logging.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
             file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
             if not keep_database:
                 logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
@@ -100,7 +100,7 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
                 database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
                 file_names['databases'].append(database_file)
         else:
-            raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exiting".format(downloader.format, result, downloader.id))
+            raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
     # Explicitly close connection
     finally:
         try:
