@@ -2260,7 +2260,7 @@ class StreamRecovery:
                             self.segments_retries[seg_num]['retries'] = self.segments_retries[seg_num]['retries'] + 1
                             self.segments_retries[seg_num]['last_retry'] = time.time()
                             if self.segments_retries[seg_num]['retries'] >= self.fragment_retries:
-                                logging.debug("Segment {0} of {1} has exceeded maximum number of retries")
+                                logging.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
                                 
                     
                     stats[self.type]["latest_sequence"] = self.latest_sequence
