@@ -40,6 +40,9 @@ class VideoProcessedError(ValueError):
 
 class VideoUnavailableError(ValueError):
     pass
+
+class VideoDownloadError(yt_dlp.utils.DownloadError):
+    pass
             
 def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None):
     #url = "https://www.youtube.com/watch?v={0}".format(id)

@@ -77,29 +77,37 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
             database_file = FileInfo(downloader.state_file_name, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
     finally:
+        try:
+            downloader.close_connection()
+        except Exception as e:
+            logging.exception("Failed to close connection for {0}".format(resolution))
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
     return file, downloader.type
 
 def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False):
-    
-    downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
-    result = downloader.live_dl()
-    #downloader.save_stats()    
-    if force_merge or result <= 0:
-        if result > 0:
-            logging.warning("Stream recovery of format {0} has outstanding segments which were not able to complete. Continuing with merge".format(downloader.format))
-        file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
-        if not keep_database:
-            logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
-            downloader.delete_temp_database()
-        elif downloader.temp_db_file != ':memory:':
-            database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
-            file_names['databases'].append(database_file)
-    else:
-        logging.error("Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exiting".format(downloader.format, result))
+    try:
+        downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
+        result = downloader.live_dl()
+        #downloader.save_stats()    
+        if force_merge or result <= 0:
+            if result > 0:
+                logging.warning("Stream recovery of format {0} has outstanding segments which were not able to complete. Continuing with merge".format(downloader.format))
+            file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
+            if not keep_database:
+                logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
+                downloader.delete_temp_database()
+            elif downloader.temp_db_file != ':memory:':
+                database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
+                file_names['databases'].append(database_file)
+        else:
+            raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exiting".format(downloader.format, result, downloader.id))
     # Explicitly close connection
-    downloader.close_connection()
-    file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)   
+    finally:
+        try:
+            downloader.close_connection()
+        except Exception as e:
+            logging.exception("Failed to close connection for {0}".format(resolution))
+        file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)   
         
     return file, downloader.type
 
