@@ -44,9 +44,9 @@ stats = {}
 
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):
-    try:
-        downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
+    downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort)  
+    try:              
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -66,9 +66,9 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
 
 # Create runner function for each download format
 def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):
-    try:
-        downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
+    downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort) 
+    try:               
         file_name = downloader.live_dl()
         if not keep_state:
             logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
@@ -85,8 +85,8 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
     return file, downloader.type
 
 def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0):
-    try:
-        downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, proxies=proxies, yt_dlp_sort=yt_dlp_sort)        
+    downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, proxies=proxies, yt_dlp_sort=yt_dlp_sort)  
+    try:              
         result = downloader.live_dl()
         #downloader.save_stats()    
         if force_merge or result <= 0 or result <= recovery_failure_tolerance:
