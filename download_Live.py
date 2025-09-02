@@ -44,9 +44,10 @@ stats = {}
 
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):
-    downloader = DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort)  
-    try:              
+    file = None
+    filetype = None
+    with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort) as downloader:              
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -55,20 +56,18 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
         elif downloader.temp_db_file != ':memory:':
             database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
-    finally:
-        # Explicitly close connection
-        try:
-            downloader.close_connection()
-        except Exception as e:
-            logging.exception("Failed to close connection for {0}".format(resolution))
+
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
-    return file, downloader.type
+        filetype = downloader.type
+    return file, filetype
 
 # Create runner function for each download format
 def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):
-    downloader = DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort) 
-    try:               
+    file = None
+    filetype = None
+
+    with DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort) as downloader:
         file_name = downloader.live_dl()
         if not keep_state:
             logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
@@ -76,17 +75,19 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
         else:
             database_file = FileInfo(downloader.state_file_name, file_type='database', format=downloader.format)
             file_names['databases'].append(database_file)
-    finally:
-        try:
-            downloader.close_connection()
-        except Exception as e:
-            logging.exception("Failed to close connection for {0}".format(resolution))
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
-    return file, downloader.type
+        filetype = downloader.type
+
+    return file, filetype
 
 def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0):
-    downloader = StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, proxies=proxies, yt_dlp_sort=yt_dlp_sort)  
-    try:              
+
+    file = None
+    filetype = None
+
+    with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                        proxies=proxies, yt_dlp_sort=yt_dlp_sort) as downloader:
+          
         result = downloader.live_dl()
         #downloader.save_stats()    
         if force_merge or result <= 0 or result <= recovery_failure_tolerance:
@@ -101,15 +102,10 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
                 file_names['databases'].append(database_file)
         else:
             raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
-    # Explicitly close connection
-    finally:
-        try:
-            downloader.close_connection()
-        except Exception as e:
-            logging.exception("Failed to close connection for {0}".format(resolution))
-        file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)   
+        file = FileInfo(file_name, file_type=downloader.type, format=downloader.format) 
+        filetype = downloader.type  
         
-    return file, downloader.type
+    return file, filetype
 
 # Multithreaded function to download new segments with delayed commit after a batch
 def download_segments(info_dict, resolution='best', options={}):
@@ -157,10 +153,12 @@ def download_segments(info_dict, resolution='best', options={}):
                     if options.get('recovery', False) is True:
                         video_future = executor.submit(recover_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
-                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False))
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False), 
+                                            recovery_failure_tolerance=options.get('recovery_failure_tolerance', 0))
                         audio_future = executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_database=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
-                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False), recovery_failure_tolerance=options.get('recovery_failure_tolerance', 0))
+                                            yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False), 
+                                            recovery_failure_tolerance=options.get('recovery_failure_tolerance', 0))
                     elif options.get('direct_to_ts', False) is True:
                         video_future = executor.submit(download_stream_direct, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
                                             keep_state=(options.get("keep_temp_files", False) or options.get("keep_database_file", False)), retries=options.get('segment_retries'), cookies=options.get('cookies'), 
@@ -187,7 +185,8 @@ def download_segments(info_dict, resolution='best', options={}):
                 if options.get('recovery', False) is True:
                     futures.add(executor.submit(recover_stream, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
                                                 folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), 
-                                                yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False), recovery_failure_tolerance=options.get('recovery_failure_tolerance', 0)))
+                                                yt_dlp_options=options.get('ytdlp_options', None), proxies=options.get("proxy", None), yt_dlp_sort=options.get('custom_sort', None), force_merge=options.get('force_recovery_merge', False), 
+                                                recovery_failure_tolerance=options.get('recovery_failure_tolerance', 0)))
                 elif options.get('direct_to_ts', False) is True:
                     futures.add(executor.submit(download_stream_direct, info_dict=info_dict, resolution="audio_only", batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), 
                                                 folder=download_folder, file_name=file_name, retries=options.get('segment_retries'), cookies=options.get('cookies'), 
@@ -803,7 +802,7 @@ class FileInfo(Path):
 
 class DownloadStream:
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None):        
-        
+        self.conn = None
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
@@ -880,6 +879,13 @@ class DownloadStream:
         self.conn, self.cursor = self.create_db(self.temp_db_file)    
         
         stats[self.type] = {}
+
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close_connection()
+        return False
         
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
@@ -1374,7 +1380,8 @@ class DownloadStream:
         conn.commit()
         
     def close_connection(self):
-        self.conn.close()
+        if self.conn:
+            self.conn.close()
 
     def combine_segments_to_file(self, output_file, cursor=None):
         stats[self.type]['status'] = "merging"
@@ -1554,6 +1561,12 @@ class DownloadStreamDirect:
         self.stream_urls = [self.stream_url]
         
         stats[self.type] = {}
+
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
         
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
@@ -2033,6 +2046,7 @@ class DownloadStreamDirect:
 class StreamRecovery:
     
     def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None):        
+        self.conn = None
         from datetime import datetime
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -2155,6 +2169,13 @@ class StreamRecovery:
         self.user_agent_403s = {}
         self.user_agent_full_403s = {}
         stats[self.type] = {}
+
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close_connection()
+        return False
         
     def get_expire_time(self, url):
         parsed_url = urlparse(url)
@@ -2659,7 +2680,8 @@ class StreamRecovery:
         conn.commit()
         
     def close_connection(self):
-        self.conn.close()
+        if self.conn:
+            self.conn.close()
 
     # Function to combine segments into a single file
     def combine_segments_to_file(self, output_file, cursor=None):
