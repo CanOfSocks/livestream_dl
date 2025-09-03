@@ -69,14 +69,9 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
     with DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                                           yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort) as downloader:
         file_name = downloader.live_dl()
-        if not keep_state:
-            logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
-            downloader.delete_state_file()
-        else:
-            database_file = FileInfo(downloader.state_file_name, file_type='database', format=downloader.format)
-            file_names['databases'].append(database_file)
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
         filetype = downloader.type
+        downloader.delete_state_file()
 
     return file, filetype
 
