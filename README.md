@@ -1,6 +1,6 @@
 # livestream_dl
 Garbage youtube livestream downloader combining the principles of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchive-raw-go](https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go"). This focuses on using yt-dlp for more frequent updates for stream information extraction to handle changes YouTube implements.
-This project aims to combine the features of live recording and stream recovery when a stream becomes unavailable.
+This project aims to combine the features of live recording and stream recovery when a stream becomes unavailable. **Stream recovery is currently in a semi-broken state. Don't rely on it working for now.**
 
 # Requirements
 - [python](https://www.python.org/) 3.12+
