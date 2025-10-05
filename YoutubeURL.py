@@ -196,14 +196,18 @@ class Formats:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.process_ie_result(info_json)
             format = info.get('requested_downloads', info.get('requested_formats', [{}]))
-            format_url = format[0].get('url')
+            if format[0].get('protocol', "") == "http_dash_segments":
+                format_url = format[0].get('fragment_base_url')
+            else:
+                format_url = format[0].get('url')
             format_id = format[0].get('format_id')
             #print(format)
+            logging.debug("Got URL: {0}: {1}".format(format_id, format_url))
             
             # Retrieves all URLs of found format, this converts format_url to a list
             if get_all:
                 format_url = self.getAllFormatURL(info_json=info_json, format=format_id)
-    
+            
             if return_format:
                     return format_url, format_id
             else:
@@ -235,9 +239,14 @@ class Formats:
         for ytdlp_format in info_json['formats']:                
             # If format has yet to be found, match the first matching format ID, otherwise only grab URLs of the same format
             if ytdlp_format['protocol'] == 'https':
-                itag = str(self.get_itag(ytdlp_format['url'])).strip() 
+                itag = str(YoutubeURL(ytdlp_format['url']).itag).strip() 
                 if format == itag:   
                     urls.append(ytdlp_format['url'])
+            elif ytdlp_format['protocol'] == 'http_dash_segments':
+                itag = str(YoutubeURL(ytdlp_format['fragment_base_url']).itag).strip() 
+                if format == itag:   
+                    urls.append(ytdlp_format['fragment_base_url'])
+
         
         return urls
         """#Legacy code
