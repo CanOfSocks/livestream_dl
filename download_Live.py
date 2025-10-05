@@ -1153,7 +1153,7 @@ class DownloadStream:
                 if self.max_workers > 1 and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in submitted_segments:
                     logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     future_to_seg.update({
-                        executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, optimistic_seg), optimistic_seg): optimistic_seg
+                        executor.submit(self.download_segment, "{0}?sq={1}".format(self.stream_url, optimistic_seg), optimistic_seg): optimistic_seg
                     })
                     submitted_segments.add(optimistic_seg)
                 
@@ -1161,7 +1161,7 @@ class DownloadStream:
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
                         future_to_seg.update({
-                            executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                            executor.submit(self.download_segment, "{0}?sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
                         })
                         submitted_segments.add(seg_num)
                     # Have up to 2x max workers of threads submitted
@@ -1797,7 +1797,7 @@ class DownloadStreamDirect:
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
                         future_to_seg.update({
-                            executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                            executor.submit(self.download_segment, "{0}?sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
                         })
                         submitted_segments.add(seg_num)
                     # Have up to 2x max workers of threads submitted
@@ -2303,14 +2303,14 @@ class StreamRecovery:
                     time.sleep(60)
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
-                            self.update_latest_segment(url="{0}&sq={1}".format(url, self.latest_sequence+1))
+                            self.update_latest_segment(url="{0}?sq={1}".format(url, self.latest_sequence+1))
                         else:
                             self.update_latest_segment(url=url)
                 # Request base url if receiving 403s
                 elif self.is_403:
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
-                            self.update_latest_segment(url="{0}&sq={1}".format(url, self.latest_sequence+1))
+                            self.update_latest_segment(url="{0}?sq={1}".format(url, self.latest_sequence+1))
                         else:
                             self.update_latest_segment(url=url)
                     
@@ -2407,7 +2407,7 @@ class StreamRecovery:
                 # New
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
-                        future_to_seg[executor.submit(self.download_segment, "{0}&sq={1}".format(self.stream_urls[i % len(self.stream_urls)], seg_num), seg_num)] = seg_num
+                        future_to_seg[executor.submit(self.download_segment, "{0}?sq={1}".format(self.stream_urls[i % len(self.stream_urls)], seg_num), seg_num)] = seg_num
                         submitted_segments.add(seg_num)
                         i += 1
                         #time.sleep(0.25)
@@ -2416,7 +2416,7 @@ class StreamRecovery:
                 for url in self.stream_urls:
                     future_to_seg.update(
                         {
-                            executor.submit(self.download_segment, "{0}&sq={1}".format(url, seg_num), seg_num): seg_num
+                            executor.submit(self.download_segment, "{0}?sq={1}".format(url, seg_num), seg_num): seg_num
                             for seg_num in segments_to_download
                             if not submitted_segments.add(seg_num) and not time.sleep(0.25)
                         }
