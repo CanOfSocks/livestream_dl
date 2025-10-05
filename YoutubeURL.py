@@ -1,4 +1,4 @@
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse, unquote
 from typing import Optional
 from random import shuffle
 
@@ -37,26 +37,40 @@ class YoutubeURL:
         self._u   = urlparse(url)
         self._q   = parse_qs(self._u.query)
 
-        id_manifest = _get_one(self._q, "id")
+        # --- Parse /-style path parameters ---
+        self._path_params = {}
+        path = self._u.path
+        if "/videoplayback/" in path:
+            param_str = path.split("/videoplayback/", 1)[1]
+            segments = param_str.strip("/").split("/")
+            self._path_params = {segments[i]: unquote(segments[i + 1]) 
+                                 for i in range(0, len(segments) - 1, 2)}
+            if len(segments) % 2 != 0:
+                self._path_params["flag"] = unquote(segments[-1])
+
+        # Merge path params with query params (query overrides path)
+        merged = {**self._path_params, **{k: v[0] for k, v in self._q.items()}}
+
+        # Extract id and manifest
+        id_manifest = merged["id"]
         if "~" in id_manifest:
             id_manifest = id_manifest[:id_manifest.index("~")]
         self.id, self.manifest = id_manifest.split(".")
 
-        self.itag = int(_get_one(self._q, "itag"))
+        self.itag = int(merged["itag"])
 
-        if "expire" in self._q:
-            self.expire = int(_get_one(self._q, "expire"))
-        else:
-            self.expire = None
+        self.expire = int(merged["expire"]) if "expire" in merged else None
 
     def __repr__(self) -> str:
         server = self._u.netloc
-        return f"YoutubeURL(id={self.id},itag={self.itag},manifest={self.manifest},expire={self.expire},server={server})"
+        return (f"YoutubeURL(id={self.id},itag={self.itag},manifest={self.manifest},"
+                f"expire={self.expire},server={server})")
 
     def segment(self, n) -> str:
-        params = dict(self._q)
-        params["sq"] = [n]
-        url = self._u._replace(query=urlencode(params, doseq=True))
+        # Merge query + path params for the URL
+        params = {**self._path_params, **{k: v[0] for k, v in self._q.items()}}
+        params["sq"] = n
+        url = self._u._replace(query=urlencode(params))
         return urlunparse(url)
     
 class Formats:
@@ -143,7 +157,7 @@ class Formats:
     
     
         
-    def getFormatURL(self, info_json, resolution, return_format=False, sort=None, get_all=False, raw=False):     
+    def getFormatURL(self, info_json, resolution, return_format=False, sort=None, get_all=False, raw=False, include_dash=True):     
         resolution = str(resolution).strip()
         
         original_res = resolution
@@ -156,7 +170,11 @@ class Formats:
             resolution = "ba"
             
         if not raw:
-            resolution = "({0})[protocol=https]".format(resolution)
+            # Use https (adaptive) protocol with fallback to dash
+            if include_dash:
+                resolution = "({0})[protocol=https]/({0})[protocol=http_dash_segments]".format(resolution)
+            else:
+                include_dash = "({0})[protocol=https]".format(resolution)
         
         #if original_res != "audio_only":
         #    resolution = "({0})[vcodec!=none]".format(resolution)

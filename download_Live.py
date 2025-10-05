@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 import errno
 
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
 try:
     import getUrls
     import YoutubeURL
@@ -143,7 +145,7 @@ def download_segments(info_dict, resolution='best', options={}):
             format_parser = YoutubeURL.Formats()
             # For use of specificed format. Expects two values, but can work with more
             if resolution.lower() != "audio_only":                
-                if YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None)) is not None:
+                if YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None), include_dash=(not options.get('recovery', False))) is not None:
                     # Submit tasks for both video and audio downloads   
                     if options.get('recovery', False) is True:
                         video_future = executor.submit(recover_stream, info_dict=info_dict, resolution=resolution, batch_size=options.get('batch_size',1), max_workers=options.get("threads", 1), folder=download_folder, file_name=file_name, 
@@ -764,10 +766,14 @@ def print_stats(options):
     else:
         print("\r",end="")
     
+def add_url_param(url, key, value) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    query[key] = [value]  # add or replace parameter
 
-    
-    
-    
+    new_query = urlencode(query, doseq=True)
+    new_url = parsed._replace(query=new_query)
+    return str(urlunparse(new_url))  
     
 class FileInfo(Path):
     _file_type = None  # Class attribute for storing the file type    
@@ -1153,7 +1159,7 @@ class DownloadStream:
                 if self.max_workers > 1 and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in submitted_segments:
                     logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     future_to_seg.update({
-                        executor.submit(self.download_segment, "{0}?sq={1}".format(self.stream_url, optimistic_seg), optimistic_seg): optimistic_seg
+                        executor.submit(self.download_segment, add_url_param(self.stream_url, "sq", optimistic_seg), optimistic_seg): optimistic_seg
                     })
                     submitted_segments.add(optimistic_seg)
                 
@@ -1161,7 +1167,7 @@ class DownloadStream:
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
                         future_to_seg.update({
-                            executor.submit(self.download_segment, "{0}?sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                            executor.submit(self.download_segment, add_url_param(self.stream_url, "sq", seg_num), seg_num): seg_num
                         })
                         submitted_segments.add(seg_num)
                     # Have up to 2x max workers of threads submitted
@@ -1797,7 +1803,7 @@ class DownloadStreamDirect:
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
                         future_to_seg.update({
-                            executor.submit(self.download_segment, "{0}?sq={1}".format(self.stream_url, seg_num), seg_num): seg_num
+                            executor.submit(self.download_segment, add_url_param(self.stream_url, "sq", seg_num), seg_num): seg_num
                         })
                         submitted_segments.add(seg_num)
                     # Have up to 2x max workers of threads submitted
@@ -2070,7 +2076,7 @@ class StreamRecovery:
                     break            
             self.stream_urls = stream_urls          
         else:
-            self.stream_urls, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort, get_all=True)
+            self.stream_urls, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort, get_all=True, include_dash=False)
         
         logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
         """        
@@ -2303,14 +2309,14 @@ class StreamRecovery:
                     time.sleep(60)
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
-                            self.update_latest_segment(url="{0}?sq={1}".format(url, self.latest_sequence+1))
+                            self.update_latest_segment(url=add_url_param(self.stream_url, "sq", self.latest_sequence+1))
                         else:
                             self.update_latest_segment(url=url)
                 # Request base url if receiving 403s
                 elif self.is_403:
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
-                            self.update_latest_segment(url="{0}?sq={1}".format(url, self.latest_sequence+1))
+                            self.update_latest_segment(url=add_url_param(self.stream_url, "sq", self.latest_sequence+1))
                         else:
                             self.update_latest_segment(url=url)
                     
@@ -2407,7 +2413,7 @@ class StreamRecovery:
                 # New
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
-                        future_to_seg[executor.submit(self.download_segment, "{0}?sq={1}".format(self.stream_urls[i % len(self.stream_urls)], seg_num), seg_num)] = seg_num
+                        future_to_seg[executor.submit(self.download_segment, add_url_param(self.stream_urls[i % len(self.stream_urls)], "sq", seg_num), seg_num)] = seg_num
                         submitted_segments.add(seg_num)
                         i += 1
                         #time.sleep(0.25)
@@ -2416,7 +2422,7 @@ class StreamRecovery:
                 for url in self.stream_urls:
                     future_to_seg.update(
                         {
-                            executor.submit(self.download_segment, "{0}?sq={1}".format(url, seg_num), seg_num): seg_num
+                            executor.submit(self.download_segment, add_url_param(self.stream_url, "sq", seg_num), seg_num): seg_num
                             for seg_num in segments_to_download
                             if not submitted_segments.add(seg_num) and not time.sleep(0.25)
                         }

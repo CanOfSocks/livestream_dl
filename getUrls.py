@@ -44,7 +44,7 @@ class VideoUnavailableError(ValueError):
 class VideoDownloadError(yt_dlp.utils.DownloadError):
     pass
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
     logger = MyLogger()
@@ -74,6 +74,10 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
     if proxy is not None:
         print(proxy)
         ydl_opts['proxy'] = next(iter(proxy.values()), None)
+
+    ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": ["incomplete","duplicate"]})
+    if not include_dash:
+        ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"skip": ["hls","dash"]})
 
     info_dict = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
