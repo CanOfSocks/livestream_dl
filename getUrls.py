@@ -62,11 +62,19 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
 #        'extractor_args': 'skip=dash,hls;',
         'logger': logger
     }
-    
+
     if isinstance(wait, tuple):
-        ydl_opts['wait_for_video'] = wait
+        if len(wait) <= 0:
+            raise ValueError("Wait tuple must contain 1 or 2 values")
+        elif len(wait) < 2:
+            ydl_opts['wait_for_video'] = (wait[0], wait[0])
+        else:
+            ydl_opts['wait_for_video'] = (wait[0], wait[1])
+    elif isinstance(wait, int):
+        ydl_opts['wait_for_video'] = (wait, wait)
     elif wait is True:
         ydl_opts['wait_for_video'] = (5,300)
+    
         
     if additional_options:
         ydl_opts.update(additional_options)

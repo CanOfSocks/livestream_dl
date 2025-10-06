@@ -93,7 +93,7 @@ def main(id, resolution='best', options={}, info_dict=None):
     elif info_dict:
         pass
     else:        
-        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False))
+        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False))
     download_Live.download_segments(info_dict, resolution, options)
     
 if __name__ == "__main__":
