@@ -44,7 +44,7 @@ class VideoUnavailableError(ValueError):
 class VideoDownloadError(yt_dlp.utils.DownloadError):
     pass
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
     logger = MyLogger()
@@ -85,7 +85,9 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
 
     ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": ["incomplete","duplicate"]})
     if not include_dash:
-        ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"skip": ["hls","dash"]})
+        (ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).setdefault("skip", [])).append("dash")
+    if not include_m3u8:
+        (ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).setdefault("skip", [])).append("hls")
 
     info_dict = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

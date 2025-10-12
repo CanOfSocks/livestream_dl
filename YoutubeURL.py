@@ -1,8 +1,9 @@
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse, unquote
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote, parse_qs
 from typing import Optional
 from random import shuffle
 
 from yt_dlp import YoutubeDL
+
 
 __all__ = ["YoutubeURL", "Formats"]
 
@@ -26,6 +27,55 @@ def _get_one(qs: dict[str, list[str]], field: str) -> str:
     #    raise ValueError(f"URL contains multiple copies of parameter '{field}'")
     return l[0]
 
+def video_base_url(url: str) -> str:
+    """
+    Convert a /key/value/... URL into a query parameter URL
+    and remove any 'sq' parameters, also removing 'sq' from existing query strings.
+    """
+    logging.debug("Attempting to parse url: {0}".format(url))
+    parsed = urlparse(url)
+    
+    # Process slash-separated path into key/value pairs
+    segments = [s for s in parsed.path.split("/") if s]
+    if segments:
+        base_path = segments[0]
+        path_params = {}
+        i = 1
+        while i < len(segments):
+            key = segments[i]
+            value = segments[i + 1] if i + 1 < len(segments) else ""
+            #if key.lower() != "sq":
+            path_params[key] = unquote(value)
+            i += 2
+    else:
+        base_path = ""
+        path_params = {}
+
+    # Process existing query string
+    query_params = dict(parse_qsl(parsed.query))
+    
+    # Merge both, removing any 'sq'
+    combined_params = {**query_params, **path_params}
+    for key in list(combined_params.keys()):
+        if key.lower() == "sq":
+            combined_params.pop(key)
+
+    
+    # Rebuild query string
+    query_string = urlencode(combined_params, doseq=True)
+    
+    # Reconstruct URL
+    new_url = urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        "/" + base_path if base_path else "",  # keep leading slash if exists
+        "",  # params (unused)
+        query_string,
+        ""   # fragment
+    ))
+    
+    return new_url
+
 class YoutubeURL:
     id: str
     manifest: int
@@ -36,7 +86,6 @@ class YoutubeURL:
         self.base = url
         self._u   = urlparse(url)
         self._q   = parse_qs(self._u.query)
-
         # --- Parse /-style path parameters ---
         self._path_params = {}
         path = self._u.path
@@ -146,6 +195,8 @@ class Formats:
         for key in self.video:
             best.extend(self.video[key])
         self.video['best'] = best
+
+        self.protocol = None
         
     def get_itag(self, url):
         parsed_url = urlparse(url)
@@ -157,7 +208,7 @@ class Formats:
     
     
         
-    def getFormatURL(self, info_json, resolution, return_format=False, sort=None, get_all=False, raw=False, include_dash=True):     
+    def getFormatURL(self, info_json, resolution, return_format=False, sort=None, get_all=False, raw=False, include_dash=True, include_m3u8=False, force_m3u8=False):     
         resolution = str(resolution).strip()
         
         original_res = resolution
@@ -165,16 +216,23 @@ class Formats:
         shuffle(info_json['formats'])
         
         if resolution.lower() == "best":
-            resolution = "bv"
+            resolution = "bv/best"
         elif resolution.lower() == "audio_only":
             resolution = "ba"
             
         if not raw:
             # Use https (adaptive) protocol with fallback to dash
+            resolutions = ["({0})[protocol=https]".format(resolution)]
             if include_dash:
-                resolution = "({0})[protocol=https]/({0})[protocol=http_dash_segments]".format(resolution)
+                resolutions.append("({0})[protocol=http_dash_segments]".format(resolution))
+
+            if include_m3u8:
+                resolutions.append("({0})[protocol=m3u8_native]".format(resolution))
+
+            if force_m3u8:
+                resolution = "({0})[protocol=m3u8_native]".format(resolution)
             else:
-                include_dash = "({0})[protocol=https]".format(resolution)
+                resolution = "/".join(resolutions)
         
         #if original_res != "audio_only":
         #    resolution = "({0})[vcodec!=none]".format(resolution)
@@ -195,11 +253,26 @@ class Formats:
         #try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.process_ie_result(info_json)
-            format = info.get('requested_downloads', info.get('requested_formats', [{}]))
+            format = info.get('requested_downloads', info.get('requested_formats', info.get('url',[{}])))
+
+            #Handling for known issues with m3u8
+            if (not format[0].get('url', None)) and info.get('url', None):                
+                format[0]['url'] = info.get('url')
+                format[0]['protocol'] = info.get('protocol')
+                logging.debug("Updated format[0] url to: {0}".format(info.get('url', None)))
+
+            import json
+            logging.debug("Formats: {0}".format(json.dumps(format,indent=4)))
             if format[0].get('protocol', "") == "http_dash_segments":
                 format_url = format[0].get('fragment_base_url')
+            elif format[0].get('protocol', "") == "m3u8_native":                
+                format_url = video_base_url(self.getM3u8Url(format[0].get('url')))  
+                if not format[0].get('format_id', None):
+                    format[0]['format_id'] = str(YoutubeURL(format_url).itag).strip() 
+                if (not self.protocol) and format_url:
+                    self.protocol = "m3u8_native"
             else:
-                format_url = format[0].get('url')
+                format_url = video_base_url(format[0].get('url'))
             format_id = format[0].get('format_id')
             #print(format)
             logging.debug("Got URL: {0}: {1}".format(format_id, format_url))
@@ -229,6 +302,27 @@ class Formats:
                 combined_list.extend(self.video[key])
         return combined_list
     
+    def getM3u8Url(self, m3u8_url, first_only=True):
+        import requests
+        response = requests.get(m3u8_url)
+        response.raise_for_status()
+        logging.debug(response)
+        urls = [
+            line.strip()
+            for line in response.text.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+
+        stream_urls = list(set(urls))
+
+        if not stream_urls:
+            raise ValueError("No m3u8 streams available")
+
+        if first_only:
+            return stream_urls[0]
+        else:
+            return stream_urls
+    
     
     # Get all URLs of a given format
     def getAllFormatURL(self, info_json, format): 
@@ -238,14 +332,24 @@ class Formats:
         format = str(format)
         for ytdlp_format in info_json['formats']:                
             # If format has yet to be found, match the first matching format ID, otherwise only grab URLs of the same format
-            if ytdlp_format['protocol'] == 'https':
-                itag = str(YoutubeURL(ytdlp_format['url']).itag).strip() 
-                if format == itag:   
-                    urls.append(ytdlp_format['url'])
-            elif ytdlp_format['protocol'] == 'http_dash_segments':
+            
+            if ytdlp_format['protocol'] == 'http_dash_segments':
                 itag = str(YoutubeURL(ytdlp_format['fragment_base_url']).itag).strip() 
                 if format == itag:   
                     urls.append(ytdlp_format['fragment_base_url'])
+                    self.protocol = ytdlp_format['protocol']
+            #elif ytdlp_format['protocol'] == 'https':
+            elif ytdlp_format['protocol'] == 'm3u8_native':
+                for stream_url in self.getM3u8Url(ytdlp_format['url'], first_only=False):
+                    itag = str(YoutubeURL(stream_url).itag).strip() 
+                    if format == itag:   
+                        urls.append(video_base_url(stream_url))
+                        self.protocol = ytdlp_format['protocol']
+            else:
+                itag = str(YoutubeURL(ytdlp_format['url']).itag).strip() 
+                if format == itag:   
+                    urls.append(video_base_url(ytdlp_format['url']))
+                    self.protocol = ytdlp_format['protocol']
 
         
         return urls

@@ -85,6 +85,7 @@ def main(id, resolution='best', options={}, info_dict=None):
     
     # Convert additional options to dictionary, if it exists
     if options.get('ytdlp_options', None) is not None:        
+        print("JSON for ytdlp_options: {0}".format(options.get('ytdlp_options', None)))
         options['ytdlp_options'] = json.loads(options.get('ytdlp_options'))
     
     if options.get('json_file', None) is not None:
@@ -93,7 +94,7 @@ def main(id, resolution='best', options={}, info_dict=None):
     elif info_dict:
         pass
     else:        
-        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False))
+        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)))
     download_Live.download_segments(info_dict, resolution, options)
     
 if __name__ == "__main__":
@@ -179,6 +180,10 @@ if __name__ == "__main__":
     parser.add_argument('--ytdlp-options', type=str, default=None, help="""Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client": ["web_creator"]}, "youtubepot-bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin""")
 
     parser.add_argument('--dash', action='store_true', help="Gets any available DASH urls as a fallback to adaptive URLs. Dash URLs do not require yt-dlp modification to be used, but can't be used for stream recovery and can cause large info.json files when a stream is in the 'post_live' status")
+
+    parser.add_argument('--m3u8', action='store_true', help="Gets any available m3u8 urls as a fallback to adaptive URLs. m3u8 URLs do not require yt-dlp modification to be used, but can't be used for stream recovery. m3u8 URLs provide both video and audio in each fragment and could allow for the amount of segment download requests to be halved")
+
+    parser.add_argument('--force-m3u8', action='store_true', help="Forces use of m3u8 stream URLs")
 
     parser.add_argument('--proxy', type=str, default=None, nargs="?", help="(Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy specified will be used for yt-dlp and live chat functions.")
 

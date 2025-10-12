@@ -45,11 +45,11 @@ file_names = {
 stats = {}
 
 # Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False):
+def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
     file = None
     filetype = None
     with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash) as downloader:              
+                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8) as downloader:              
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -64,12 +64,12 @@ def download_stream(info_dict, resolution, batch_size, max_workers, folder=None,
     return file, filetype
 
 # Create runner function for each download format
-def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False):
+def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
     file = None
     filetype = None
 
     with DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash) as downloader:
+                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8) as downloader:
         file_name = downloader.live_dl()
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
         filetype = downloader.type
@@ -105,28 +105,39 @@ def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=No
     return file, filetype
 
 def submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False):
+    extra_kwargs = {}
+
+    # Options only not used by recovery
+    if not options.get('recovery', False):
+        extra_kwargs.update({
+            "include_dash": options.get("dash", False),
+            "include_m3u8": options.get("m3u8", False), 
+            "force_m3u8": options.get("force_m3u8", False),
+        })
+
     # Select the function
     if options.get('recovery', False):
         func = recover_stream
-        extra_kwargs = {
+        extra_kwargs.update({
             "force_merge": options.get('force_recovery_merge', False),
             "recovery_failure_tolerance": options.get('recovery_failure_tolerance', 0)
-        }
+        })
         keep_key = "keep_database"
     elif options.get('direct_to_ts', False):
         func = download_stream_direct
-        extra_kwargs = {
+        extra_kwargs.update({
             "keep_state": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
-            "include_dash": options.get("dash", False)
-        }
+        })
         keep_key = None
     else:
         func = download_stream
-        extra_kwargs = {
+        extra_kwargs.update({
             "keep_database": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
-            "include_dash": options.get("dash", False)
-        }
+        })
         keep_key = "keep_database"
+
+    
+    
 
     kwargs = dict(
         info_dict=info_dict,
@@ -139,11 +150,14 @@ def submit_download(executor, info_dict, resolution, options, download_folder, f
         cookies=options.get('cookies'),
         yt_dlp_options=options.get('ytdlp_options', None),
         proxies=options.get("proxy", None),
-        yt_dlp_sort=options.get('custom_sort', None)
+        yt_dlp_sort=options.get('custom_sort', None),
+
     )
 
     if extra_kwargs:
         kwargs.update(extra_kwargs)
+
+    logging.debug("Starting executor with: {0}".format(json.dumps(kwargs)))
 
     # Submit to executor
     future = executor.submit(func, **kwargs)
@@ -190,16 +204,17 @@ def download_segments(info_dict, resolution='best', options={}):
                 #futures.add(chat_thread)
             
             format_parser = YoutubeURL.Formats()
+            if format_parser.getFormatURL(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None), include_dash=(options.get("dash", False) and not options.get('recovery', False)), include_m3u8=options.get("m3u8", False), force_m3u8=options.get("force_m3u8", False)) is None:
+                raise ValueError("Resolution is not valid or does not exist in stream")
             # For use of specificed format. Expects two values, but can work with more
             # Video + Audio
             if resolution.lower() != "audio_only":
-                if YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None), include_dash=(options.get("dash", False) and not options.get('recovery', False))) is None:
-                    raise ValueError("Resolution is not valid or does not exist in stream")
+                
                 #Video
                 submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False)
-
-                #Audio
-                submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
+                if format_parser.protocol != "m3u8_native":
+                    #Audio
+                    submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
 
                 #futures.add(video_future)
                 #futures.add(audio_future)
@@ -817,14 +832,17 @@ class FileInfo(Path):
         return f"{super().__repr__()} (file_type={self._file_type})"
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):        
         self.conn = None
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
         self.max_workers = max_workers
         self.yt_dlp_options = yt_dlp_options
+
         self.include_dash = include_dash
+        self.include_m3u8 = include_m3u8
+        self.force_m3u8 = force_m3u8
         
         self.resolution = resolution
         self.yt_dlp_sort = yt_dlp_sort
@@ -835,7 +853,7 @@ class DownloadStream:
         self.info_dict = info_dict
         self.stream_urls = []
         
-        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort, include_dash=self.include_dash) 
+        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
         
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
@@ -928,7 +946,7 @@ class DownloadStream:
                 if self.detect_manifest_change(info_json=info_dict) is True:
                     return True
                 
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, sort=self.yt_dlp_sort, include_dash=self.include_dash)
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -1109,7 +1127,7 @@ class DownloadStream:
                             elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
                                 logging.debug("Stream has finished ({0})".format(live_status))
                                 self.live_status = live_status
-                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash) 
+                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.refresh_retries = 0
@@ -1125,7 +1143,7 @@ class DownloadStream:
                                 if self.detect_manifest_change(info_json=info_dict) is True:
                                     break
                                 else:
-                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash)
+                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.stream_urls.append(stream_url)
@@ -1237,8 +1255,8 @@ class DownloadStream:
     def detect_manifest_change(self, info_json):
 
         try:
-            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False, include_dash=self.include_dash) is not None:
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False, include_dash=self.include_dash)
+            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 parsed_url = urlparse(temp_stream_url)        
                 temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
@@ -1252,8 +1270,8 @@ class DownloadStream:
             logging.warning("Unable to find stream of same format ({0}) for {1}".format(self.format, self.id))
             
         try:
-            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False, include_dash=self.include_dash) is not None:
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False, include_dash=self.include_dash)
+            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 parsed_url = urlparse(temp_stream_url)        
                 temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
@@ -1267,8 +1285,8 @@ class DownloadStream:
             logging.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
 
         try:
-            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False, include_dash=self.include_dash) is not None:
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False, include_dash=self.include_dash)
+            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 parsed_url = urlparse(temp_stream_url)        
                 temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
@@ -1494,14 +1512,17 @@ class DownloadStream:
             os.remove(self.folder)
             
 class DownloadStreamDirect:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):        
         
         self.latest_sequence = -1
         self.already_downloaded = set()
         self.batch_size = batch_size
         self.max_workers = max_workers
         self.yt_dlp_options = yt_dlp_options
-        self.include_dash = include_dash
+
+        self.include_dash = include_dash        
+        self.include_m3u8 = include_m3u8
+        self.force_m3u8 = force_m3u8
         
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
@@ -1509,7 +1530,7 @@ class DownloadStreamDirect:
         self.resolution=resolution
         self.yt_dlp_sort = yt_dlp_sort
         
-        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort, include_dash=self.include_dash) 
+        self.stream_url, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
         
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
@@ -1610,7 +1631,7 @@ class DownloadStreamDirect:
                 if self.detect_manifest_change(info_json=info_dict) is True:
                     return True
                 
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, sort=self.yt_dlp_sort, include_dash=self.include_dash)
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -1791,7 +1812,7 @@ class DownloadStreamDirect:
                             elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
                                 logging.info("Stream has finished ({0})".format(live_status))
                                 self.live_status = live_status
-                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash) 
+                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.refresh_retries = 0
@@ -1806,7 +1827,7 @@ class DownloadStreamDirect:
                                 if self.detect_manifest_change(info_json=info_dict) is True:
                                     break
                                 else:
-                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash)
+                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                                 if stream_url is not None:
                                     self.stream_url = stream_url  
                                     self.refresh_retries = 0
@@ -1921,8 +1942,8 @@ class DownloadStreamDirect:
             
     def detect_manifest_change(self, info_json):
         try:
-            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False, include_dash=self.include_dash) is not None:
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False, include_dash=self.include_dash)
+            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 parsed_url = urlparse(temp_stream_url)        
                 temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
@@ -1936,8 +1957,8 @@ class DownloadStreamDirect:
             logging.warning("Unable to find stream of same format ({0}) for {1}".format(self.format, self.id))
             
         try:
-            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False, include_dash=self.include_dash) is not None:
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False, include_dash=self.include_dash)
+            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 parsed_url = urlparse(temp_stream_url)        
                 temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
@@ -1951,8 +1972,8 @@ class DownloadStreamDirect:
             logging.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
 
         try:
-            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False, include_dash=self.include_dash) is not None:
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False, include_dash=self.include_dash)
+            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 parsed_url = urlparse(temp_stream_url)        
                 temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
