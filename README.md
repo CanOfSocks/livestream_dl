@@ -1,6 +1,7 @@
 # livestream_dl
 Garbage youtube livestream downloader combining the principles of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchive-raw-go](https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go"). This focuses on using yt-dlp for more frequent updates for stream information extraction to handle changes YouTube implements.
 This project aims to combine the features of live recording and stream recovery when a stream becomes unavailable. 
+
 ***Stream recovery is currently in a semi-broken state. Don't rely on it working for now.***
 
 # Requirements
@@ -13,6 +14,9 @@ This project aims to combine the features of live recording and stream recovery 
 - [chat-downloader](https://github.com/xenova/chat-downloader) - Live chat downloader that has the ability to resume if interrupted at cost of different format
 
 ## Modification of yt-dlp
+To enable adaptive stream URLs that allow for private stream recovery, the yt-dlp youtube extractor must be modified.
+***Stream recovery is currently in a semi-broken state. Don't rely on it working for now.***
+
 For the downloader to work, the [YouTube extractor from yt-dlp (`_video.py`)](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_video.py#L3078-L3079) must be modified to save formats that would usually be discarded. You can find the install location of the package with `pip show yt-dlp`.
 
 To do this comment/remove the [following lines](https://github.com/yt-dlp/yt-dlp/blob/b4488a9e128bf826c3ffbf2d2809ce3141016adb/yt_dlp/extractor/youtube/_video.py#L3078-L3079):
@@ -25,6 +29,14 @@ As of 22 March 2025, the following sed command works on Linux, ***be aware the l
 ```bash
 sed -i '/if fmt.get('\'targetDurationSec\''):$/,/    continue$/s/^/#/' "$(pip show yt-dlp | grep Location | awk '{print $2}')/yt_dlp/extractor/youtube/_video.py"
 ```
+
+### Fallback download protocols
+Alternative stream protocols have been added to allow for downloading of livestreams *without* modifying the yt-dlp installation. These are the "dash" and "hls" (m3u8) protocols.
+
+Both alternatives are disabled by default and must be enabled
+- dash - `--dash` - Very similar to the adaptive URLs used by default, but do not allow for stream recovery at all
+- hls - `--m3u8`/`--force-m3u8` - Limited format options, but provides combined video and audio streams. This may be useful to half the number of requests made (although bandwidth use would be similar). m3u8 streams can be forces with `--force-m3u8` which will disable other protocols
+
 
 # Usage
 To use, execute `runner.py` with python with any additional options.
