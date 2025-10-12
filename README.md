@@ -29,10 +29,10 @@ sed -i '/if fmt.get('\'targetDurationSec\''):$/,/    continue$/s/^/#/' "$(pip sh
 # Usage
 To use, execute `runner.py` with python with any additional options.
 ```
-usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--ext EXT] [--temp-folder TEMP_FOLDER] [--write-thumbnail] [--embed-thumbnail]
-                 [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--force-recover-merge] [--recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE] [--database-in-memory] [--direct-to-ts] [--wait-for-video [WAIT_FOR_VIDEO ...]]
-                 [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--proxy [PROXY]] [--ipv4 | --ipv6]
-                 [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line]
+usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--ext EXT] [--temp-folder TEMP_FOLDER] [--write-thumbnail]
+                 [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--force-recover-merge] [--recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE] [--database-in-memory] [--direct-to-ts]  
+                 [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--dash]
+                 [--m3u8] [--force-m3u8] [--proxy [PROXY]] [--ipv4 | --ipv6] [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line]
                  [ID]
 
 Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)
@@ -43,8 +43,8 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --resolution RESOLUTION
-                        Desired resolution. Can be best, audio_only or a custom filter based off yt-dlp's format filtering: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#filtering-formats. Audio will always be set as "ba" (best audio) regardless of filters set. "best" will be converted to "bv" A prompt     
-                        will be displayed if no value is entered
+                        Desired resolution. Can be best, audio_only or a custom filter based off yt-dlp's format filtering: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#filtering-formats. Audio will always be set as "ba" (best audio) regardless of filters set. "best" will be converted to   
+                        "bv" A prompt will be displayed if no value is entered
   --custom-sort CUSTOM_SORT
                         Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats
   --threads THREADS     Number of download threads per format. This will be 2x for an video and audio download. Default: 1
@@ -89,10 +89,14 @@ options:
                         Writes FFmpeg command to a txt file
   --stats-as-json       Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level
   --ytdlp-options YTDLP_OPTIONS
-                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client": ["web_creator"]}, "youtubepot-     
-                        bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin
-  --proxy [PROXY]       (Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy specified will be used for   
-                        yt-dlp and live chat functions.
+                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client": ["web_creator"]},  
+                        "youtubepot-bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin
+  --dash                Gets any available DASH urls as a fallback to adaptive URLs. Dash URLs do not require yt-dlp modification to be used, but can't be used for stream recovery and can cause large info.json files when a stream is in the 'post_live' status
+  --m3u8                Gets any available m3u8 urls as a fallback to adaptive URLs. m3u8 URLs do not require yt-dlp modification to be used, but can't be used for stream recovery. m3u8 URLs provide both video and audio in each fragment and could allow for the amount of segment download requests  
+                        to be halved
+  --force-m3u8          Forces use of m3u8 stream URLs
+  --proxy [PROXY]       (Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy specified    
+                        will be used for yt-dlp and live chat functions.
   --ipv4                Force IPv4 only
   --ipv6                Force IPv6 only
   --stop-chat-when-done STOP_CHAT_WHEN_DONE
