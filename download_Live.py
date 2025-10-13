@@ -466,8 +466,8 @@ def download_live_chat(info_dict, options):
             ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                #result = ydl.process_ie_result(info_dict)
-                result = ydl.download_with_info_file(info_dict)
+                result = ydl.process_ie_result(info_dict)
+                #result = ydl.download_with_info_file(info_dict)
         except Exception as e:
             logging.exception("\033[31m{0}\033[0m".format(e)) 
          
