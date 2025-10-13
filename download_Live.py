@@ -426,6 +426,8 @@ def download_live_chat(info_dict, options):
         'concurrent_fragment_downloads': 2,
         'outtmpl': base_output          # Save to a JSON file        
     }
+
+    ydl_opts.update(options.get('ytdlp_options', {}))
     
     livechat_filename = base_output + ".live_chat.json"
     zip_filename = base_output + ".live_chat.zip"
