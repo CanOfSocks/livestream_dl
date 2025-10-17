@@ -437,30 +437,44 @@ def download_live_chat(info_dict, options):
     # Don't except whole process on live chat fail
     
     try:
+        from chat_downloader.errors import ParsingError
         from chat_downloader import ChatDownloader
-        
-        # URL of the video or stream chat
-        chat_url = 'https://www.youtube.com/watch?v={0}'.format(info_dict.get('id'))
-        logging.debug("Attempting to download with chat downloader")
-        # Initialize the ChatDownloader
-        chat_downloader = ChatDownloader(cookies=options.get('cookies', None), proxy=next(iter((options.get('proxy', None) or {}).values()), None))
+        try:
+            # URL of the video or stream chat
+            chat_url = 'https://www.youtube.com/watch?v={0}'.format(info_dict.get('id'))
+            logging.debug("Attempting to download with chat downloader")
+            # Initialize the ChatDownloader
+            chat_download = ChatDownloader(cookies=options.get('cookies', None), proxy=next(iter((options.get('proxy', None) or {}).values()), None))
 
-        # Open a JSON file to save the chat
+            # Open a JSON file to save the chat
 
-        # Download the chat
-        chat = chat_downloader.get_chat(chat_url, output=livechat_filename, overwrite=False)
+            # Download the chat
+            chat = chat_download.get_chat(chat_url, output=livechat_filename, overwrite=False)
 
-        # Process chat messages for the duration of the timeout
-        for message in chat:
-            if kill_all:
-                logging.debug("Killing live chat downloader")
-                chat_downloader.close()
-                break
-            if chat_timeout is not None and time.time() - chat_timeout >= options.get('stop_chat_when_done', 300):
-                logging.warning("Stopping chat download for {0}, timeout ({1}s) exceeded".format(options.get('id', "N/A"), options.get('stop_chat_when_done', 300)))
-                chat_downloader.close()
-                break
-        chat_downloader.close()    
+            # Process chat messages for the duration of the timeout
+            for message in chat:
+                if kill_all:
+                    logging.debug("Killing live chat downloader")
+                    chat_download.close()
+                    break
+                if chat_timeout is not None and time.time() - chat_timeout >= options.get('stop_chat_when_done', 300):
+                    logging.warning("Stopping chat download for {0}, timeout ({1}s) exceeded".format(options.get('id', "N/A"), options.get('stop_chat_when_done', 300)))
+                    chat_download.close()
+                    break
+            chat_download.close()   
+
+        # Temporary fallback due to know issue of chat-downloader not working after youtube changes
+        except ParsingError as e:
+            logging.exception("Unable to parse live chat using chat-downloader, using yt-dlp")
+            if options.get('proxy', None) is not None:
+                ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    result = ydl.process_ie_result(info_dict)
+                    #result = ydl.download_with_info_file(info_dict)
+                    #result = ydl._writesubtitles()
+            except Exception as e:
+                logging.exception("\033[31m{0}\033[0m".format(e))
         
     except ImportError as e:
         logging.warning("Unable to import chat-downloader, using yt-dlp")
@@ -473,6 +487,7 @@ def download_live_chat(info_dict, options):
                 #result = ydl._writesubtitles()
         except Exception as e:
             logging.exception("\033[31m{0}\033[0m".format(e)) 
+     
          
     except Exception as e:
         logging.exception("\033[31m{0}\033[0m".format(e))
@@ -1001,6 +1016,8 @@ class DownloadStream:
 
             segments_to_download = set()
 
+            segment_retries = {}
+
             while True:     
                 self.check_kill()
                 if self.refresh_Check() is True:
@@ -1052,9 +1069,13 @@ class DownloadStream:
                             self.cursor.execute('BEGIN TRANSACTION') 
                             
                         stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
+                        segment_retries.pop(seg_num, None)
 
                         if status == 200 and seg_num > latest_downloaded_segment:
                             latest_downloaded_segment = seg_num
+                    elif status != 200:
+                        segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
+                        
                     
                     # Remove from submitted segments in case it neeeds to be regrabbed
                     submitted_segments.discard(seg_num)
@@ -1062,7 +1083,7 @@ class DownloadStream:
                     # Remove completed thread to free RAM
                     future_to_seg.pop(future,None)
                       
-                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded  
+                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
 
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1  
                                         
@@ -1103,59 +1124,8 @@ class DownloadStream:
                             logging.debug("Video is private and no more segments are available. Ending...")
                             break
                         else:
-                            logging.debug("No new fragments found... Getting new url")
-                            info_dict = None
-                            live_status = None
-                            try:
-                                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
-                                
-                            # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
-                            except getUrls.VideoInaccessibleError as e:
-                                logging.debug(e)
-                                self.is_private = True
-                            except getUrls.VideoProcessedError as e:
-                                # Livestream has been processed
-                                logging.exception("Error refreshing URL: {0}".format(e))
-                                logging.info("Livestream has ended and processed, commiting remaining segments")
-                                break
-                            except Exception as e:
-                                logging.info("Error refreshing URL: {0}".format(e))
-                                logging.debug("Error refreshing URL: {0}".format(e))
-                            
-                            # If status of downloader is not live, assume stream has ended
-                            if self.live_status != 'is_live':
-                                logging.debug("Livestream has ended, committing any remaining segments")
-                                #self.catchup()
-                                break
-                            
-                            # If live has changed, use new URL to get any fragments that may be missing
-                            elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
-                                logging.debug("Stream has finished ({0})".format(live_status))
-                                self.live_status = live_status
-                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
-                                if stream_url is not None:
-                                    self.stream_url = stream_url  
-                                    self.refresh_retries = 0
-                                #self.catchup()
-                                break
-                            
-                            # If livestream is still live, use new url
-                            elif live_status == 'is_live':
-                                logging.debug("Updating url to new url")
-                                stream_url = None
-                                
-                                # Check for new manifest, if it has, start a nested download session
-                                if self.detect_manifest_change(info_json=info_dict) is True:
-                                    break
-                                else:
-                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-                                if stream_url is not None:
-                                    self.stream_url = stream_url  
-                                    self.stream_urls.append(stream_url)
-                                    self.refresh_retries = 0
-                            
-                            if info_dict:
-                                self.info_dict = info_dict                                                   
+                            if self.refresh_url() is False:
+                                break                                               
                     time.sleep(10)
                     continue
                 
@@ -1178,6 +1148,14 @@ class DownloadStream:
                     time.sleep(1)
                     self.conn, self.cursor = self.create_connection(self.temp_db_file)
                     return True
+                
+                elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
+                    logging.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
+                    if self.is_private or self.refresh_url() is False:
+                        logging.warning("Failed to refresh URL or stream is private, ending...")
+                        break
+                    else:
+                        segment_retries = {}
                 else:
                     wait = 0
                 
@@ -1516,6 +1494,61 @@ class DownloadStream:
             self.delete_ts_file()
             os.remove(self.folder)
 
+    def refresh_url(self):
+        logging.debug("No new fragments found... Getting new url")
+        info_dict = None
+        live_status = None
+        try:
+            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
+            
+        # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
+        except getUrls.VideoInaccessibleError as e:
+            logging.debug(e)
+            self.is_private = True
+        except getUrls.VideoProcessedError as e:
+            # Livestream has been processed
+            logging.exception("Error refreshing URL: {0}".format(e))
+            logging.info("Livestream has ended and processed, commiting remaining segments")
+            return False
+        except Exception as e:
+            logging.info("Error refreshing URL: {0}".format(e))
+            logging.debug("Error refreshing URL: {0}".format(e))
+        
+        # If status of downloader is not live, assume stream has ended
+        if self.live_status != 'is_live':
+            logging.debug("Livestream has ended, committing any remaining segments")
+            #self.catchup()
+            return False
+        
+        # If live has changed, use new URL to get any fragments that may be missing
+        elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
+            logging.debug("Stream has finished ({0})".format(live_status))
+            self.live_status = live_status
+            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
+            if stream_url is not None:
+                self.stream_url = stream_url  
+                self.refresh_retries = 0
+            #self.catchup()
+            return False
+        
+        # If livestream is still live, use new url
+        elif live_status == 'is_live':
+            logging.debug("Updating url to new url")
+            stream_url = None
+            
+            # Check for new manifest, if it has, start a nested download session
+            if self.detect_manifest_change(info_json=info_dict) is True:
+                return False
+            else:
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
+            if stream_url is not None:
+                self.stream_url = stream_url  
+                self.stream_urls.append(stream_url)
+                self.refresh_retries = 0
+        
+        if info_dict:
+            self.info_dict = info_dict   
+
 class DownloadStreamDirect(DownloadStream):
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5,
                  folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None,
@@ -1603,6 +1636,8 @@ class DownloadStreamDirect(DownloadStream):
         optimistic = True
         wait = 0
 
+        segment_retries = {}
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers,
                                                    thread_name_prefix=f"{self.id}-{self.format}") as executor:
             
@@ -1644,8 +1679,11 @@ class DownloadStreamDirect(DownloadStream):
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
 
-                    if segment_data is not None and status == 200:
+                    if segment_data is not None:
                         downloaded_segments[seg_num] = segment_data
+                        segment_retries.pop(seg_num, None)
+                    elif status == 200:
+                        segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
 
                 # Write contiguous downloaded segments
                 while downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
@@ -1669,9 +1707,8 @@ class DownloadStreamDirect(DownloadStream):
                 # Remove any potential stray segments 
                 downloaded_segments = dict((k, v) for k, v in downloaded_segments.items() if k >= self.state.get('last_written',0))
 
-
                 # Determine segments to download. Sort into a list as direct to ts relies on segments to be written in order
-                segments_to_download = sorted(set(range(self.state['last_written'] + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()))
+                segments_to_download = sorted(set(range(self.state['last_written'] + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries))
 
                 optimistic_seg = max(self.latest_sequence, self.state.get('last_written',0)) + 1  
                                         
@@ -1693,7 +1730,8 @@ class DownloadStreamDirect(DownloadStream):
                         time.sleep(5)
                         self.update_latest_segment()
                         segments_to_download = sorted(set(range(self.state['last_written'] + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()))
-                        
+
+                
                 # If update has no segments and no segments are currently running, wait                              
                 if not segments_to_download and not future_to_seg:                 
                     wait += 1
@@ -1709,59 +1747,8 @@ class DownloadStreamDirect(DownloadStream):
                             logging.debug("Video is private and no more segments are available. Ending...")
                             break
                         else:
-                            logging.debug("No new fragments found... Getting new url")
-                            info_dict = None
-                            live_status = None
-                            try:
-                                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
-                                
-                            # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
-                            except getUrls.VideoInaccessibleError as e:
-                                logging.debug(e)
-                                self.is_private = True
-                            except getUrls.VideoProcessedError as e:
-                                # Livestream has been processed
-                                logging.exception("Error refreshing URL: {0}".format(e))
-                                logging.info("Livestream has ended and processed, commiting remaining segments")
+                            if self.refresh_url() is False:
                                 break
-                            except Exception as e:
-                                logging.info("Error refreshing URL: {0}".format(e))
-                                logging.debug("Error refreshing URL: {0}".format(e))
-                            
-                            # If status of downloader is not live, assume stream has ended
-                            if self.live_status != 'is_live':
-                                logging.debug("Livestream has ended, committing any remaining segments")
-                                #self.catchup()
-                                break
-                            
-                            # If live has changed, use new URL to get any fragments that may be missing
-                            elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
-                                logging.debug("Stream has finished ({0})".format(live_status))
-                                self.live_status = live_status
-                                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
-                                if stream_url is not None:
-                                    self.stream_url = stream_url  
-                                    self.refresh_retries = 0
-                                #self.catchup()
-                                break
-                            
-                            # If livestream is still live, use new url
-                            elif live_status == 'is_live':
-                                logging.debug("Updating url to new url")
-                                stream_url = None
-                                
-                                # Check for new manifest, if it has, start a nested download session
-                                if self.detect_manifest_change(info_json=info_dict) is True:
-                                    break
-                                else:
-                                    stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), return_format=False, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-                                if stream_url is not None:
-                                    self.stream_url = stream_url  
-                                    self.stream_urls.append(stream_url)
-                                    self.refresh_retries = 0
-                            
-                            if info_dict:
-                                self.info_dict = info_dict                                                   
                     time.sleep(10)
                     continue
                 
@@ -1769,6 +1756,14 @@ class DownloadStreamDirect(DownloadStream):
                     logging.debug("Video is private, waiting for remaining threads to finish before ending")
                     time.sleep(5)
                     continue
+
+                elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
+                    logging.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
+                    if self.is_private or self.refresh_url() is False:
+                        logging.warning("Failed to refresh URL or stream is private, ending...")
+                        break
+                    else:
+                        segment_retries = {}
                 else:
                     wait = 0
 
