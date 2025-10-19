@@ -437,7 +437,7 @@ def download_live_chat(info_dict, options):
     # Don't except whole process on live chat fail
     
     try:
-        from chat_downloader.errors import ParsingError
+        import chat_downloader
         from chat_downloader import ChatDownloader
         try:
             # URL of the video or stream chat
@@ -464,7 +464,7 @@ def download_live_chat(info_dict, options):
             chat_download.close()   
 
         # Temporary fallback due to know issue of chat-downloader not working after youtube changes
-        except ParsingError as e:
+        except chat_downloader.errors.ParsingError as e:
             logging.exception("Unable to parse live chat using chat-downloader, using yt-dlp")
             if options.get('proxy', None) is not None:
                 ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
