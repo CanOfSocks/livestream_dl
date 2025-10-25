@@ -1714,25 +1714,6 @@ class DownloadStreamDirect(DownloadStream):
                             logging.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
                     self._save_state()
 
-
-                while downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
-                    seg_num = self.state['last_written'] + 1
-                    segment = downloaded_segments.pop(seg_num)
-                    cleaned = self.clean_segments(segment)
-                    mode = 'wb' if self.state['file_size'] == 0 else 'r+b'
-                    with open(self.merged_file_name, mode) as f:
-                        if mode != 'wb':
-                            f.seek(self.state['file_size'])
-                        f.write(cleaned)
-                        f.truncate()
-                    time.sleep(0.05)
-                    self.state['last_written'] = seg_num
-                    self.state['file_size'] = os.path.getsize(self.merged_file_name)
-                    self._save_state()
-                    stats[self.type]["downloaded_segments"] = self.state['last_written']
-                    stats[self.type]["current_filesize"] = self.state['file_size']
-                    logging.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
-
                 # Remove any potential stray segments 
                 downloaded_segments = dict((k, v) for k, v in downloaded_segments.items() if k >= self.state.get('last_written',0))
 
