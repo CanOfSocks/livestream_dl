@@ -1079,7 +1079,7 @@ class DownloadStream:
                     # Remove completed thread to free RAM
                     future_to_seg.pop(future,None)
                       
-                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
+                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v < self.fragment_retries)  
 
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1  
                                         
