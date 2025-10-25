@@ -248,6 +248,9 @@ class Formats:
         
         if sort:
             ydl_opts.update({"format_sort": str(sort).split(',')})
+
+        logging.debug("Searching for resolution: {0}".format(resolution))
+        print("Searching for resolution: {0}".format(resolution))
             
         logging.debug("Original: {0}, passed: {1}".format(original_res, ydl_opts))
 

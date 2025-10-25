@@ -953,47 +953,7 @@ class DownloadStream:
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
         if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403) or len(self.stream_urls) <= 0) and not self.is_private:
-            logging.info("Refreshing URL for {0}".format(self.format))
-            try:
-                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
-                
-                # Check for new manifest, if it has, start a nested download session
-                if self.detect_manifest_change(info_json=info_dict) is True:
-                    return True
-                
-                #resolution = "(format_id^={0})[protocol={1}]".format(str(self.format).rsplit('-', 1)[0], self.stream_url.protocol)
-                resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
-                #stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
-                if stream_url is not None:
-                    self.stream_url = stream_url
-                    self.stream_urls.append(stream_url)
-                    
-                    filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
-                    self.stream_urls = filtered_array
-                    
-                else:
-                    logging.warning("Unable to refresh URLs for {0} on format {1}".format(self.id, self.format))
-                    
-                if live_status is not None:
-                    self.live_status = live_status
-                
-                if info_dict:
-                    self.info_dict = info_dict    
-                
-            except getUrls.VideoInaccessibleError as e:
-                logging.warning("Video Inaccessible error: {0}".format(e))
-                if "membership" in str(e) and not self.is_403:
-                    logging.warning("{0} is now members only. Continuing until 403 errors")
-                else:
-                    self.is_private = True
-            except getUrls.VideoUnavailableError as e:
-                logging.critical("Video Unavailable error: {0}".format(e))
-                if self.get_expire_time(self.stream_url) < time.time():
-                    raise TimeoutError("Video is processed and stream url for {0} has expired, unable to continue...".format(self.format))
-            except Exception as e:
-                logging.exception("Error: {0}".format(e))                     
-            self.url_checked = time.time()
+            return self.refresh_url()
                 
     def live_dl(self):
         
@@ -1124,8 +1084,12 @@ class DownloadStream:
                             logging.debug("Video is private and no more segments are available. Ending...")
                             break
                         else:
-                            if self.refresh_url() is False:
-                                break                                               
+                            refresh = self.refresh_url()
+                            if refresh is False:
+                                break       
+                            elif refresh is True:
+                                logging.info("Video finished downloading via new manifest")
+                                break
                     time.sleep(10)
                     continue
                 
@@ -1155,7 +1119,11 @@ class DownloadStream:
                 
                 elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
                     logging.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
-                    if self.is_private or self.refresh_url() is False:
+                    refresh = self.refresh_url()
+                    if self.refresh_url() is True:
+                        logging.info("Video finished downloading via new manifest")
+                        break
+                    elif self.is_private or refresh is False:
                         logging.warning("Failed to refresh URL or stream is private, ending...")
                         break
                     else:
@@ -1240,7 +1208,7 @@ class DownloadStream:
             logging.exception("\033[31m{0}\033[0m".format(e))
             return None
     
-    def detect_manifest_change(self, info_json):
+    def detect_manifest_change(self, info_json, follow_manifest=True):
 
         try:
             if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
@@ -1252,7 +1220,8 @@ class DownloadStream:
                 if temp_stream_url.itag is not None and temp_stream_url.protocol == self.stream_url.protocol and temp_stream_url.itag == self.stream_url.itag and temp_stream_url.manifest != self.stream_url.manifest:
                     logging.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
                     self.commit_batch(self.conn)
-                    download_stream(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
+                    if follow_manifest:
+                        download_stream(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
                     return True
                 else:
                     return False
@@ -1265,7 +1234,8 @@ class DownloadStream:
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     logging.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
-                    download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
+                    if follow_manifest:
+                        download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
                     return True
                 else:
                     return False
@@ -1278,7 +1248,8 @@ class DownloadStream:
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     logging.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
-                    download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
+                    if follow_manifest:
+                        download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
                     return True
                 else:
                     return False
@@ -1499,60 +1470,58 @@ class DownloadStream:
             self.delete_ts_file()
             os.remove(self.folder)
 
-    def refresh_url(self):
-        logging.debug("No new fragments found... Getting new url")
-        info_dict = None
-        live_status = None
+    def refresh_url(self, follow_manifest=True):
+        logging.info("Refreshing URL for {0}".format(self.format))
         try:
-            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
+            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=self.include_m3u8)
             
-        # If membership stream (without cookies) or privated, mark as end of stream as no more fragments can be grabbed
+            # Check for new manifest, if it has, start a nested download session
+            if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
+                return True
+            
+            #resolution = "(format_id^={0})[protocol={1}]".format(str(self.format).rsplit('-', 1)[0], self.stream_url.protocol)
+            resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
+            #stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
+            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
+            if stream_url is not None:
+                self.stream_url = stream_url
+                self.stream_urls.append(stream_url)
+                
+                filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
+                self.stream_urls = filtered_array
+                self.refresh_retries = 0
+            else:
+                logging.warning("Unable to refresh URLs for {0} on format {1}".format(self.id, self.format))
+                
+            if live_status is not None:
+                self.live_status = live_status
+            
+            if info_dict:
+                self.info_dict = info_dict    
+            
         except getUrls.VideoInaccessibleError as e:
-            logging.debug(e)
-            self.is_private = True
+            logging.warning("Video Inaccessible error: {0}".format(e))
+            if "membership" in str(e) and not self.is_403:
+                logging.warning("{0} is now members only. Continuing until 403 errors")
+            else:
+                self.is_private = True
+        except getUrls.VideoUnavailableError as e:
+            logging.critical("Video Unavailable error: {0}".format(e))
+            if self.get_expire_time(self.stream_url) < time.time():
+                raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
         except getUrls.VideoProcessedError as e:
             # Livestream has been processed
             logging.exception("Error refreshing URL: {0}".format(e))
-            logging.info("Livestream has ended and processed, commiting remaining segments")
+            logging.info("Livestream has ended and processed.")
             return False
         except Exception as e:
-            logging.info("Error refreshing URL: {0}".format(e))
-            logging.debug("Error refreshing URL: {0}".format(e))
-        
-        # If status of downloader is not live, assume stream has ended
+            logging.exception("Error: {0}".format(e))                     
+        self.url_checked = time.time()
+
         if self.live_status != 'is_live':
-            logging.debug("Livestream has ended, committing any remaining segments")
+            logging.debug("Livestream has ended.")
             #self.catchup()
-            return False
-        
-        # If live has changed, use new URL to get any fragments that may be missing
-        elif self.live_status == 'is_live' and live_status is not None and live_status != 'is_live':
-            logging.debug("Stream has finished ({0})".format(live_status))
-            self.live_status = live_status
-            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
-            if stream_url is not None:
-                self.stream_url = stream_url  
-                self.refresh_retries = 0
-            #self.catchup()
-            return False
-        
-        # If livestream is still live, use new url
-        elif live_status == 'is_live':
-            logging.debug("Updating url to new url")
-            stream_url = None
-            
-            # Check for new manifest, if it has, start a nested download session
-            if self.detect_manifest_change(info_json=info_dict) is True:
-                return False
-            else:
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-            if stream_url is not None:
-                self.stream_url = stream_url  
-                self.stream_urls.append(stream_url)
-                self.refresh_retries = 0
-        
-        if info_dict:
-            self.info_dict = info_dict   
+            return False 
 
 class DownloadStreamDirect(DownloadStream):
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5,
@@ -1764,7 +1733,11 @@ class DownloadStreamDirect(DownloadStream):
                             logging.debug("Video is private and no more segments are available. Ending...")
                             break
                         else:
-                            if self.refresh_url() is False:
+                            refresh = self.refresh_url(follow_manifest=False)
+                            if refresh is False:
+                                break       
+                            elif refresh is True:
+                                logging.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
                                 break
                     time.sleep(10)
                     continue
@@ -1780,7 +1753,10 @@ class DownloadStreamDirect(DownloadStream):
 
                 elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
                     logging.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
-                    if self.is_private or self.refresh_url() is False:
+                    if self.refresh_url(follow_manifest=False) is True:
+                        logging.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
+                        break
+                    elif self.is_private or self.refresh_url(follow_manifest=False) is False:
                         logging.warning("Failed to refresh URL or stream is private, ending...")
                         break
                     else:
