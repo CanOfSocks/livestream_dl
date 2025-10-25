@@ -947,10 +947,12 @@ class DownloadStream:
 
     def refresh_Check(self):    
         
-        #print("Refresh check ({0})".format(self.format))  
+        #print("Refresh check ({0})".format(self.format)) 
+        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) >= time.time()]
+        self.stream_urls = filtered_array  
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
-        if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403)) and not self.is_private:
+        if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403) or len(self.stream_urls) <= 0) and not self.is_private:
             logging.info("Refreshing URL for {0}".format(self.format))
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options)
@@ -959,8 +961,10 @@ class DownloadStream:
                 if self.detect_manifest_change(info_json=info_dict) is True:
                     return True
                 
+                #resolution = "(format_id^={0})[protocol={1}]".format(str(self.format).rsplit('-', 1)[0], self.stream_url.protocol)
+                resolution = r"(format_id~='^(({0})\D*.*)')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
                 #stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -1015,7 +1019,7 @@ class DownloadStream:
             segment_retries = {}
 
             while True:     
-                self.check_kill()
+                self.check_kill(executor)
                 if self.refresh_Check() is True:
                     break
                 
@@ -1240,7 +1244,8 @@ class DownloadStream:
 
         try:
             if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=str(self.format), include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
+                resolution = "(format_id^={0})[protocol={1}]".format(str(self.format).rsplit('-', 1)[0], self.stream_url.protocol)
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 #parsed_url = urlparse(temp_stream_url)        
                 #temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 #if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
@@ -1473,10 +1478,12 @@ class DownloadStream:
 
         return self.remove_atoms(data=data, atom_list=bad_atoms)
     
-    def check_kill(self):
+    def check_kill(self, executor: concurrent.futures.ThreadPoolExecutor=None):
         # Kill if keyboard interrupt is detected
         if kill_all:
             logging.debug("Kill command detected, ending thread")
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
             raise KeyboardInterrupt("Kill command executed")
         
     def delete_temp_database(self):
@@ -1648,7 +1655,7 @@ class DownloadStreamDirect(DownloadStream):
             segment_retries = {}      
 
             while True:
-                self.check_kill()
+                self.check_kill(executor)
                 if self.refresh_Check() is True:
                     break
 
@@ -1987,18 +1994,6 @@ class StreamRecovery(DownloadStream):
         # Ensure stats are set for the correct type
         if self.type:
             stats[self.type] = {}
-
-    def get_expire_time(self, url):
-        # This implementation is specific to StreamRecovery, taking a string URL.
-        # It overrides the base class method which expected a YoutubeURL object.
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-
-        # Get the 'expire' parameter
-        expire_value = query_params.get('expire', [-1])[0]
-        if expire_value is not None:
-            return int(expire_value)
-        return expire_value
     
     def get_format_from_url(self, url):
         parsed_url = urlparse(url)
@@ -2047,7 +2042,7 @@ class StreamRecovery(DownloadStream):
                        
             
             while True:     
-                self.check_kill()     
+                self.check_kill(executor)     
                 if stats.get(self.type, None) is None:
                     stats[self.type] = {}                                   
                 
