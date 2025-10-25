@@ -1244,7 +1244,7 @@ class DownloadStream:
                 #parsed_url = urlparse(temp_stream_url)        
                 #temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 #if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                if temp_stream_url.id is not None and temp_stream_url.protocol == self.stream_url.manifest and temp_stream_url.id == self.stream_url.id and temp_stream_url.manifest != self.stream_url.manifest:
+                if temp_stream_url.id is not None and temp_stream_url.protocol == self.stream_url.protocol and temp_stream_url.id == self.stream_url.id and temp_stream_url.manifest != self.stream_url.manifest:
                     logging.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
