@@ -1125,7 +1125,7 @@ class DownloadStream:
                     time.sleep(10)
                     continue
                 
-                elif len(segments_to_download) > 0 and self.is_private and len(submitted_segments) > 0:
+                elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
                     logging.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
                     time.sleep(5)
                     continue
@@ -1684,6 +1684,37 @@ class DownloadStreamDirect(DownloadStream):
                         segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
 
                 # Write contiguous downloaded segments
+                # Check if there is at least one segment to write
+                if downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
+                    # If segments exist, open the file *once*
+                    mode = 'wb' if self.state['file_size'] == 0 else 'r+b'
+                    with open(self.merged_file_name, mode) as f:
+                        # Seek to the end of the file *once* (if not a new file)
+                        if mode != 'wb':
+                            f.seek(self.state['file_size'])
+
+                        # Loop and write all available consecutive segments
+                        while downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
+                            seg_num = self.state['last_written'] + 1
+                            segment = downloaded_segments.pop(seg_num)
+                            cleaned = self.clean_segments(segment)
+                            
+                            f.write(cleaned)
+                            f.truncate()  # Truncates the file at the current position (after the write)
+                            
+                            self.state['last_written'] = seg_num
+                            
+                            # Optimization: Use f.tell() instead of os.path.getsize()
+                            # f.tell() returns the current file position, which is the new
+                            # file size after writing and truncating. This is much faster.
+                            self.state['file_size'] = f.tell()                           
+                            
+                            stats[self.type]["downloaded_segments"] = self.state['last_written']
+                            stats[self.type]["current_filesize"] = self.state['file_size']
+                            logging.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
+                    self._save_state()
+
+
                 while downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
                     seg_num = self.state['last_written'] + 1
                     segment = downloaded_segments.pop(seg_num)
@@ -1750,7 +1781,7 @@ class DownloadStreamDirect(DownloadStream):
                     time.sleep(10)
                     continue
                 
-                elif len(segments_to_download) > 0 and self.is_private and len(submitted_segments) > 0:
+                elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
                     logging.debug("Video is private, waiting for remaining threads to finish before ending")
                     time.sleep(5)
                     continue
