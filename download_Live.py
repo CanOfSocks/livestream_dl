@@ -45,7 +45,7 @@ file_names = {
 stats = {}
 
 # Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
+def download_stream(info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
     file = None
     filetype = None
     with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
@@ -68,7 +68,7 @@ def download_stream_direct(info_dict, resolution, batch_size, max_workers, folde
     file = None
     filetype = None
 
-    with DownloadStreamDirect(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+    with DownloadStreamDirect(info_dict, resolution=resolution, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                                           yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8) as downloader:
         file_name = downloader.live_dl()
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
@@ -962,7 +962,7 @@ class DownloadStream:
                     return True
                 
                 #resolution = "(format_id^={0})[protocol={1}]".format(str(self.format).rsplit('-', 1)[0], self.stream_url.protocol)
-                resolution = r"(format_id~='^(({0})\D*.*)')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
+                resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
                 #stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
                 if stream_url is not None:
@@ -1855,7 +1855,7 @@ class StreamRecovery(DownloadStream):
             return self.num_retries  # Return the number of 403 responses
         
 
-    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None):        
+    def __init__(self, info_dict={}, resolution='best', max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None):        
         from datetime import datetime
         
         # Call the base class __init__.
@@ -1865,7 +1865,6 @@ class StreamRecovery(DownloadStream):
         super().__init__(
             info_dict=info_dict,
             resolution=resolution,
-            batch_size=batch_size,
             max_workers=max_workers,
             fragment_retries=fragment_retries,
             folder=folder,
