@@ -1244,7 +1244,7 @@ class DownloadStream:
                 #parsed_url = urlparse(temp_stream_url)        
                 #temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 #if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                if temp_stream_url.id is not None and temp_stream_url.protocol == self.stream_url.protocol and temp_stream_url.id == self.stream_url.id and temp_stream_url.manifest != self.stream_url.manifest:
+                if temp_stream_url.itag is not None and temp_stream_url.protocol == self.stream_url.protocol and temp_stream_url.itag == self.stream_url.itag and temp_stream_url.manifest != self.stream_url.manifest:
                     logging.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution=str(self.format), batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
@@ -1257,7 +1257,7 @@ class DownloadStream:
         try:
             if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
                 temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-                if temp_stream_url.id is not None and temp_stream_url.id != self.stream_url.id:
+                if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     logging.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution=self.resolution, batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
@@ -1270,7 +1270,7 @@ class DownloadStream:
         try:
             if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
                 temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-                if temp_stream_url.id is not None and temp_stream_url.id != self.stream_url.id:
+                if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     logging.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
                     download_stream(info_dict=info_json, resolution="best", batch_size=self.batch_size, max_workers=self.max_workers, file_name="{0}.{1}".format(self.file_base_name, str(temp_stream_url.id).split('.')[-1]), keep_database=False, retries=self.fragment_retries, cookies=self.cookies, yt_dlp_options=self.yt_dlp_options)
