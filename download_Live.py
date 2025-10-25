@@ -1028,7 +1028,7 @@ class DownloadStream:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
                     
                     logging.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
-                            seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes(?)", self.format
+                            seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
                         ))
 
                     if seg_num >= optimistic_seg and (status is None or status != 200):
@@ -1079,7 +1079,7 @@ class DownloadStream:
                     # Remove completed thread to free RAM
                     future_to_seg.pop(future,None)
                       
-                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v < self.fragment_retries)  
+                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
 
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1  
                                         
@@ -1634,17 +1634,18 @@ class DownloadStreamDirect(DownloadStream):
         optimistic = True
         wait = 0
 
-        segment_retries = {}
+        
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers,
                                                    thread_name_prefix=f"{self.id}-{self.format}") as executor:
             
             # Trackers for optimistic segment downloads 
-            optimistic_fails_max = max(2, int(40/max(1, 4*self.fragment_retries)))
+            optimistic_fails_max = 10
             optimistic_fails = 0
             optimistic_seg = 0  
             # Add range of up to head segment +1
-            segments_to_download = list()         
+            segments_to_download = list()   
+            segment_retries = {}      
 
             while True:
                 self.check_kill()
@@ -1657,7 +1658,9 @@ class DownloadStreamDirect(DownloadStream):
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
                     submitted_segments.discard(seg_num)
                     future_to_seg.pop(future, None)
-
+                    logging.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                            seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
+                        ))
 
                     if seg_num >= optimistic_seg and (status is None or status != 200):
                         optimistic_fails += 1
@@ -1716,7 +1719,7 @@ class DownloadStreamDirect(DownloadStream):
                         # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
                         time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
                         
-                        #logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
+                        logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                         segments_to_download.append(optimistic_seg)
                         
                     # If optimistic grab is not successful, revert back to using headers from base stream URL
@@ -1751,6 +1754,10 @@ class DownloadStreamDirect(DownloadStream):
                     logging.debug("Video is private, waiting for remaining threads to finish before ending")
                     time.sleep(5)
                     continue
+
+                elif len(segments_to_download) > 0 and self.is_private:
+                    logging.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
+                    break
 
                 elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
                     logging.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
@@ -2036,6 +2043,10 @@ class StreamRecovery(DownloadStream):
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
+
+                    logging.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                            seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
+                        ))
                     
                     if seg_num in submitted_segments:
                         submitted_segments.discard(seg_num)
