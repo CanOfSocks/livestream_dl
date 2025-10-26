@@ -1525,6 +1525,7 @@ class DownloadStream:
             return False
         except getUrls.LivestreamError:
             logging.debug("Livestream has ended.")
+            self.live_status = "was_live"
             return False 
         except Exception as e:
             logging.exception("Error: {0}".format(e))                     

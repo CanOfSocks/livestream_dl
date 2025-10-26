@@ -21,6 +21,7 @@ class MyLogger:
             logging.info(msg_str)
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         elif "Video is no longer live. Giving up after".lower() in msg_str.lower():
+            logging.info(msg_str)
             raise yt_dlp.utils.DownloadError(msg_str)
         elif "this live event will begin in" in msg_str.lower() or "premieres in" in msg_str.lower():
             logging.info(msg)
