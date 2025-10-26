@@ -1461,6 +1461,7 @@ class DownloadStream:
             logging.debug("Kill command detected, ending thread")
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
+            self.close_connection()
             raise KeyboardInterrupt("Kill command executed")
         
     def delete_temp_database(self):
