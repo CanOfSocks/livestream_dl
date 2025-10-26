@@ -971,7 +971,7 @@ class DownloadStream:
             future_to_seg = {}
             
             # Trackers for optimistic segment downloads 
-            optimistic_fails_max = max(2, int(40/max(1, 4*self.fragment_retries)))
+            optimistic_fails_max = 10
             optimistic_fails = 0
             optimistic_seg = 0           
             latest_downloaded_segment = -1
@@ -1051,16 +1051,16 @@ class DownloadStream:
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1  
                                         
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
-                # Only attempt to grab optimistic segment a number of times to ensure it does not cause a loop at the end of a stream
-                if len(segments_to_download) <= 0 and optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
+                """
+                if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded and optimistic_seg not in segments_to_download:
                         
-                        # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
-                        time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
+                        
                         
                         #logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                         logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
-                        segments_to_download.add(optimistic_seg)         
-                        
+                        segments_to_download.discard(optimistic_seg)
+                        segments_to_download = {optimistic_seg, *segments_to_download}       
+                """
                 # If update has no segments and no segments are currently running, wait                              
                 if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                     wait += 1
@@ -1136,15 +1136,22 @@ class DownloadStream:
 
                 #print("Segments to download: {0}".format(segments_to_download))
                 #print("remaining threads: {0}".format(future_to_seg))
-                """
+                
                 # Add optimistic segment if conditions are right
-                if self.max_workers > 1 and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in submitted_segments:
+                # Only attempt to grab optimistic segment a number of times to ensure it does not cause a loop at the end of a stream
+                if (self.max_workers > 1 or not segments_to_download) and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in submitted_segments:
+                    # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s if no segments are to be submitted
+                    if not segments_to_download:
+                        time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
                     logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     future_to_seg.update({
                         executor.submit(self.download_segment, self.stream_url.segment(optimistic_seg), optimistic_seg): optimistic_seg
                     })
                     submitted_segments.add(optimistic_seg)
-                """
+
+                    # Ensure wait isn't triggered while optimistic segments is enabled
+                    wait = 0
+                
                 
                 # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
                 for seg_num in segments_to_download:
@@ -1703,9 +1710,10 @@ class DownloadStreamDirect(DownloadStream):
                 optimistic_seg = max(self.latest_sequence, self.state.get('last_written',0)) + 1  
                                         
                 
-                if not segments_to_download and optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
+                if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
                     # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
-                    time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
+                    if not segments_to_download:
+                        time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
                     
                     logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     segments_to_download.append(optimistic_seg)
