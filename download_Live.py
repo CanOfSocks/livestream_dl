@@ -1523,6 +1523,9 @@ class DownloadStream:
             logging.exception("Error refreshing URL: {0}".format(e))
             logging.info("Livestream has ended and processed.")
             return False
+        except getUrls.LivestreamError:
+            logging.debug("Livestream has ended.")
+            return False 
         except Exception as e:
             logging.exception("Error: {0}".format(e))                     
         self.url_checked = time.time()

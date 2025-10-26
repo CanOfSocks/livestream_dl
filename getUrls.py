@@ -20,7 +20,8 @@ class MyLogger:
             "should already be available" in msg_str.lower()):
             logging.info(msg_str)
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
-        
+        elif "Video is no longer live. Giving up after".lower() in msg_str.lower():
+            raise yt_dlp.utils.DownloadError(msg_str)
         elif "this live event will begin in" in msg_str.lower() or "premieres in" in msg_str.lower():
             logging.info(msg)
         elif "not available on this app" in msg_str:
@@ -42,6 +43,9 @@ class VideoUnavailableError(ValueError):
     pass
 
 class VideoDownloadError(yt_dlp.utils.DownloadError):
+    pass
+
+class LivestreamError(TypeError):
     pass
             
 def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False):
@@ -109,6 +113,8 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                 raise VideoInaccessibleError("Video {0} is a membership video. Requires valid cookies".format(id))
             elif "not available on this app" in str(e):
                 raise VideoInaccessibleError("Video {0} not available on this player".format(id))
+            elif "Video is no longer live. Giving up after".lower() in str(e):
+                raise LivestreamError("Livestream has ended")
             else:
                 raise e
         
