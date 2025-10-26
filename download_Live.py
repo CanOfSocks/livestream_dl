@@ -31,6 +31,8 @@ import shutil
 import logging
 import logging.handlers
 
+import re
+
 kill_all = False
 
 live_chat_result = None
@@ -1033,8 +1035,9 @@ class DownloadStream:
 
                         if status == 200 and seg_num > latest_downloaded_segment:
                             latest_downloaded_segment = seg_num
-                    elif status != 200:
+                    elif status is None or status != 200:
                         segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
+                        logging.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
                         
                     
                     # Remove from submitted segments in case it neeeds to be regrabbed
@@ -1064,7 +1067,7 @@ class DownloadStream:
                         logging.debug("Checking for more segments available for {0}".format(self.format))
                         current_latest = max(self.latest_sequence, latest_downloaded_segment)
                         self.update_latest_segment()
-                        segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded        
+                        segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v > self.fragment_retries)       
                         if current_latest == max(self.latest_sequence, latest_downloaded_segment):      
                             time.sleep(5)                 
                         
@@ -1320,20 +1323,26 @@ class DownloadStream:
             elif response.status_code == 403:
                 logging.debug("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
-                return -1, None, segment_order, response.status_code, response.headers
+                return int(response.headers.get("X-Head-Seqnum", -1)), None, segment_order, response.status_code, response.headers
             else:
                 logging.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
-                return -1, None, segment_order, response.status_code, response.headers
+                return int(response.headers.get("X-Head-Seqnum", -1)), None, segment_order, response.status_code, response.headers
         except requests.exceptions.Timeout as e:
             logging.warning("Fragment timeout {1}: {0}".format(e, segment_order))
             return -1, None, segment_order, None, None
         except requests.exceptions.RetryError as e:
             logging.debug("Retries exceeded downloading fragment: {0}".format(e))
-            if "(Caused by ResponseError('too many 204 error responses')" in str(e):
-                return -1, bytes(), segment_order, 204, None
-            elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
-                self.is_403 = True
-                return -1, None, segment_order, 403, None
+            match = re.search(r"too many (\d{3}) error responses", str(e))
+
+            if match:
+                status_code = int(match.group(1))
+                if status_code == 403:
+                    self.is_403 = True
+                    return -1, None, segment_order, 403, None
+                elif status_code == 204:
+                    return -1, bytes(), segment_order, 204, None
+                else:
+                    return -1, None, segment_order, status_code, None
             else:
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
@@ -1656,8 +1665,9 @@ class DownloadStreamDirect(DownloadStream):
                     if segment_data is not None:
                         downloaded_segments[seg_num] = segment_data
                         segment_retries.pop(seg_num, None)
-                    elif status == 200:
+                    elif status is None or status != 200:
                         segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
+                        logging.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
 
                 # Write contiguous downloaded segments
                 # Check if there is at least one segment to write
@@ -1715,7 +1725,7 @@ class DownloadStreamDirect(DownloadStream):
                         logging.debug("Checking for more segments available for {0} in 5s".format(self.format))
                         time.sleep(5)
                         self.update_latest_segment()
-                        segments_to_download = sorted(set(range(self.state['last_written'] + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()))
+                        segments_to_download = sorted(set(range(self.state['last_written'] + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries))
 
                 
                 # If update has no segments and no segments are currently running, wait                              
