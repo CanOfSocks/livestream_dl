@@ -1051,27 +1051,15 @@ class DownloadStream:
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1  
                                         
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
-                if len(segments_to_download) <= 0:
-                    
-                    # Only attempt to grab optimistic segment once to ensure it does not cause a loop at the end of a stream
-                    if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
+                # Only attempt to grab optimistic segment a number of times to ensure it does not cause a loop at the end of a stream
+                if len(segments_to_download) <= 0 and optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
                         
                         # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
                         time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
                         
                         #logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
-                        segments_to_download.add(optimistic_seg)
+                        segments_to_download.add(optimistic_seg)         
                         
-                    # If optimistic grab is not successful, revert back to using headers from base stream URL
-                    else:
-                        logging.debug("Checking for more segments available for {0}".format(self.format))
-                        current_latest = max(self.latest_sequence, latest_downloaded_segment)
-                        self.update_latest_segment()
-                        segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v > self.fragment_retries)       
-                        if current_latest == max(self.latest_sequence, latest_downloaded_segment):      
-                            time.sleep(5)                 
-                        
-
                 # If update has no segments and no segments are currently running, wait                              
                 if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                     wait += 1
@@ -1094,6 +1082,7 @@ class DownloadStream:
                                 logging.info("Video finished downloading via new manifest")
                                 break
                     time.sleep(10)
+                    self.update_latest_segment()
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
@@ -1712,26 +1701,14 @@ class DownloadStreamDirect(DownloadStream):
 
                 optimistic_seg = max(self.latest_sequence, self.state.get('last_written',0)) + 1  
                                         
-                # If segments remain to download, don't bother updating and wait for segment download to refresh values.
-                if not segments_to_download:
-                    
-                    # Only attempt to grab optimistic segment once to ensure it does not cause a loop at the end of a stream
-                    if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
-                        
-                        # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
-                        time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
-                        
-                        logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
-                        segments_to_download.append(optimistic_seg)
-                        
-                    # If optimistic grab is not successful, revert back to using headers from base stream URL
-                    else:
-                        logging.debug("Checking for more segments available for {0} in 5s".format(self.format))
-                        time.sleep(5)
-                        self.update_latest_segment()
-                        segments_to_download = sorted(set(range(self.state['last_written'] + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries))
-
                 
+                if not segments_to_download and optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
+                    # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
+                    time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
+                    
+                    logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
+                    segments_to_download.append(optimistic_seg)
+                                    
                 # If update has no segments and no segments are currently running, wait                              
                 if not segments_to_download and not future_to_seg:                 
                     wait += 1
@@ -1754,6 +1731,8 @@ class DownloadStreamDirect(DownloadStream):
                                 logging.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
                                 break
                     time.sleep(10)
+                    # Check for header updates
+                    self.update_latest_segment()
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
