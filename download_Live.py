@@ -1482,7 +1482,7 @@ class DownloadStream:
     def refresh_url(self, follow_manifest=True):
         logging.info("Refreshing URL for {0}".format(self.format))
         try:
-            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=self.include_m3u8)
+            info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=(self.include_m3u8 or self.force_m3u8))
             
             # Check for new manifest, if it has, start a nested download session
             if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
