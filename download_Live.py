@@ -1710,7 +1710,7 @@ class DownloadStreamDirect(DownloadStream):
                 optimistic_seg = max(self.latest_sequence, self.state.get('last_written',0)) + 1  
                                         
                 
-                if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded:
+                if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded and len(segments_to_download) <= 2 * self.max_workers:
                     # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
                     if not segments_to_download:
                         time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
