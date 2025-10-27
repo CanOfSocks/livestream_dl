@@ -114,7 +114,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                 raise VideoInaccessibleError("Video {0} is a membership video. Requires valid cookies".format(id))
             elif "not available on this app" in str(e):
                 raise VideoInaccessibleError("Video {0} not available on this player".format(id))
-            elif "Video is no longer live. Giving up after" in str(e).lower():
+            elif "no longer live" in str(e).lower():
                 raise LivestreamError("Livestream has ended")
             else:
                 raise e
