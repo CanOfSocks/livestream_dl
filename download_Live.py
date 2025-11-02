@@ -288,6 +288,7 @@ def output_filename(info_dict, outtmpl):
     return outputFile
 
 def move_to_final(options, outputFile, file_names):
+    logging.debug("Tracked Files: {0}".format(json.dumps(file_names, indent=4)))
     if os.path.dirname(outputFile):
         os.makedirs(os.path.dirname(outputFile), exist_ok=True)
     try:
