@@ -640,7 +640,7 @@ def create_mp4(file_names, info_dict, options):
             thumbnail = index
             index += 1
         else:
-            logging.error("Thumnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
+            logging.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
     
     # Add input files
     if file_names.get('video', None):        
@@ -701,10 +701,12 @@ def create_mp4(file_names, info_dict, options):
 
     if not (options.get('merge', True)):    
         return file_names
-        
+    
+    logging.debug("FFmpeg command: {0}".format(' '.join(ffmpeg_builder)))
     logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
     try:
         result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+        logging.debug(result.stdout)
     except subprocess.CalledProcessError as e:
         logging.error(e.stderr)
         logging.fatal(e)
