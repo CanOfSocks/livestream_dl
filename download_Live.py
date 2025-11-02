@@ -635,7 +635,7 @@ def create_mp4(file_names, info_dict, options):
                     raise e
                 # Remove webp thumbnail
                 logging.debug("Replacing thumbnail with .png version")
-                file_names.get('thumbnail').unlink(missing_ok=True)                
+                file_names.pop('thumbnail').unlink(missing_ok=True)                
                 file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
             
             input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
