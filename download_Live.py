@@ -302,6 +302,7 @@ def move_to_final(options, outputFile, file_names):
                 logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
                 file_names.get('thumbnail').unlink(missing_ok=True)
                 file_names.pop('thumbnail',None)
+
     except Exception as e:
         logging.exception("unable to move thumbnail: {0}".format(e))
     
@@ -632,8 +633,9 @@ def create_mp4(file_names, info_dict, options):
                     logging.fatal(e)
                     raise e
                 # Remove webp thumbnail
-                file_names.get('thumbnail').unlink(missing_ok=True)
-                file_names['thumbnail'] = png_thumbnail
+                logging.debug("Replacing thumbnail with .png version")
+                file_names.get('thumbnail').unlink(missing_ok=True)                
+                file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
             
             input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
             ffmpeg_builder.extend(input)
@@ -707,7 +709,8 @@ def create_mp4(file_names, info_dict, options):
     logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
     try:
         result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
-        logging.debug(result.stdout)
+        logging.debug("FFmpeg STDOUT: {0}".format(result.stdout))
+        logging.debug("FFmpeg STDERR: {0}".format(result.stderr))
     except subprocess.CalledProcessError as e:
         logging.error(e.stderr)
         logging.fatal(e)
