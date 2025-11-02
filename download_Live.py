@@ -687,6 +687,7 @@ def create_mp4(file_names, info_dict, options):
         base_output = filename
     
     if ext is None:
+        logging.debug("No extension detected, switching to MP4")
         ext = info_dict.get('ext', '.mp4')
     if ext is not None and not str(ext).startswith("."):
         ext = "." + str(ext)
