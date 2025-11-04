@@ -201,7 +201,6 @@ def download_segments(info_dict, resolution='best', options={}, thread_event=Non
             
             live_chat_thread = None            
             if options.get('live_chat', False) is True:
-                import threading
                 live_chat_thread = threading.Thread(target=download_live_chat, args=(info_dict,options), daemon=True)
                 live_chat_thread.start()
                 #download_live_chat(info_dict=info_dict, options=options)
