@@ -9,6 +9,33 @@ except ModuleNotFoundError as e:
 import ast
 import json
 
+import threading
+kill_all = threading.Event()
+
+import signal
+from time import sleep
+import platform
+
+# Preserve original keyboard interrupt logic as true behaviour is known
+original_sigint = signal.getsignal(signal.SIGINT)
+
+def handle_shutdown(signum, frame):
+    print(f"Got shutdown signal {signum}, ending...")
+    kill_all.set()
+    sleep(0.5)
+    if callable(original_sigint):
+        original_sigint(signum, frame)
+
+# common
+signal.signal(signal.SIGINT, handle_shutdown)
+
+if platform.system() == "Windows":
+    # SIGTERM won’t fire — but SIGBREAK will on Ctrl-Break
+    signal.signal(signal.SIGBREAK, handle_shutdown)
+else:
+    # normal POSIX termination
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
 _original_getaddrinfo = socket.getaddrinfo
 
 def force_ipv4():
@@ -95,7 +122,7 @@ def main(id, resolution='best', options={}, info_dict=None):
         pass
     else:        
         info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)))
-    download_Live.download_segments(info_dict, resolution, options)
+    download_Live.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=kill_all)
     
 if __name__ == "__main__":
     # Create the parser

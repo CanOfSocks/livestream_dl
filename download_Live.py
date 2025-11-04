@@ -37,6 +37,8 @@ import threading
 
 kill_all = threading.Event()
 
+cleanup = threading.Event()
+
 live_chat_result = None
 
 chat_timeout = None
@@ -230,7 +232,7 @@ def download_segments(info_dict, resolution='best', options={}, thread_event=Non
             while True:
                 if kill_all.is_set():
                     raise KeyboardInterrupt("Thread kill event is set, ending...")
-                done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
+                done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.ALL_COMPLETED)
                 # Continuously check for completion or interruption
                 for future in done:
                     
@@ -256,8 +258,8 @@ def download_segments(info_dict, resolution='best', options={}, thread_event=Non
                     
                 if len(not_done) <= 0:
                     break
-                else:
-                    time.sleep(0.9)
+                #else:
+                #    time.sleep(0.9)
                 print_stats(options=options)
             
             if live_chat_thread is not None:
@@ -268,13 +270,13 @@ def download_segments(info_dict, resolution='best', options={}, thread_event=Non
         except KeyboardInterrupt as e:
             kill_all.set()
             logging.debug("Keyboard interrupt detected")
-            done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
             if len(not_done) > 0:
                 logging.debug("Cancelling remaining threads")
             for future in not_done:
                 _ = future.cancel()
             done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
             executor.shutdown(wait=False,cancel_futures=True)
+            logging.debug("Shutdown all threads")
             raise
             
     
@@ -969,6 +971,13 @@ class FileInfo(Path):
     def __repr__(self):
         # Custom string representation
         return f"{super().__repr__()} (file_type={self._file_type})"
+    
+    def to_dict(self):
+        return {
+            "filename": str(self),
+            "filetype": str(self._file_type),
+            "format": str(self._format)
+        }
 
 class DownloadStream:
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):        
