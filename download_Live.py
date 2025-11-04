@@ -33,7 +33,9 @@ import logging.handlers
 
 import re
 
-kill_all = False
+import threading
+
+kill_all = threading.Event()
 
 live_chat_result = None
 
@@ -138,9 +140,6 @@ def submit_download(executor, info_dict, resolution, options, download_folder, f
         })
         keep_key = "keep_database"
 
-    
-    
-
     kwargs = dict(
         info_dict=info_dict,
         resolution="audio_only" if is_audio else resolution,
@@ -168,9 +167,13 @@ def submit_download(executor, info_dict, resolution, options, download_folder, f
 
 
 # Multithreaded function to download new segments with delayed commit after a batch
-def download_segments(info_dict, resolution='best', options={}):
+def download_segments(info_dict, resolution='best', options={}, thread_event=None):
+    global kill_all
     futures = set()
     #file_names = {}
+
+    if thread_event is not None:        
+        kill_all = thread_event
         
     setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}))
     stats['id'] = info_dict.get('id', None)
@@ -226,6 +229,8 @@ def download_segments(info_dict, resolution='best', options={}):
                 #futures.add(audio_future)
                 
             while True:
+                if kill_all.is_set():
+                    raise KeyboardInterrupt("Thread kill event is set, ending...")
                 done, not_done = concurrent.futures.wait(futures, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
                 # Continuously check for completion or interruption
                 for future in done:
@@ -260,12 +265,9 @@ def download_segments(info_dict, resolution='best', options={}):
                 logging.info("Waiting for live chat to end")
                 chat_timeout = time.time()
                 live_chat_thread.join()
-                if live_chat_result is not None:
-                    file_names.update(live_chat_result)
             
         except KeyboardInterrupt as e:
-            global kill_all
-            kill_all = True
+            kill_all.set()
             logging.debug("Keyboard interrupt detected")
             done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
             if len(not_done) > 0:
@@ -273,20 +275,21 @@ def download_segments(info_dict, resolution='best', options={}):
             for future in not_done:
                 _ = future.cancel()
             done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
+            executor.shutdown(wait=False,cancel_futures=True)
             raise
             
     
     create_mp4(file_names=file_names, info_dict=info_dict, options=options)
         
-    if options.get('temp_folder', None) is not None:
-        move_to_final(options=options, outputFile=outputFile, file_names=file_names)               
+    
+    move_to_final(options=options, output_file=outputFile, file_names=file_names)
                 
     #move_to_final(info_dict, options, file_names)
     
 def output_filename(info_dict, outtmpl):
     outputFile = str(yt_dlp.YoutubeDL().prepare_filename(info_dict, outtmpl=outtmpl))
     return outputFile
-
+"""
 def move_to_final(options, outputFile, file_names):
     logging.debug("Tracked Files: {0}".format(json.dumps(file_names, indent=4)))
     if os.path.dirname(outputFile):
@@ -297,8 +300,9 @@ def move_to_final(options, outputFile, file_names):
             if options.get('write_thumbnail', False):
                 thumbnail = file_names.get('thumbnail')
                 thumb_output = "{0}{1}".format(outputFile, thumbnail.suffix)
-                logging.debug("Moving {0} to {1}".format(thumbnail.absolute(), thumb_output))
-                shutil.move(thumbnail.absolute(), thumb_output)
+                if str(thumbnail).strip() != str(thumb_output).strip():
+                    logging.debug("Moving {0} to {1}".format(thumbnail.absolute(), thumb_output))                
+                    shutil.move(thumbnail.absolute(), thumb_output)
             else:
                 logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
                 file_names.get('thumbnail').unlink(missing_ok=True)
@@ -311,17 +315,19 @@ def move_to_final(options, outputFile, file_names):
         if file_names.get('info_json'):
             info_json = file_names.get('info_json')
             info_output = "{0}{1}".format(outputFile, '.info.json')
-            logging.info("Moving {0} to {1}".format(info_json.absolute(), info_output))
-            shutil.move(info_json.absolute(), info_output)
+            if str(info_json).strip() != str(info_output).strip():
+                logging.info("Moving {0} to {1}".format(info_json.absolute(), info_output))            
+                shutil.move(info_json.absolute(), info_output)
     except Exception as e:
         logging.exception("unable to move info_json: {0}".format(e))
         
     try:
         if file_names.get('description'):
             description = file_names.get('description')
-            description_output = "{0}{1}".format(outputFile, description.suffix)
-            logging.info("Moving {0} to {1}".format(description.absolute(), description_output))
-            shutil.move(description.absolute(), description_output)
+            description_output = "{0}{1}".format(outputFile, description.suffix)            
+            if str(description).strip() != str(description_output).strip():
+                logging.info("Moving {0} to {1}".format(description.absolute(), description_output))
+                shutil.move(description.absolute(), description_output)
     except Exception as e:
         logging.exception("unable to move description: {0}".format(e))
     
@@ -329,8 +335,9 @@ def move_to_final(options, outputFile, file_names):
         if file_names.get('video'):
             video = file_names.get('video')
             video_output = "{0}.{1}{2}".format(outputFile, video._format, video.suffix)
-            logging.info("Moving {0} to {1}".format(video.absolute(), video_output))
-            shutil.move(video.absolute(), video_output)
+            if str(video).strip() != str(video_output).strip():
+                logging.info("Moving {0} to {1}".format(video.absolute(), video_output))
+                shutil.move(video.absolute(), video_output)
     except Exception as e:
         logging.exception("unable to move video stream: {0}".format(e))
         
@@ -338,8 +345,9 @@ def move_to_final(options, outputFile, file_names):
         if file_names.get('audio'):
             audio = file_names.get('audio')
             audio_output = "{0}.{1}{2}".format(outputFile, audio._format, audio.suffix)
-            logging.info("Moving {0} to {1}".format(audio.absolute(), audio_output))
-            shutil.move(audio.absolute(), audio_output)
+            if str(audio).strip() != str(audio_output).strip():
+                logging.info("Moving {0} to {1}".format(audio.absolute(), audio_output))
+                shutil.move(audio.absolute(), audio_output)
     except Exception as e:
         logging.exception("unable to move audio stream: {0}".format(e))
         
@@ -347,26 +355,19 @@ def move_to_final(options, outputFile, file_names):
         if file_names.get('merged'):
             merged = file_names.get('merged')
             merged_output = "{0}{1}".format(outputFile, merged.suffix)
-            logging.info("Moving {0} to {1}".format(merged.absolute(), merged_output))
-            shutil.move(merged.absolute(), merged_output)
+            if str(merged).strip() != str(merged_output).strip():
+                logging.info("Moving {0} to {1}".format(merged.absolute(), merged_output))
+                shutil.move(merged.absolute(), merged_output)
     except Exception as e:
         logging.exception("unable to move merged video: {0}".format(e))
-        
-    try:
-        if file_names.get('ffmpeg_cmd'):
-            ffmpeg_cmd = file_names.get('ffmpeg_cmd')
-            ffmpeg_cmd_output = "{0}{1}".format(outputFile, '.ffmpeg.txt')
-            logging.info("Moving {0} to {1}".format(ffmpeg_cmd.absolute(), ffmpeg_cmd_output))
-            shutil.move(ffmpeg_cmd.absolute(), ffmpeg_cmd_output)
-    except Exception as e:
-        logging.exception("unable to move merged video: {0}".format(e))
-        
+                
     try:
         if file_names.get('live_chat'):
             live_chat = file_names.get('live_chat')
             live_chat_output = "{0}{1}".format(outputFile, ".live_chat.zip")
-            logging.info("Moving {0} to {1}".format(live_chat.absolute(), live_chat_output))
-            shutil.move(live_chat.absolute(), live_chat_output)
+            if str(live_chat).strip() != str(live_chat_output).strip():
+                logging.info("Moving {0} to {1}".format(live_chat.absolute(), live_chat_output))
+                shutil.move(live_chat.absolute(), live_chat_output)
     except Exception as e:
         logging.exception("unable to move live chat zip: {0}".format(e))
      
@@ -374,8 +375,9 @@ def move_to_final(options, outputFile, file_names):
         if file_names.get('databases'):
             for file in file_names.get('databases'):
                 db_output = "{0}.{1}{2}".format(outputFile, file.format, file.suffix)
-                logging.info("Moving {0} to {1}".format(file.absolute(), db_output))
-                shutil.move(file.absolute(), db_output)
+                if str(file).strip() != str(db_output).strip():
+                    logging.info("Moving {0} to {1}".format(file.absolute(), db_output))
+                    shutil.move(file.absolute(), db_output)
     except Exception as e:
         logging.exception("unable to move database files: {0}".format(e))
     try:
@@ -383,8 +385,9 @@ def move_to_final(options, outputFile, file_names):
             if options.get('write_ffmpeg_command', False):
                 ffmpeg_command = file_names.get('ffmpeg_cmd')
                 ffmpeg_command_output = "{0}{1}".format(outputFile, ".ffmpeg.txt")
-                logging.info("Moving {0} to {1}".format(ffmpeg_command.absolute(), ffmpeg_command_output))
-                shutil.move(ffmpeg_command.absolute(), ffmpeg_command_output)
+                if str(ffmpeg_command).strip() != str(ffmpeg_command_output).strip():
+                    logging.info("Moving {0} to {1}".format(ffmpeg_command.absolute(), ffmpeg_command_output))
+                    shutil.move(ffmpeg_command.absolute(), ffmpeg_command_output)
             else:
                 file_names.get('ffmpeg_cmd').unlink()
     except Exception as e:
@@ -402,7 +405,93 @@ def move_to_final(options, outputFile, file_names):
         logging.exception("Error removing temp folder: {0}".format(e))
         
     logging.info("Finished moving files from temporary directory to output destination")
+"""
+
+def move_to_final(options, output_file, file_names):
+    def maybe_move(key, dest_func, option_flag=None):
+        """
+        key: key in file_names
+        dest_func: func -> pathlib -> string dest path
+        delete_if_false: if True, delete when option_flag not set
+        option_flag: name of boolean option (write_thumbnail etc)
+        """
+        f = file_names.get(key)
+        if not f:
+            return
+        try:
+            # deletion case (thumbnail / ffmpeg)
+            if option_flag is not None and not options.get(option_flag, False):
+                logging.info(f"Removing {f.absolute()}")
+                f.unlink(missing_ok=True)
+                file_names.pop(key, None)
+                return
+
+            dest = dest_func(f)
+            if str(f).strip() != str(dest).strip():
+                logging.info(f"Moving {f.absolute()} → {dest}")
+                shutil.move(f.absolute(), dest)
+        except Exception as e:
+            logging.exception(f"unable to move {key}: {e}")
+
+    # ensure output dir exists
+    out_dir = os.path.dirname(output_file)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # === individual file handlers ===
+
+    maybe_move('thumbnail',
+               lambda f: f"{output_file}{f.suffix}",
+               option_flag='write_thumbnail')
+
+    maybe_move('info_json',
+               lambda f: f"{output_file}.info.json")
+
+    maybe_move('description',
+               lambda f: f"{output_file}{f.suffix}")
+
+    maybe_move('video',
+               lambda f: f"{output_file}.{f._format}{f.suffix}")
+
+    maybe_move('audio',
+               lambda f: f"{output_file}.{f._format}{f.suffix}")
+
+    maybe_move('merged',
+               lambda f: f"{output_file}{f.suffix}")
+
+    maybe_move('live_chat',
+               lambda f: f"{output_file}.live_chat.zip")
+
+    # special: databases = list
+    try:
+        for f in file_names.get('databases', []):
+            dest = f"{output_file}.{f._format}{f.suffix}"
+            if str(f).strip() != str(dest).strip():
+                logging.info(f"Moving {f.absolute()} → {dest}")
+                shutil.move(f.absolute(), dest)
+    except Exception as e:
+        logging.exception(f"unable to move database files: {e}")
+
+    # special: ffmpeg_cmd
+    maybe_move('ffmpeg_cmd',
+               lambda f: f"{output_file}.ffmpeg.txt",
+               option_flag='write_ffmpeg_command')
+
+    # remove temp folder
     
+    if options.get('temp_folder', None) is not None:
+        try:
+            os.rmdir(options.get('temp_folder'))
+        except OSError as e:
+            if e.errno == errno.ENOTEMPTY:
+                logging.warning(f"Error: Directory not empty: {e.filename}")
+            else:
+                logging.exception(f"Error removing temp folder: {e}")
+        except Exception as e:
+            logging.exception(f"Error removing temp folder: {e}")
+
+    logging.info("Finished moving files from temporary directory to output destination")
+
 def download_live_chat(info_dict, options):
     import yt_dlp
     import zipfile
@@ -417,10 +506,27 @@ def download_live_chat(info_dict, options):
     else:
         base_output = filename
 
+    class YTDLP_Chat_logger():
+        def __init__(self, id=None):
+            self.id = id
+
+        def debug(self, msg):
+            logging.debug("yt-dlp chat ({1}): {0}".format(msg, self.id))
+
+        def info(self, msg):
+            logging.info("yt-dlp chat ({1}): {0}".format(msg, self.id))
+
+        def warning(self, msg):
+            logging.warning("yt-dlp chat ({1}): {0}".format(msg, self.id))
+
+        def error(self, msg):
+            logging.error("yt-dlp chat ({1}): {0}".format(msg, self.id))
+
     ydl_opts = {
         'skip_download': True,               # Skip downloading video/audio
+        'logger': YTDLP_Chat_logger(options.get("ID", None)),
         'quiet': True,
-        'cookiefile': options.get('cookies'),
+        'cookiefile': options.get('cookies', None),
         'retries': 25,
         'concurrent_fragment_downloads': 3,
         #'live_from_start': True,
@@ -457,7 +563,7 @@ def download_live_chat(info_dict, options):
 
             # Process chat messages for the duration of the timeout
             for message in chat:
-                if kill_all:
+                if kill_all.is_set():
                     logging.debug("Killing live chat downloader")
                     chat_download.close()
                     break
@@ -476,7 +582,7 @@ def download_live_chat(info_dict, options):
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.process_ie_result(info_dict)
                     #result = ydl.download_with_info_file(info_dict)
-                    #result = ydl._writesubtitles()
+                    #result = ydl._writesubtitles(info_dict, )
             except Exception as e:
                 logging.exception("\033[31m{0}\033[0m".format(e))
         
@@ -496,8 +602,16 @@ def download_live_chat(info_dict, options):
     except Exception as e:
         logging.exception("\033[31m{0}\033[0m".format(e))
     time.sleep(1)
-    if os.path.exists("{0}.part".format(livechat_filename)):
-        shutil.move("{0}.part", livechat_filename)
+    part_file = "{0}.part".format(livechat_filename)
+    if os.path.exists(part_file):
+        # Append part to 
+        chunk_size = 1024*1024*10  # number of characters per chunk, up to 10M characters
+        with open(part_file, "r", encoding="utf-8") as fa, \
+            open(livechat_filename, "a", encoding="utf-8") as fb:
+            while chunk := fa.read(chunk_size):
+                fb.write(chunk)
+        os.remove("{0}.part".format(livechat_filename))
+
     
     try:
         with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
@@ -506,8 +620,7 @@ def download_live_chat(info_dict, options):
         live_chat = {
             'live_chat': FileInfo(zip_filename, file_type='live_chat')
         }
-        global live_chat_result
-        live_chat_result = live_chat
+        file_names.update(live_chat)
         return live_chat, 'live_chat'
     except Exception as e:
         logging.exception("\033[31m{0}\033[0m".format(e))
@@ -1464,7 +1577,7 @@ class DownloadStream:
     
     def check_kill(self, executor: concurrent.futures.ThreadPoolExecutor=None):
         # Kill if keyboard interrupt is detected
-        if kill_all:
+        if kill_all.is_set():
             logging.debug("Kill command detected, ending thread")
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
@@ -1841,7 +1954,7 @@ class StreamRecovery(DownloadStream):
             return self.num_retries  # Return the number of 403 responses
         
 
-    def __init__(self, info_dict={}, resolution='best', max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None):        
+    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None):        
         from datetime import datetime
         
         # Call the base class __init__.
@@ -1851,6 +1964,7 @@ class StreamRecovery(DownloadStream):
         super().__init__(
             info_dict=info_dict,
             resolution=resolution,
+            batch_size=batch_size,
             max_workers=max_workers,
             fragment_retries=fragment_retries,
             folder=folder,
@@ -1863,7 +1977,7 @@ class StreamRecovery(DownloadStream):
             yt_dlp_sort=yt_dlp_sort,
             include_dash=False, # StreamRecovery logic specifically excludes DASH
             include_m3u8=False,
-            force_m3u8=False
+            force_m3u8=False,        
         )      
         
         # --- Start of StreamRecovery-specific __init__ logic ---
