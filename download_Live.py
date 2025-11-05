@@ -169,7 +169,7 @@ def submit_download(executor, info_dict, resolution, options, download_folder, f
 
 
 # Multithreaded function to download new segments with delayed commit after a batch
-def download_segments(info_dict, resolution='best', options={}, thread_event=None):
+def download_segments(info_dict, resolution='best', options={}, thread_event: threading.Event=None):
     global kill_all
     futures = set()
     #file_names = {}
@@ -2008,14 +2008,15 @@ class StreamRecovery(DownloadStream):
                     break            
             self.stream_urls = stream_urls          
         else:
-            self.stream_urls, self.format = YoutubeURL.Formats().getFormatURL(
+            self.stream_url = YoutubeURL.Formats().getFormatURL(
                 info_json=info_dict, 
-                resolution=resolution, 
-                return_format=True, 
+                resolution=resolution,  
                 sort=self.yt_dlp_sort, 
                 get_all=True, # Key difference: get all URLs
                 include_dash=False
             )
+            self.format = self.stream_url.format_id
+            self.stream_urls.append(self.stream_url)
         
         logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
 
@@ -2272,7 +2273,7 @@ class StreamRecovery(DownloadStream):
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
                         # Round-robin through available stream URLs
-                        future_to_seg[executor.submit(self.download_segment, add_url_param(self.stream_urls[i % len(self.stream_urls)], "sq", seg_num), seg_num)] = seg_num
+                        future_to_seg[executor.submit(self.download_segment, self.stream_urls[i % len(self.stream_urls)].segment(seg_num), seg_num)] = seg_num
                         submitted_segments.add(seg_num)
                         i += 1
                 

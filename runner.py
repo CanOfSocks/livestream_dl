@@ -20,7 +20,6 @@ import platform
 original_sigint = signal.getsignal(signal.SIGINT)
 
 def handle_shutdown(signum, frame):
-    print(f"Got shutdown signal {signum}, ending...")
     kill_all.set()
     sleep(0.5)
     if callable(original_sigint):
