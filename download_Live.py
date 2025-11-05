@@ -2002,21 +2002,20 @@ class StreamRecovery(DownloadStream):
         if stream_urls:
             logging.debug("{0} stream urls available".format(len(stream_urls)))
             for url in stream_urls:
-                self.format = self.get_format_from_url(url)
+                self.format = url.format_id
                 if self.format is not None:
                     logging.debug("Stream recovery - Found format {0} from itags".format(self.format))
                     break            
             self.stream_urls = stream_urls          
         else:
-            self.stream_url = YoutubeURL.Formats().getFormatURL(
+            self.stream_urls = YoutubeURL.Formats().getFormatURL(
                 info_json=info_dict, 
                 resolution=resolution,  
                 sort=self.yt_dlp_sort, 
                 get_all=True, # Key difference: get all URLs
                 include_dash=False
             )
-            self.format = self.stream_url.format_id
-            self.stream_urls.append(self.stream_url)
+            
         
         logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
 
@@ -2027,6 +2026,7 @@ class StreamRecovery(DownloadStream):
         
         # Override stream_url with a random choice
         self.stream_url = random.choice(self.stream_urls)
+        self.format = self.stream_url.format_id
         
         # The base __init__ already set file names based on its format detection.
         # We must re-set them using the format this class detected, which may differ.
