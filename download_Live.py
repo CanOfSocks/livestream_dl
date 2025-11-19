@@ -2002,7 +2002,7 @@ class StreamRecovery(DownloadStream):
         if stream_urls:
             logging.debug("{0} stream urls available".format(len(stream_urls)))
             for url in stream_urls:
-                self.format = self.get_format_from_url(url)
+                self.format = url.format_id
                 if self.format is not None:
                     logging.debug("Stream recovery - Found format {0} from itags".format(self.format))
                     break            
@@ -2028,6 +2028,7 @@ class StreamRecovery(DownloadStream):
         
         # Override stream_url with a random choice
         self.stream_url = random.choice(self.stream_urls)
+        self.format = self.stream_url.format_id
         
         # The base __init__ already set file names based on its format detection.
         # We must re-set them using the format this class detected, which may differ.
