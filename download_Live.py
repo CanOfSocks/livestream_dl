@@ -2016,15 +2016,13 @@ class StreamRecovery(DownloadStream):
                 include_dash=False,
                 include_m3u8=False
             )
-            if not self.stream_urls:
-                raise ValueError("No compatible stream URLs not found for {0}, unable to continue".format(resolution))
-            self.format = str(self.stream_urls[0].itag)
+
+        if not self.stream_urls:
+            raise ValueError("No compatible stream URLs not found for {0}, unable to continue".format(resolution))
             
+        self.format = str(self.stream_urls[0].itag)            
         
         logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
-
-        if self.stream_urls is None:
-            raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
         
         logging.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
         
@@ -2072,14 +2070,15 @@ class StreamRecovery(DownloadStream):
         self.sleep_time = 1
         
         # Override expires logic to check all available URLs
-        self.expires = None
-        expires = []
-        for url in self.stream_urls:
-            expire_value = self.get_expire_time(url)
-            if expire_value is not None:
-                expires.append(int(expire_value))
+        self.expires = time.time()
+        expires = [
+            int(self.get_expire_time(url))
+            for url in self.stream_urls
+            if self.get_expire_time(url) is not None
+        ]
+
         if expires:
-            self.expires = int(max(expires))
+            self.expires = max(expires)
             
         if self.expires and time.time() > self.expires:
             logging.error("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
@@ -2155,7 +2154,16 @@ class StreamRecovery(DownloadStream):
             while True:     
                 self.check_kill(executor)     
                 if stats.get(self.type, None) is None:
-                    stats[self.type] = {}                                   
+                    stats[self.type] = {}     
+
+                self.check_Expiry()
+
+                if (not self.stream_urls) or (self.expires and time.time() > self.expires):
+                    logging.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
+                    self.commit_batch()
+                    raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp)) 
                 
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
                 
@@ -2290,6 +2298,21 @@ class StreamRecovery(DownloadStream):
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
         return len(self.segments_retries)
+    
+    def check_Expiry(self): 
+        #print("Refresh check ({0})".format(self.format)) 
+        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) >= time.time()]
+        self.stream_urls = filtered_array  
+
+        expires = [
+            int(self.get_expire_time(url))
+            for url in self.stream_urls
+            if self.get_expire_time(url) is not None
+        ]
+
+        if expires:
+            self.expires = max(expires)
+
 
     def update_latest_segment(self, url=None):
         from datetime import datetime
@@ -2297,29 +2320,17 @@ class StreamRecovery(DownloadStream):
         self.check_kill()
         
         # Remove expired URLs
-        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
-        
-        if len(filtered_array) > 0:
-            self.stream_urls = filtered_array
-            expire_times = []
-            for url in self.stream_urls:
-                exp_time = self.get_expire_time(url)
-                if exp_time:
-                    expire_times.append(exp_time)
-            if expire_times:
-                self.expires = max(expire_times)
-            
-        if self.expires and time.time() > self.expires:
-            logging.fatal("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
+        self.check_Expiry()  
+
+        if (not self.stream_urls) or (self.expires and time.time() > self.expires):
+            logging.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
-            raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
+            self.commit_batch()
+            raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))         
         
         if url is None:
-            if len(self.stream_urls) > 1:
-                url = random.choice(self.stream_urls)
-            else:
-                url = self.stream_urls[0]
+            url = random.choice(self.stream_urls)
         
         stream_url_info = self.get_Headers(url)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
