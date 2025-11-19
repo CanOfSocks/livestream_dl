@@ -2023,6 +2023,9 @@ class StreamRecovery(DownloadStream):
         self.format = str(self.stream_urls[0].itag)            
         
         logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
+
+        
+        self.expires = time.time()
         
         logging.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
         
@@ -2071,7 +2074,6 @@ class StreamRecovery(DownloadStream):
         self.sleep_time = 1
         
         # Override expires logic to check all available URLs
-        self.expires = time.time()
         expires = [
             int(self.get_expire_time(url))
             for url in self.stream_urls
