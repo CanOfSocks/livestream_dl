@@ -296,7 +296,7 @@ class Formats:
                     info_json=info_json, 
                     format_obj=format_obj
                 )
-                
+                logging.debug("URLs: {0}".format(all_urls))
                 # 2. Return the list of URLs
                 # Note: Your type hint `-> YoutubeURL` is now incorrect for this case.
                 # It should be `-> Union[YoutubeURL, List[str]]` or similar.
@@ -343,7 +343,7 @@ class Formats:
     # Get all URLs of a given format
     # Get all URLs of a given format and protocol
     def getAllFormatURL(self, info_json, format_obj: YoutubeURL): 
-        format_id = format_obj.id
+        format_id = format_obj.itag
         protocol = format_obj.protocol
         
         urls = []  # This will store the list of URL strings
@@ -363,10 +363,10 @@ class Formats:
             if current_protocol == 'http_dash_segments':
                 url = ytdlp_format.get('fragment_base_url')
                 if not url: continue
-                
-                itag = str(YoutubeURL(url).itag).strip() 
+                yt_url = YoutubeURL(url)
+                itag = yt_url.itag
                 if format_id == itag: 
-                    urls.append(url) # Append the matching URL
+                    urls.append(yt_url) # Append the matching URL
                     # self.protocol is already known, no need to set it here
 
             elif current_protocol == 'm3u8_native':
@@ -376,7 +376,8 @@ class Formats:
                 try:
                     # Fetch all stream URLs from the playlist
                     for stream_url in self.getM3u8Url(m3u8_playlist_url, first_only=False):
-                        itag = str(YoutubeURL(stream_url).itag).strip() 
+                        yt_url = YoutubeURL(stream_url)
+                        itag = yt_url.itag
                         if format_id == itag: 
                             # Append the matching URL (using your original video_base_url call)
                             urls.append(video_base_url(stream_url))
@@ -386,10 +387,10 @@ class Formats:
             else: # Handles 'https' and any other direct protocols
                 url = ytdlp_format.get('url')
                 if not url: continue
-                
-                itag = str(YoutubeURL(url).itag).strip() 
+                yt_url = YoutubeURL(url)
+                itag = yt_url.itag 
                 if format_id == itag:
                     # Append the matching URL (using your original video_base_url call)
-                    urls.append(video_base_url(url))
+                    urls.append(yt_url)
 
         return urls

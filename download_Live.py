@@ -2008,15 +2008,18 @@ class StreamRecovery(DownloadStream):
                     break            
             self.stream_urls = stream_urls          
         else:
-            self.stream_url = YoutubeURL.Formats().getFormatURL(
+            self.stream_urls = YoutubeURL.Formats().getFormatURL(
                 info_json=info_dict, 
                 resolution=resolution,  
                 sort=self.yt_dlp_sort, 
                 get_all=True, # Key difference: get all URLs
-                include_dash=False
+                include_dash=False,
+                include_m3u8=False
             )
-            self.format = self.stream_url.format_id
-            self.stream_urls.append(self.stream_url)
+            if not self.stream_urls:
+                raise ValueError("No compatible stream URLs not found for {0}, unable to continue".format(resolution))
+            self.format = str(self.stream_urls[0].itag)
+            
         
         logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
 
