@@ -1626,7 +1626,7 @@ class DownloadStream:
                 self.stream_urls = filtered_array
                 self.refresh_retries = 0
             else:
-                logging.warning("Unable to refresh URLs for {0} on format {1}".format(self.id, self.format))
+                logging.warning("Unable to refresh URLs for {0} on format {2} ({1})".format(self.id, self.format, resolution))
                 
             if live_status is not None:
                 self.live_status = live_status
