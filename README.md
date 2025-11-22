@@ -5,7 +5,7 @@ This project aims to combine the features of live recording and stream recovery 
 ***Stream recovery is currently in a semi-broken state. Don't rely on it working for now.***
 
 # Requirements
-- [python](https://www.python.org/) 3.12+
+- [python](https://www.python.org/) 3.12+ (currently developed on 3.13)
 - [ffmpeg](https://ffmpeg.org/)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) via pip (or another method where yt-dlp can be imported to a python script)
 - Packages within [requirements.txt](https://github.com/CanOfSocks/livestream_dl/blob/main/requirements.txt)
@@ -25,7 +25,7 @@ To do this comment/remove the [following lines](https://github.com/yt-dlp/yt-dlp
                 continue
 ```
 
-As of 22 March 2025, the following sed command works on Linux, ***be aware the location of the file may change and future versions of yt-dlp may change the extractor logic***:
+As of November 2025, the following sed command works on Linux, ***be aware the location of the file may change and future versions of yt-dlp may change the extractor logic***:
 ```bash
 sed -i "/if[[:space:]]\+fmt_stream\.get('targetDurationSec'):/,/^[[:space:]]*continue/s/^[[:space:]]*/&#/" "$(pip show yt-dlp | awk '/Location/ {print $2}')/yt_dlp/extractor/youtube/_video.py"
 
