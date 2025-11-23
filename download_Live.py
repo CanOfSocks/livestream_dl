@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 import errno
 
+import copy
+
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 try:
@@ -52,10 +54,12 @@ stats = {}
 
 # Create runner function for each download format
 def download_stream(info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
+    download_params = locals().copy()
+    download_params.update({"download_function": download_stream})
     file = None
     filetype = None
     with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8) as downloader:              
+                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, download_params=download_params) as downloader:              
         downloader.live_dl()
         file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
         if not keep_database:
@@ -71,11 +75,13 @@ def download_stream(info_dict, resolution, batch_size=5, max_workers=1, folder=N
 
 # Create runner function for each download format
 def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
+    download_params = locals().copy()
+    download_params.update({"download_function": download_stream_direct})
     file = None
     filetype = None
 
     with DownloadStreamDirect(info_dict, resolution=resolution, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8) as downloader:
+                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, download_params=download_params) as downloader:
         file_name = downloader.live_dl()
         file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
         filetype = downloader.type
@@ -980,7 +986,8 @@ class FileInfo(Path):
         }
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}):        
+        self.params = download_params or locals().copy()
         self.conn = None
         self.latest_sequence = -1
         self.already_downloaded = set()
@@ -1356,22 +1363,26 @@ class DownloadStream:
                     logging.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
-                        self.following_manifest_thread = threading.Thread(
-                            target=download_stream,
-                            kwargs={
-                                "info_dict": info_json,
-                                "resolution": str(self.format),
-                                "batch_size": self.batch_size,
-                                "max_workers": self.max_workers,
-                                "file_name": f"{self.file_base_name}.{str(temp_stream_url.id).split('.')[-1]}",
-                                "keep_database": False,
-                                "retries": self.fragment_retries,
-                                "cookies": self.cookies,
-                                "yt_dlp_options": self.yt_dlp_options,
-                            },
-                            daemon=True
-                        )
-                        self.following_manifest_thread.start()
+                        new_params = copy.deepcopy(self.params)
+                        new_params.update({
+                            "info_dict": copy.deepcopy(info_json),
+                            "resolution": str(self.format),
+                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                        })
+                        if new_params.get("download_function", None) is not None: 
+                            self.following_manifest_thread = threading.Thread(
+                                target=new_params.get("download_function"),
+                                kwargs=new_params,
+                                daemon=True
+                            )
+                            self.following_manifest_thread.start()
+                        else:
+                            download_Instance = self.__class__(**new_params)
+                            self.following_manifest_thread = threading.Thread(
+                                target=download_Instance.live_dl,
+                                daemon=True
+                            )
+                            self.following_manifest_thread.start()
                     return True
                 else:
                     return False
@@ -1386,22 +1397,26 @@ class DownloadStream:
                     logging.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
-                        self.following_manifest_thread = threading.Thread(
-                            target=download_stream,
-                            kwargs={
-                                "info_dict": info_json,
-                                "resolution": self.resolution,
-                                "batch_size": self.batch_size,
-                                "max_workers": self.max_workers,
-                                "file_name": f"{self.file_base_name}.{str(temp_stream_url.id).split('.')[-1]}",
-                                "keep_database": False,
-                                "retries": self.fragment_retries,
-                                "cookies": self.cookies,
-                                "yt_dlp_options": self.yt_dlp_options
-                            },
-                            daemon=True
-                        )
-                        self.following_manifest_thread.start()
+                        new_params = copy.deepcopy(self.params)
+                        new_params.update({
+                            "info_dict": copy.deepcopy(info_json),
+                            "resolution": self.resolution,
+                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                        })
+                        if new_params.get("download_function", None) is not None: 
+                            self.following_manifest_thread = threading.Thread(
+                                target=new_params.get("download_function"),
+                                kwargs=new_params,
+                                daemon=True
+                            )
+                            self.following_manifest_thread.start()
+                        else:
+                            download_Instance = self.__class__(**new_params)
+                            self.following_manifest_thread = threading.Thread(
+                                target=download_Instance.live_dl,
+                                daemon=True
+                            )
+                            self.following_manifest_thread.start()
                     return True
                 else:
                     return False
@@ -1416,22 +1431,26 @@ class DownloadStream:
                     logging.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
-                        self.following_manifest_thread = threading.Thread(
-                            target=download_stream,
-                            kwargs={
-                                "info_dict": info_json,
-                                "resolution": "best",
-                                "batch_size": self.batch_size,
-                                "max_workers": self.max_workers,
-                                "file_name": f"{self.file_base_name}.{str(temp_stream_url.id).split('.')[-1]}",
-                                "keep_database": False,
-                                "retries": self.fragment_retries,
-                                "cookies": self.cookies,
-                                "yt_dlp_options": self.yt_dlp_options,
-                            },
-                            daemon=True
-                        )
-                        self.following_manifest_thread.start()
+                        new_params = copy.deepcopy(self.params)
+                        new_params.update({
+                            "info_dict": copy.deepcopy(info_json),
+                            "resolution": "best",
+                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                        })
+                        if new_params.get("download_function", None) is not None: 
+                            self.following_manifest_thread = threading.Thread(
+                                target=new_params.get("download_function"),
+                                kwargs=new_params,
+                                daemon=True
+                            )
+                            self.following_manifest_thread.start()
+                        else:
+                            download_Instance = self.__class__(**new_params)
+                            self.following_manifest_thread = threading.Thread(
+                                target=download_Instance.live_dl,
+                                daemon=True
+                            )
+                            self.following_manifest_thread.start()
                     return True
                 else:
                     return False
@@ -1721,8 +1740,8 @@ class DownloadStream:
 class DownloadStreamDirect(DownloadStream):
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5,
                  folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None,
-                 yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
-
+                 yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}):
+        params = download_params or locals().copy()
         # Initialize base class, but use in-memory DB (unused)
         super().__init__(
             info_dict=info_dict,
@@ -1739,9 +1758,9 @@ class DownloadStreamDirect(DownloadStream):
             yt_dlp_sort=yt_dlp_sort,
             include_dash=include_dash,
             include_m3u8=include_m3u8,
-            force_m3u8=force_m3u8
+            force_m3u8=force_m3u8,
+            download_params=params
         )
-
         # Close the unused in-memory DB connection
         if self.conn:
             self.close_connection()

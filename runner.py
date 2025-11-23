@@ -13,7 +13,7 @@ import threading
 kill_all = threading.Event()
 
 import signal
-from time import sleep
+from time import sleep, time
 import platform
 
 # Preserve original keyboard interrupt logic as true behaviour is known
@@ -106,7 +106,7 @@ def parse_string_or_tuple(value):
     
 
 
-def main(id, resolution='best', options={}, info_dict=None):
+def main(id, resolution='best', options={}, info_dict=None, thread_kill: threading.Event=kill_all):
     download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None))
     
     # Convert additional options to dictionary, if it exists
@@ -121,7 +121,48 @@ def main(id, resolution='best', options={}, info_dict=None):
         pass
     else:        
         info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)))
-    download_Live.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=kill_all)
+    download_Live.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
+
+def monitor_channel(options={}):
+    import logging
+    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None))
+    import monitor_channel
+    from typing import Dict
+    threads: Dict[str, threading.Thread] = {}
+    last_check = time()
+    channel_id = options.get("ID")
+    tab = "membership" if options.get("members_only", False) else "streams"
+    if not options.get("wait_for_video", None):
+        options["wait_for_video"] = (60,)
+    wait = max(options.get("wait_for_video"))
+    logging.debug("Starting runner for channel: '{0}' on tab: '{1}'".format(channel_id, tab))
+    while True:
+        for id, thread in list(threads.items()):
+            if not thread.is_alive():
+                threads.pop(id)
+        logging.debug("Searching for streams for channel {0}".format(channel_id))
+        try:
+            videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options)
+            for video_id in videos_to_get:
+                t = threading.Thread(
+                    target=main,
+                    args=(video_id,),
+                    kwargs={
+                        'resolution': options.get("resolution"),
+                        'options': options,
+                        'thread_kill': kill_all
+                    },
+                    daemon=True
+                )
+                t.start()
+                threads[video_id] = t  # store the thread in a dictionary
+        except Exception as e:
+            logging.exception("An error occurred fetching upcoming streams")
+        time_to_next = wait-(time()-last_check)
+        logging.debug("Active threads: {0}".format(list(threads.keys())))
+        logging.debug("Sleeping for {0:.2f}s for next stream check".format(time_to_next))
+        sleep(time_to_next)
+        last_check=time()
     
 if __name__ == "__main__":
     # Create the parser
@@ -220,6 +261,14 @@ if __name__ == "__main__":
     parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. Default: 300. This is useful if waiting for chat to end causes hanging.")
     
     parser.add_argument('--new-line', action='store_true', help="Console messages always print to new line. (Currently only ensured for stats output)")
+
+    parser.add_argument('--monitor-channel', action='store_true', help="Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument")
+
+    parser.add_argument('--members-only', action='store_true', help="Monitor 'Members Only' playlist for streams instead of 'Streams' playlist. Requires cookies.")
+
+    parser.add_argument('--upcoming-lookahead', type=int, default=24, help="Maximum time (in hours) to start a downloader instance for a video. Default: 24")
+
+    parser.add_argument('--playlist-items', type=int, default=50, help="Maximum number of playlist items to check. Default: 50")
     
     # Parse the arguments
     args = parser.parse_args()
@@ -254,5 +303,7 @@ if __name__ == "__main__":
     #options['write_description'] = True
     #options['write_info_json'] = True
     
-    
-    main(id=id, resolution=resolution, options=options)
+    if options.get("monitor_channel", False) is True:
+        monitor_channel(options=options)
+    else:
+        main(id=id, resolution=resolution, options=options)
