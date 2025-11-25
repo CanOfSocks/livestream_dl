@@ -107,12 +107,14 @@ def parse_string_or_tuple(value):
 
 
 def main(id, resolution='best', options={}, info_dict=None, thread_kill: threading.Event=kill_all):
-    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None))
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name=id)
     
     # Convert additional options to dictionary, if it exists
     if options.get('ytdlp_options', None) is not None:        
         print("JSON for ytdlp_options: {0}".format(options.get('ytdlp_options', None)))
         options['ytdlp_options'] = json.loads(options.get('ytdlp_options'))
+    else:
+        options['ytdlp_options'] = {}
     
     if options.get('json_file', None) is not None:
         with open(options.get('json_file'), 'r', encoding='utf-8') as file:
@@ -120,8 +122,9 @@ def main(id, resolution='best', options={}, info_dict=None, thread_kill: threadi
     elif info_dict:
         pass
     else:        
-        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)))
-    download_Live.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
+        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)), logger=logger)
+    downloader = download_Live.LiveStreamDownloader(kill_all=kill_all, logger=logger)
+    downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
 
 def monitor_channel(options={}):
     import logging
@@ -280,7 +283,7 @@ if __name__ == "__main__":
 
     # Access the 'ID' value
     options = vars(args)
-    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True)
+    
     if options.get('ID', None) is None and options.get('json_file', None) is None:
         options['ID'] = str(input("Please enter a video URL: ")).strip()
 
@@ -296,6 +299,7 @@ if __name__ == "__main__":
     id = options.get('ID')
     resolution = options.get('resolution')
     
+    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True)
     # For testing
     
     #options['batch_size'] = 5

@@ -4,35 +4,35 @@ import logging
 import json
 
 class MyLogger:
-    def __init__(self):
-        pass
+    def __init__(self, logger: logging = logging.getLogger()):
+        self.logger=logger
 
     def debug(self, msg):
-        logging.debug(msg)
+        self.logger.debug(msg)
 
     def info(self, msg):
-        logging.info(msg)
+        self.logger.info(msg)
 
     def warning(self, msg):
         msg_str = str(msg)
         if ("private" in msg_str.lower() or
             "unavailable" in msg_str.lower() or
             "should already be available" in msg_str.lower()):
-            logging.info(msg_str)
+            self.logger.info(msg_str)
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         elif "Video is no longer live. Giving up after" in msg_str:
-            logging.info(msg_str)
+            self.logger.info(msg_str)
             raise yt_dlp.utils.DownloadError("Video is no longer live")
         elif "this live event will begin in" in msg_str.lower() or "premieres in" in msg_str.lower():
-            logging.info(msg)
+            self.logger.info(msg)
         elif "not available on this app" in msg_str:
-            logging.error(msg)
+            self.logger.error(msg)
             raise yt_dlp.utils.DownloadError(msg_str)
         else:
-            logging.warning(msg)
+            self.logger.warning(msg)
 
     def error(self, msg):
-        logging.error(msg)
+        self.logger.error(msg)
 
 class VideoInaccessibleError(PermissionError):
     pass
@@ -49,10 +49,10 @@ class VideoDownloadError(yt_dlp.utils.DownloadError):
 class LivestreamError(TypeError):
     pass
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False, logger=logging.getLogger()):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
-    logger = MyLogger()
+    yt_dlpLogger = MyLogger(logger=logger)
     
     ydl_opts = {
         #'live_from_start': True,
@@ -65,7 +65,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
 #        'quiet': True,
 #        'no_warnings': True,
 #        'extractor_args': 'skip=dash,hls;',
-        'logger': logger
+        'logger': yt_dlpLogger
     }
 
     if isinstance(wait, tuple):

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import yt_dlp
 import sqlite3
 import requests
@@ -37,921 +38,933 @@ import re
 
 import threading
 
-kill_all = threading.Event()
 
-cleanup = threading.Event()
 
-live_chat_result = None
+class LiveStreamDownloader:
 
-chat_timeout = None
+    def __init__(self, kill_all=threading.Event(), cleanup = threading.Event(), logger: logging = None):
+        if logger:
+            self.logger = logger
+        else:
+            # 1. Create a Named Logger instance and assign it to self.logger
+            self.logger = logging.getLogger(self.__class__.__name__) 
+            # Ensure it processes messages (important if you don't call setup_logging immediately)
+        self.logger.propagate = False 
 
-# File name dictionary
-file_names = {
-    'databases': []
-}
+        # Global state converted to instance attributes
+        self.kill_all = kill_all
+        self.cleanup = cleanup
+        self.live_chat_result = None
+        self.chat_timeout = None
+        # File name dictionary
+        self.file_names = {
+            'databases': []
+        }
+        self.stats = {}
+        
 
-stats = {}
-
-# Create runner function for each download format
-def download_stream(info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
-    download_params = locals().copy()
-    download_params.update({"download_function": download_stream})
-    file = None
-    filetype = None
-    with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                    yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, download_params=download_params) as downloader:              
-        downloader.live_dl()
-        file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
-        if not keep_database:
-            logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
-            downloader.delete_temp_database()
-        elif downloader.temp_db_file != ':memory:':
-            database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
-            file_names['databases'].append(database_file)
-
-        file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
-        filetype = downloader.type
-    return file, filetype
-
-# Create runner function for each download format
-def download_stream_direct(info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
-    download_params = locals().copy()
-    download_params.update({"download_function": download_stream_direct})
-    file = None
-    filetype = None
-
-    with DownloadStreamDirect(info_dict, resolution=resolution, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                          yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, download_params=download_params) as downloader:
-        file_name = downloader.live_dl()
-        file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
-        filetype = downloader.type
-        downloader.delete_state_file()
-
-    return file, filetype
-
-def recover_stream(info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0):
-
-    file = None
-    filetype = None
-
-    with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                        proxies=proxies, yt_dlp_sort=yt_dlp_sort) as downloader:
-          
-        result = downloader.live_dl()
-        #downloader.save_stats()    
-        if force_merge or result <= 0 or result <= recovery_failure_tolerance:
-            if result > 0:
-                logging.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
+    # Create runner function for each download format
+    def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
+        download_params = locals().copy()
+        download_params.update({"download_function": self.download_stream})
+        file = None
+        filetype = None
+        with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                        yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
+                                        download_params=download_params, livestream_coordinator=self) as downloader:              
+            downloader.live_dl()
             file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
             if not keep_database:
-                logging.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
+                self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
                 downloader.delete_temp_database()
             elif downloader.temp_db_file != ':memory:':
                 database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
-                file_names['databases'].append(database_file)
+                self.file_names['databases'].append(database_file)
+
+            file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
+            filetype = downloader.type
+        return file, filetype
+
+    # Create runner function for each download format
+    def download_stream_direct(self, info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
+        download_params = locals().copy()
+        download_params.update({"download_function": self.download_stream_direct})
+        file = None
+        filetype = None
+
+        with DownloadStreamDirect(info_dict, resolution=resolution, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                            yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
+                                            download_params=download_params, livestream_coordinator=self) as downloader:
+            file_name = downloader.live_dl()
+            file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
+            filetype = downloader.type
+            downloader.delete_state_file()
+
+        return file, filetype
+
+    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0):
+
+        file = None
+        filetype = None
+
+        with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                            proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self) as downloader:
+            
+            result = downloader.live_dl()
+            #downloader.save_stats()    
+            if force_merge or result <= 0 or result <= recovery_failure_tolerance:
+                if result > 0:
+                    self.logger.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
+                file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
+                if not keep_database:
+                    self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
+                    downloader.delete_temp_database()
+                elif downloader.temp_db_file != ':memory:':
+                    database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
+                    self.file_names['databases'].append(database_file)
+            else:
+                raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
+            file = FileInfo(file_name, file_type=downloader.type, format=downloader.format) 
+            filetype = downloader.type  
+            
+        return file, filetype
+
+    def submit_download(self, executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False):
+        extra_kwargs = {}
+
+        # Options only not used by recovery
+        if not options.get('recovery', False):
+            extra_kwargs.update({
+                "include_dash": options.get("dash", False),
+                "include_m3u8": options.get("m3u8", False), 
+                "force_m3u8": options.get("force_m3u8", False),
+            })
+
+        # Select the function
+        if options.get('recovery', False):
+            func = self.recover_stream
+            extra_kwargs.update({
+                "force_merge": options.get('force_recovery_merge', False),
+                "recovery_failure_tolerance": options.get('recovery_failure_tolerance', 0)
+            })
+            keep_key = "keep_database"
+        elif options.get('direct_to_ts', False):
+            func = self.download_stream_direct
+            extra_kwargs.update({
+                "keep_state": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
+            })
+            keep_key = None
         else:
-            raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
-        file = FileInfo(file_name, file_type=downloader.type, format=downloader.format) 
-        filetype = downloader.type  
-        
-    return file, filetype
+            func = self.download_stream
+            extra_kwargs.update({
+                "keep_database": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
+            })
+            keep_key = "keep_database"
 
-def submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False):
-    extra_kwargs = {}
+        kwargs = dict(
+            info_dict=info_dict,
+            resolution="audio_only" if is_audio else resolution,
+            batch_size=options.get('batch_size', 1),
+            max_workers=options.get("threads", 1),
+            folder=download_folder,
+            file_name=file_name,
+            retries=options.get('segment_retries'),
+            cookies=options.get('cookies'),
+            yt_dlp_options=options.get('ytdlp_options', None),
+            proxies=options.get("proxy", None),
+            yt_dlp_sort=options.get('custom_sort', None),
 
-    # Options only not used by recovery
-    if not options.get('recovery', False):
-        extra_kwargs.update({
-            "include_dash": options.get("dash", False),
-            "include_m3u8": options.get("m3u8", False), 
-            "force_m3u8": options.get("force_m3u8", False),
-        })
+        )
 
-    # Select the function
-    if options.get('recovery', False):
-        func = recover_stream
-        extra_kwargs.update({
-            "force_merge": options.get('force_recovery_merge', False),
-            "recovery_failure_tolerance": options.get('recovery_failure_tolerance', 0)
-        })
-        keep_key = "keep_database"
-    elif options.get('direct_to_ts', False):
-        func = download_stream_direct
-        extra_kwargs.update({
-            "keep_state": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
-        })
-        keep_key = None
-    else:
-        func = download_stream
-        extra_kwargs.update({
-            "keep_database": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
-        })
-        keep_key = "keep_database"
+        if extra_kwargs:
+            kwargs.update(extra_kwargs)
 
-    kwargs = dict(
-        info_dict=info_dict,
-        resolution="audio_only" if is_audio else resolution,
-        batch_size=options.get('batch_size', 1),
-        max_workers=options.get("threads", 1),
-        folder=download_folder,
-        file_name=file_name,
-        retries=options.get('segment_retries'),
-        cookies=options.get('cookies'),
-        yt_dlp_options=options.get('ytdlp_options', None),
-        proxies=options.get("proxy", None),
-        yt_dlp_sort=options.get('custom_sort', None),
+        self.logger.debug("Starting executor with: {0}".format(json.dumps(kwargs)))
 
-    )
-
-    if extra_kwargs:
-        kwargs.update(extra_kwargs)
-
-    logging.debug("Starting executor with: {0}".format(json.dumps(kwargs)))
-
-    # Submit to executor
-    future = executor.submit(func, **kwargs)
-    futures.add(future)
-    return future
+        # Submit to executor
+        future = executor.submit(func, **kwargs)
+        futures.add(future)
+        return future
 
 
-# Multithreaded function to download new segments with delayed commit after a batch
-def download_segments(info_dict, resolution='best', options={}, thread_event: threading.Event=None):
-    global kill_all
-    futures = set()
-    #file_names = {}
+    # Multithreaded function to download new segments with delayed commit after a batch
+    def download_segments(self, info_dict, resolution='best', options={}, thread_event: threading.Event=None):
+        global kill_all
+        futures = set()
+        #file_names = {}
 
-    if thread_event is not None:        
-        kill_all = thread_event
-        
-    setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}))
-    stats['id'] = info_dict.get('id', None)
-    logging.debug(json.dumps(options, indent=4))
-    outputFile = output_filename(info_dict=info_dict, outtmpl=options.get('output'))
-    file_name = None
-    # Requires testing
-    if options.get('temp_folder') is not None and options.get('temp_folder') != os.path.dirname(outputFile):
-        output_folder, file_name = os.path.split(outputFile)
-        download_folder = output_filename(info_dict=info_dict, outtmpl=options.get('temp_folder'))
-        options['temp_folder'] = download_folder
-    else:
-        download_folder, file_name = os.path.split(outputFile)
-    options['filename'] = file_name
-    if download_folder:    
-        os.makedirs(download_folder, exist_ok=True)
-        
-
-    with concurrent.futures.ThreadPoolExecutor() as executor:  
-        try: 
+        if thread_event is not None:        
+            kill_all = thread_event
             
-            # Download auxiliary files (thumbnail, info,json etc)
-            auxiliary_thread = executor.submit(download_auxiliary_files, info_dict=info_dict, options=options)
-            futures.add(auxiliary_thread)
-            
-            live_chat_thread = None            
-            if options.get('live_chat', False) is True:
-                live_chat_thread = threading.Thread(target=download_live_chat, args=(info_dict,options), daemon=True)
-                live_chat_thread.start()
-                #download_live_chat(info_dict=info_dict, options=options)
-                #chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
-                #futures.add(chat_thread)
-            
-            format_check = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None), include_dash=(options.get("dash", False) and not options.get('recovery', False)), include_m3u8=options.get("m3u8", False), force_m3u8=options.get("force_m3u8", False))
-            if not format_check:
-                raise ValueError("Resolution is not valid or does not exist in stream")
-            # For use of specificed format. Expects two values, but can work with more
-            # Video + Audio
-            if resolution.lower() != "audio_only":
-                
-                #Video
-                submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False)
-                if format_check.protocol != "m3u8_native":
-                    #Audio
-                    submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
-
-                #futures.add(video_future)
-                #futures.add(audio_future)
-            # Audio-only
-            else:
-                submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
-                #futures.add(audio_future)
-                
-            while True:
-                if kill_all.is_set():
-                    raise KeyboardInterrupt("Thread kill event is set, ending...")
-                done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.ALL_COMPLETED)
-                # Continuously check for completion or interruption
-                for future in done:
-                    
-                    #if future.exception() is not None:
-                    #    if type == 'auxiliary': 
-                            #logging.error(str(future.exception()))
-                     #   else:
-                    #        raise future.exception()
-                    
-                    result, type = future.result()
-                    logging.info("\033[31m{0}\033[0m".format(result))
-                    
-                    if type == 'auxiliary':
-                        file_names.update(result)
-                    elif str(type).lower() == 'video':
-                        file_names['video'] = result
-                    elif str(type).lower() == 'audio':
-                        file_names['audio'] = result    
-                    else:
-                        file_names[str(type)] = result
-                    
-                    futures.discard(future)
-                    
-                if len(not_done) <= 0:
-                    break
-                #else:
-                #    time.sleep(0.9)
-                print_stats(options=options)
-            
-            if live_chat_thread is not None:
-                logging.info("Waiting for live chat to end")
-                chat_timeout = time.time()
-                live_chat_thread.join()
-            
-        except KeyboardInterrupt as e:
-            kill_all.set()
-            logging.debug("Keyboard interrupt detected")
-            if len(not_done) > 0:
-                logging.debug("Cancelling remaining threads")
-            for future in not_done:
-                _ = future.cancel()
-            done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
-            executor.shutdown(wait=False,cancel_futures=True)
-            logging.debug("Shutdown all threads")
-            raise
-            
-    
-    create_mp4(file_names=file_names, info_dict=info_dict, options=options)
-        
-    
-    move_to_final(options=options, output_file=outputFile, file_names=file_names)
-                
-    #move_to_final(info_dict, options, file_names)
-    
-def output_filename(info_dict, outtmpl):
-    outputFile = str(yt_dlp.YoutubeDL().prepare_filename(info_dict, outtmpl=outtmpl))
-    return outputFile
-"""
-def move_to_final(options, outputFile, file_names):
-    logging.debug("Tracked Files: {0}".format(json.dumps(file_names, indent=4)))
-    if os.path.dirname(outputFile):
-        os.makedirs(os.path.dirname(outputFile), exist_ok=True)
-    try:
-        if file_names.get('thumbnail'):
-            # Remove thumbnail if write_thumbnail isn't True as it may have only been requested for embedding      
-            if options.get('write_thumbnail', False):
-                thumbnail = file_names.get('thumbnail')
-                thumb_output = "{0}{1}".format(outputFile, thumbnail.suffix)
-                if str(thumbnail).strip() != str(thumb_output).strip():
-                    logging.debug("Moving {0} to {1}".format(thumbnail.absolute(), thumb_output))                
-                    shutil.move(thumbnail.absolute(), thumb_output)
-            else:
-                logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
-                file_names.get('thumbnail').unlink(missing_ok=True)
-                file_names.pop('thumbnail',None)
-
-    except Exception as e:
-        logging.exception("unable to move thumbnail: {0}".format(e))
-    
-    try:
-        if file_names.get('info_json'):
-            info_json = file_names.get('info_json')
-            info_output = "{0}{1}".format(outputFile, '.info.json')
-            if str(info_json).strip() != str(info_output).strip():
-                logging.info("Moving {0} to {1}".format(info_json.absolute(), info_output))            
-                shutil.move(info_json.absolute(), info_output)
-    except Exception as e:
-        logging.exception("unable to move info_json: {0}".format(e))
-        
-    try:
-        if file_names.get('description'):
-            description = file_names.get('description')
-            description_output = "{0}{1}".format(outputFile, description.suffix)            
-            if str(description).strip() != str(description_output).strip():
-                logging.info("Moving {0} to {1}".format(description.absolute(), description_output))
-                shutil.move(description.absolute(), description_output)
-    except Exception as e:
-        logging.exception("unable to move description: {0}".format(e))
-    
-    try:
-        if file_names.get('video'):
-            video = file_names.get('video')
-            video_output = "{0}.{1}{2}".format(outputFile, video._format, video.suffix)
-            if str(video).strip() != str(video_output).strip():
-                logging.info("Moving {0} to {1}".format(video.absolute(), video_output))
-                shutil.move(video.absolute(), video_output)
-    except Exception as e:
-        logging.exception("unable to move video stream: {0}".format(e))
-        
-    try:
-        if file_names.get('audio'):
-            audio = file_names.get('audio')
-            audio_output = "{0}.{1}{2}".format(outputFile, audio._format, audio.suffix)
-            if str(audio).strip() != str(audio_output).strip():
-                logging.info("Moving {0} to {1}".format(audio.absolute(), audio_output))
-                shutil.move(audio.absolute(), audio_output)
-    except Exception as e:
-        logging.exception("unable to move audio stream: {0}".format(e))
-        
-    try:
-        if file_names.get('merged'):
-            merged = file_names.get('merged')
-            merged_output = "{0}{1}".format(outputFile, merged.suffix)
-            if str(merged).strip() != str(merged_output).strip():
-                logging.info("Moving {0} to {1}".format(merged.absolute(), merged_output))
-                shutil.move(merged.absolute(), merged_output)
-    except Exception as e:
-        logging.exception("unable to move merged video: {0}".format(e))
-                
-    try:
-        if file_names.get('live_chat'):
-            live_chat = file_names.get('live_chat')
-            live_chat_output = "{0}{1}".format(outputFile, ".live_chat.zip")
-            if str(live_chat).strip() != str(live_chat_output).strip():
-                logging.info("Moving {0} to {1}".format(live_chat.absolute(), live_chat_output))
-                shutil.move(live_chat.absolute(), live_chat_output)
-    except Exception as e:
-        logging.exception("unable to move live chat zip: {0}".format(e))
-     
-    try:
-        if file_names.get('databases'):
-            for file in file_names.get('databases'):
-                db_output = "{0}.{1}{2}".format(outputFile, file.format, file.suffix)
-                if str(file).strip() != str(db_output).strip():
-                    logging.info("Moving {0} to {1}".format(file.absolute(), db_output))
-                    shutil.move(file.absolute(), db_output)
-    except Exception as e:
-        logging.exception("unable to move database files: {0}".format(e))
-    try:
-        if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
-            if options.get('write_ffmpeg_command', False):
-                ffmpeg_command = file_names.get('ffmpeg_cmd')
-                ffmpeg_command_output = "{0}{1}".format(outputFile, ".ffmpeg.txt")
-                if str(ffmpeg_command).strip() != str(ffmpeg_command_output).strip():
-                    logging.info("Moving {0} to {1}".format(ffmpeg_command.absolute(), ffmpeg_command_output))
-                    shutil.move(ffmpeg_command.absolute(), ffmpeg_command_output)
-            else:
-                file_names.get('ffmpeg_cmd').unlink()
-    except Exception as e:
-        logging.exception("unable to move ffmpeg command file: {0}".format(e))
-        
-    try:
-        os.rmdir(options.get('temp_folder'))
-    except OSError as e:
-        if e.errno == errno.ENOTEMPTY:
-            logging.warning(f"Error: Directory not empty: {e.filename}")
-            # Optional: handle non-empty directory (e.g., log, retry, or remove contents)
+        setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name=str(self.__class__.__name__))
+        self.stats['id'] = info_dict.get('id', None)
+        self.logger.debug(json.dumps(options, indent=4))
+        outputFile = self.output_filename(info_dict=info_dict, outtmpl=options.get('output'))
+        file_name = None
+        # Requires testing
+        if options.get('temp_folder') is not None and options.get('temp_folder') != os.path.dirname(outputFile):
+            output_folder, file_name = os.path.split(outputFile)
+            download_folder = self.output_filename(info_dict=info_dict, outtmpl=options.get('temp_folder'))
+            options['temp_folder'] = download_folder
         else:
-            logging.exception("Error removing temp folder: {0}".format(e))
-    except Exception as e:
-        logging.exception("Error removing temp folder: {0}".format(e))
-        
-    logging.info("Finished moving files from temporary directory to output destination")
-"""
+            download_folder, file_name = os.path.split(outputFile)
+        options['filename'] = file_name
+        if download_folder:    
+            os.makedirs(download_folder, exist_ok=True)
+            
 
-def move_to_final(options, output_file, file_names):
-    def maybe_move(key, dest_func, option_flag=None):
-        """
-        key: key in file_names
-        dest_func: func -> pathlib -> string dest path
-        delete_if_false: if True, delete when option_flag not set
-        option_flag: name of boolean option (write_thumbnail etc)
-        """
-        f = file_names.get(key)
-        if not f:
-            return
+        with concurrent.futures.ThreadPoolExecutor() as executor:  
+            try: 
+                
+                # Download auxiliary files (thumbnail, info,json etc)
+                auxiliary_thread = executor.submit(self.download_auxiliary_files, info_dict=info_dict, options=options)
+                futures.add(auxiliary_thread)
+                
+                live_chat_thread = None            
+                if options.get('live_chat', False) is True:
+                    live_chat_thread = threading.Thread(target=self.download_live_chat, args=(info_dict,options), daemon=True)
+                    live_chat_thread.start()
+                    #download_live_chat(info_dict=info_dict, options=options)
+                    #chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
+                    #futures.add(chat_thread)
+                
+                format_check = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None), include_dash=(options.get("dash", False) and not options.get('recovery', False)), include_m3u8=options.get("m3u8", False), force_m3u8=options.get("force_m3u8", False))
+                if not format_check:
+                    raise ValueError("Resolution is not valid or does not exist in stream")
+                # For use of specificed format. Expects two values, but can work with more
+                # Video + Audio
+                if resolution.lower() != "audio_only":
+                    
+                    #Video
+                    self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False)
+                    if format_check.protocol != "m3u8_native":
+                        #Audio
+                        self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
+
+                    #futures.add(video_future)
+                    #futures.add(audio_future)
+                # Audio-only
+                else:
+                    self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
+                    #futures.add(audio_future)
+                    
+                while True:
+                    if kill_all.is_set():
+                        raise KeyboardInterrupt("Thread kill event is set, ending...")
+                    done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.ALL_COMPLETED)
+                    # Continuously check for completion or interruption
+                    for future in done:
+                        
+                        #if future.exception() is not None:
+                        #    if type == 'auxiliary': 
+                                #logging.error(str(future.exception()))
+                        #   else:
+                        #        raise future.exception()
+                        
+                        result, type = future.result()
+                        self.logger.info("\033[31m{0}\033[0m".format(result))
+                        
+                        if type == 'auxiliary':
+                            self.file_names.update(result)
+                        elif str(type).lower() == 'video':
+                            self.file_names['video'] = result
+                        elif str(type).lower() == 'audio':
+                            self.file_names['audio'] = result    
+                        else:
+                            self.file_names[str(type)] = result
+                        
+                        futures.discard(future)
+                        
+                    if len(not_done) <= 0:
+                        break
+                    #else:
+                    #    time.sleep(0.9)
+                    self.print_stats(options=options)
+                
+                if live_chat_thread is not None:
+                    self.logger.info("Waiting for live chat to end")
+                    chat_timeout = time.time()
+                    live_chat_thread.join()
+                
+            except KeyboardInterrupt as e:
+                kill_all.set()
+                self.logger.debug("Keyboard interrupt detected")
+                if len(not_done) > 0:
+                    self.logger.debug("Cancelling remaining threads")
+                for future in not_done:
+                    _ = future.cancel()
+                done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
+                executor.shutdown(wait=False,cancel_futures=True)
+                self.logger.debug("Shutdown all threads")
+                raise
+                
+        
+        self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options)
+            
+        
+        self.move_to_final(options=options, output_file=outputFile, file_names=self.file_names)
+                    
+        #move_to_final(info_dict, options, file_names)
+        
+    def output_filename(self, info_dict, outtmpl):
+        outputFile = str(yt_dlp.YoutubeDL().prepare_filename(info_dict, outtmpl=outtmpl))
+        return outputFile
+    """
+    def move_to_final(options, outputFile, file_names):
+        logging.debug("Tracked Files: {0}".format(json.dumps(file_names, indent=4)))
+        if os.path.dirname(outputFile):
+            os.makedirs(os.path.dirname(outputFile), exist_ok=True)
         try:
-            # deletion case (thumbnail / ffmpeg)
-            if option_flag is not None and not options.get(option_flag, False):
-                logging.info(f"Removing {f.absolute()}")
-                f.unlink(missing_ok=True)
-                file_names.pop(key, None)
-                return
+            if file_names.get('thumbnail'):
+                # Remove thumbnail if write_thumbnail isn't True as it may have only been requested for embedding      
+                if options.get('write_thumbnail', False):
+                    thumbnail = file_names.get('thumbnail')
+                    thumb_output = "{0}{1}".format(outputFile, thumbnail.suffix)
+                    if str(thumbnail).strip() != str(thumb_output).strip():
+                        logging.debug("Moving {0} to {1}".format(thumbnail.absolute(), thumb_output))                
+                        shutil.move(thumbnail.absolute(), thumb_output)
+                else:
+                    logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
+                    file_names.get('thumbnail').unlink(missing_ok=True)
+                    file_names.pop('thumbnail',None)
 
-            dest = dest_func(f)
-            if str(f).strip() != str(dest).strip():
-                logging.info(f"Moving {f.absolute()} → {dest}")
-                shutil.move(f.absolute(), dest)
         except Exception as e:
-            logging.exception(f"unable to move {key}: {e}")
-
-    # ensure output dir exists
-    out_dir = os.path.dirname(output_file)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-
-    # === individual file handlers ===
-
-    maybe_move('thumbnail',
-               lambda f: f"{output_file}{f.suffix}",
-               option_flag='write_thumbnail')
-
-    maybe_move('info_json',
-               lambda f: f"{output_file}.info.json")
-
-    maybe_move('description',
-               lambda f: f"{output_file}{f.suffix}")
-
-    maybe_move('video',
-               lambda f: f"{output_file}.{f._format}{f.suffix}")
-
-    maybe_move('audio',
-               lambda f: f"{output_file}.{f._format}{f.suffix}")
-
-    maybe_move('merged',
-               lambda f: f"{output_file}{f.suffix}")
-
-    maybe_move('live_chat',
-               lambda f: f"{output_file}.live_chat.zip")
-
-    # special: databases = list
-    try:
-        for f in file_names.get('databases', []):
-            dest = f"{output_file}.{f._format}{f.suffix}"
-            if str(f).strip() != str(dest).strip():
-                logging.info(f"Moving {f.absolute()} → {dest}")
-                shutil.move(f.absolute(), dest)
-    except Exception as e:
-        logging.exception(f"unable to move database files: {e}")
-
-    # special: ffmpeg_cmd
-    maybe_move('ffmpeg_cmd',
-               lambda f: f"{output_file}.ffmpeg.txt",
-               option_flag='write_ffmpeg_command')
-
-    # remove temp folder
-    
-    if options.get('temp_folder', None) is not None:
+            logging.exception("unable to move thumbnail: {0}".format(e))
+        
+        try:
+            if file_names.get('info_json'):
+                info_json = file_names.get('info_json')
+                info_output = "{0}{1}".format(outputFile, '.info.json')
+                if str(info_json).strip() != str(info_output).strip():
+                    logging.info("Moving {0} to {1}".format(info_json.absolute(), info_output))            
+                    shutil.move(info_json.absolute(), info_output)
+        except Exception as e:
+            logging.exception("unable to move info_json: {0}".format(e))
+            
+        try:
+            if file_names.get('description'):
+                description = file_names.get('description')
+                description_output = "{0}{1}".format(outputFile, description.suffix)            
+                if str(description).strip() != str(description_output).strip():
+                    logging.info("Moving {0} to {1}".format(description.absolute(), description_output))
+                    shutil.move(description.absolute(), description_output)
+        except Exception as e:
+            logging.exception("unable to move description: {0}".format(e))
+        
+        try:
+            if file_names.get('video'):
+                video = file_names.get('video')
+                video_output = "{0}.{1}{2}".format(outputFile, video._format, video.suffix)
+                if str(video).strip() != str(video_output).strip():
+                    logging.info("Moving {0} to {1}".format(video.absolute(), video_output))
+                    shutil.move(video.absolute(), video_output)
+        except Exception as e:
+            logging.exception("unable to move video stream: {0}".format(e))
+            
+        try:
+            if file_names.get('audio'):
+                audio = file_names.get('audio')
+                audio_output = "{0}.{1}{2}".format(outputFile, audio._format, audio.suffix)
+                if str(audio).strip() != str(audio_output).strip():
+                    logging.info("Moving {0} to {1}".format(audio.absolute(), audio_output))
+                    shutil.move(audio.absolute(), audio_output)
+        except Exception as e:
+            logging.exception("unable to move audio stream: {0}".format(e))
+            
+        try:
+            if file_names.get('merged'):
+                merged = file_names.get('merged')
+                merged_output = "{0}{1}".format(outputFile, merged.suffix)
+                if str(merged).strip() != str(merged_output).strip():
+                    logging.info("Moving {0} to {1}".format(merged.absolute(), merged_output))
+                    shutil.move(merged.absolute(), merged_output)
+        except Exception as e:
+            logging.exception("unable to move merged video: {0}".format(e))
+                    
+        try:
+            if file_names.get('live_chat'):
+                live_chat = file_names.get('live_chat')
+                live_chat_output = "{0}{1}".format(outputFile, ".live_chat.zip")
+                if str(live_chat).strip() != str(live_chat_output).strip():
+                    logging.info("Moving {0} to {1}".format(live_chat.absolute(), live_chat_output))
+                    shutil.move(live_chat.absolute(), live_chat_output)
+        except Exception as e:
+            logging.exception("unable to move live chat zip: {0}".format(e))
+        
+        try:
+            if file_names.get('databases'):
+                for file in file_names.get('databases'):
+                    db_output = "{0}.{1}{2}".format(outputFile, file.format, file.suffix)
+                    if str(file).strip() != str(db_output).strip():
+                        logging.info("Moving {0} to {1}".format(file.absolute(), db_output))
+                        shutil.move(file.absolute(), db_output)
+        except Exception as e:
+            logging.exception("unable to move database files: {0}".format(e))
+        try:
+            if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
+                if options.get('write_ffmpeg_command', False):
+                    ffmpeg_command = file_names.get('ffmpeg_cmd')
+                    ffmpeg_command_output = "{0}{1}".format(outputFile, ".ffmpeg.txt")
+                    if str(ffmpeg_command).strip() != str(ffmpeg_command_output).strip():
+                        logging.info("Moving {0} to {1}".format(ffmpeg_command.absolute(), ffmpeg_command_output))
+                        shutil.move(ffmpeg_command.absolute(), ffmpeg_command_output)
+                else:
+                    file_names.get('ffmpeg_cmd').unlink()
+        except Exception as e:
+            logging.exception("unable to move ffmpeg command file: {0}".format(e))
+            
         try:
             os.rmdir(options.get('temp_folder'))
         except OSError as e:
             if e.errno == errno.ENOTEMPTY:
                 logging.warning(f"Error: Directory not empty: {e.filename}")
+                # Optional: handle non-empty directory (e.g., log, retry, or remove contents)
             else:
-                logging.exception(f"Error removing temp folder: {e}")
+                logging.exception("Error removing temp folder: {0}".format(e))
         except Exception as e:
-            logging.exception(f"Error removing temp folder: {e}")
+            logging.exception("Error removing temp folder: {0}".format(e))
+            
+        logging.info("Finished moving files from temporary directory to output destination")
+    """
 
-    logging.info("Finished moving files from temporary directory to output destination")
+    def move_to_final(self, options, output_file, file_names):
+        def maybe_move(key, dest_func, option_flag=None):
+            """
+            key: key in file_names
+            dest_func: func -> pathlib -> string dest path
+            delete_if_false: if True, delete when option_flag not set
+            option_flag: name of boolean option (write_thumbnail etc)
+            """
+            f = file_names.get(key)
+            if not f:
+                return
+            try:
+                # deletion case (thumbnail / ffmpeg)
+                if option_flag is not None and not options.get(option_flag, False):
+                    self.logger.info(f"Removing {f.absolute()}")
+                    f.unlink(missing_ok=True)
+                    file_names.pop(key, None)
+                    return
 
-def download_live_chat(info_dict, options):
-    import yt_dlp
-    import zipfile
-    
-    if options.get('filename') is not None:
-        filename = options.get('filename')
-    else:
-        filename = info_dict.get('id')
-    
-    if options.get("temp_folder"):
-        base_output = os.path.join(options.get("temp_folder"), filename)
-    else:
-        base_output = filename
+                dest = dest_func(f)
+                if str(f).strip() != str(dest).strip():
+                    self.logger.info(f"Moving {f.absolute()} → {dest}")
+                    shutil.move(f.absolute(), dest)
+            except Exception as e:
+                self.logger.exception(f"unable to move {key}: {e}")
 
-    class YTDLP_Chat_logger():
-        def __init__(self, id=None):
-            self.id = id
+        # ensure output dir exists
+        out_dir = os.path.dirname(output_file)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
 
-        def debug(self, msg):
-            logging.debug("yt-dlp chat ({1}): {0}".format(msg, self.id))
+        # === individual file handlers ===
 
-        def info(self, msg):
-            logging.info("yt-dlp chat ({1}): {0}".format(msg, self.id))
+        maybe_move('thumbnail',
+                lambda f: f"{output_file}{f.suffix}",
+                option_flag='write_thumbnail')
 
-        def warning(self, msg):
-            logging.warning("yt-dlp chat ({1}): {0}".format(msg, self.id))
+        maybe_move('info_json',
+                lambda f: f"{output_file}.info.json")
 
-        def error(self, msg):
-            logging.error("yt-dlp chat ({1}): {0}".format(msg, self.id))
+        maybe_move('description',
+                lambda f: f"{output_file}{f.suffix}")
 
-    ydl_opts = {
-        'skip_download': True,               # Skip downloading video/audio
-        'logger': YTDLP_Chat_logger(options.get("ID", None)),
-        'quiet': True,
-        'cookiefile': options.get('cookies', None),
-        'retries': 25,
-        'concurrent_fragment_downloads': 3,
-        #'live_from_start': True,
-        'writesubtitles': True,              # Extract subtitles (live chat)
-        'subtitlesformat': 'json',           # Set format to JSON
-        'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
-        'concurrent_fragment_downloads': 2,
-        'outtmpl': base_output          # Save to a JSON file        
-    }
+        maybe_move('video',
+                lambda f: f"{output_file}.{f._format}{f.suffix}")
 
-    ydl_opts.update(options.get('ytdlp_options', {}))
-    
-    livechat_filename = base_output + ".live_chat.json"
-    zip_filename = base_output + ".live_chat.zip"
-    
-    logging.info("Downloading live chat to: {0}".format(livechat_filename))
-    # Run yt-dlp with the specified options
-    # Don't except whole process on live chat fail
-    
-    try:
-        import chat_downloader
-        from chat_downloader import ChatDownloader
+        maybe_move('audio',
+                lambda f: f"{output_file}.{f._format}{f.suffix}")
+
+        maybe_move('merged',
+                lambda f: f"{output_file}{f.suffix}")
+
+        maybe_move('live_chat',
+                lambda f: f"{output_file}.live_chat.zip")
+
+        # special: databases = list
         try:
-            # URL of the video or stream chat
-            chat_url = 'https://www.youtube.com/watch?v={0}'.format(info_dict.get('id'))
-            logging.debug("Attempting to download with chat downloader")
-            # Initialize the ChatDownloader
-            chat_download = ChatDownloader(cookies=options.get('cookies', None), proxy=next(iter((options.get('proxy', None) or {}).values()), None))
+            for f in file_names.get('databases', []):
+                dest = f"{output_file}.{f._format}{f.suffix}"
+                if str(f).strip() != str(dest).strip():
+                    self.logger.info(f"Moving {f.absolute()} → {dest}")
+                    shutil.move(f.absolute(), dest)
+        except Exception as e:
+            self.logger.exception(f"unable to move database files: {e}")
 
-            # Open a JSON file to save the chat
+        # special: ffmpeg_cmd
+        maybe_move('ffmpeg_cmd',
+                lambda f: f"{output_file}.ffmpeg.txt",
+                option_flag='write_ffmpeg_command')
 
-            # Download the chat
-            chat = chat_download.get_chat(chat_url, output=livechat_filename, overwrite=False)
+        # remove temp folder
+        
+        if options.get('temp_folder', None) is not None:
+            try:
+                os.rmdir(options.get('temp_folder'))
+            except OSError as e:
+                if e.errno == errno.ENOTEMPTY:
+                    self.logger.warning(f"Error: Directory not empty: {e.filename}")
+                else:
+                    self.logger.exception(f"Error removing temp folder: {e}")
+            except Exception as e:
+                self.logger.exception(f"Error removing temp folder: {e}")
 
-            # Process chat messages for the duration of the timeout
-            for message in chat:
-                if kill_all.is_set():
-                    logging.debug("Killing live chat downloader")
-                    chat_download.close()
-                    break
-                if chat_timeout is not None and time.time() - chat_timeout >= options.get('stop_chat_when_done', 300):
-                    logging.warning("Stopping chat download for {0}, timeout ({1}s) exceeded".format(options.get('id', "N/A"), options.get('stop_chat_when_done', 300)))
-                    chat_download.close()
-                    break
-            chat_download.close()   
+        self.logger.info("Finished moving files from temporary directory to output destination")
 
-        # Temporary fallback due to know issue of chat-downloader not working after youtube changes
-        except chat_downloader.errors.ParsingError as e:
-            logging.exception("Unable to parse live chat using chat-downloader, using yt-dlp")
+    def download_live_chat(self, info_dict, options):
+        import yt_dlp
+        import zipfile
+        
+        if options.get('filename') is not None:
+            filename = options.get('filename')
+        else:
+            filename = info_dict.get('id')
+        
+        if options.get("temp_folder"):
+            base_output = os.path.join(options.get("temp_folder"), filename)
+        else:
+            base_output = filename
+
+        class YTDLP_Chat_logger():
+            def __init__(self, logger):
+                self.logger = logger
+
+            def debug(self, msg):
+                self.logger.debug("(yt-dlp chat): {0}".format(msg))
+
+            def info(self, msg):
+                self.logger.info("(yt-dlp chat): {0}".format(msg))
+
+            def warning(self, msg):
+                self.logger.warning("(yt-dlp chat): {0}".format(msg))
+
+            def error(self, msg):
+                self.logger.error("(yt-dlp chat): {0}".format(msg))
+
+        ydl_opts = {
+            'skip_download': True,               # Skip downloading video/audio
+            'logger': YTDLP_Chat_logger(logger=self.logger),
+            'quiet': True,
+            'cookiefile': options.get('cookies', None),
+            'retries': 25,
+            'concurrent_fragment_downloads': 3,
+            #'live_from_start': True,
+            'writesubtitles': True,              # Extract subtitles (live chat)
+            'subtitlesformat': 'json',           # Set format to JSON
+            'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
+            'concurrent_fragment_downloads': 2,
+            'outtmpl': base_output          # Save to a JSON file        
+        }
+        print(options.get('ytdlp_options', {}))
+        ydl_opts.update(options.get('ytdlp_options', {}))
+        
+        livechat_filename = base_output + ".live_chat.json"
+        zip_filename = base_output + ".live_chat.zip"
+        
+        self.logger.info("Downloading live chat to: {0}".format(livechat_filename))
+        # Run yt-dlp with the specified options
+        # Don't except whole process on live chat fail
+        
+        try:
+            import chat_downloader
+            from chat_downloader import ChatDownloader
+            try:
+                # URL of the video or stream chat
+                chat_url = 'https://www.youtube.com/watch?v={0}'.format(info_dict.get('id'))
+                self.logger.debug("Attempting to download with chat downloader")
+                # Initialize the ChatDownloader
+                chat_download = ChatDownloader(cookies=options.get('cookies', None), proxy=next(iter((options.get('proxy', None) or {}).values()), None))
+
+                # Open a JSON file to save the chat
+
+                # Download the chat
+                chat = chat_download.get_chat(chat_url, output=livechat_filename, overwrite=False)
+
+                # Process chat messages for the duration of the timeout
+                for message in chat:
+                    if kill_all.is_set():
+                        self.logger.debug("Killing live chat downloader")
+                        chat_download.close()
+                        break
+                    if self.chat_timeout is not None and time.time() - self.chat_timeout >= options.get('stop_chat_when_done', 300):
+                        self.logger.warning("Stopping chat download for {0}, timeout ({1}s) exceeded".format(options.get('id', "N/A"), options.get('stop_chat_when_done', 300)))
+                        chat_download.close()
+                        break
+                chat_download.close()   
+
+            # Temporary fallback due to know issue of chat-downloader not working after youtube changes
+            except chat_downloader.errors.ParsingError as e:
+                self.logger.exception("Unable to parse live chat using chat-downloader, using yt-dlp")
+                if options.get('proxy', None) is not None:
+                    ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        result = ydl.process_ie_result(info_dict)
+                        #result = ydl.download_with_info_file(info_dict)
+                        #result = ydl._writesubtitles(info_dict, )
+                except Exception as e:
+                    self.logger.exception("\033[31m{0}\033[0m".format(e))
+            
+        except ImportError as e:
+            self.logger.warning("Unable to import chat-downloader, using yt-dlp")
             if options.get('proxy', None) is not None:
                 ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.process_ie_result(info_dict)
                     #result = ydl.download_with_info_file(info_dict)
-                    #result = ydl._writesubtitles(info_dict, )
+                    #result = ydl._writesubtitles()
             except Exception as e:
-                logging.exception("\033[31m{0}\033[0m".format(e))
+                self.logger.exception("\033[31m{0}\033[0m".format(e)) 
         
-    except ImportError as e:
-        logging.warning("Unable to import chat-downloader, using yt-dlp")
+            
+        except Exception as e:
+            self.logger.exception("\033[31m{0}\033[0m".format(e))
+        time.sleep(1)
+        part_file = "{0}.part".format(livechat_filename)
+        if os.path.exists(part_file):
+            # Append part to 
+            chunk_size = 1024*1024*10  # number of characters per chunk, up to 10M characters
+            with open(part_file, "r", encoding="utf-8") as fa, \
+                open(livechat_filename, "a", encoding="utf-8") as fb:
+                while chunk := fa.read(chunk_size):
+                    fb.write(chunk)
+            os.remove("{0}.part".format(livechat_filename))
+
+        
+        try:
+            with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
+                zipf.write(livechat_filename, arcname=os.path.basename(livechat_filename))
+            os.remove(livechat_filename)
+            live_chat = {
+                'live_chat': FileInfo(zip_filename, file_type='live_chat')
+            }
+            self.file_names.update(live_chat)
+            return live_chat, 'live_chat'
+        except Exception as e:
+            self.logger.exception("\033[31m{0}\033[0m".format(e))
+        
+    def replace_ip_in_json(self, file_name):
+        import re
+        pattern = re.compile(r'((?:[0-9]{1,3}\.){3}[0-9]{1,3})|((?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4})')
+
+        with open(file_name, 'r', encoding="utf-8") as file:
+            content = file.read()
+
+        modified_content = re.sub(pattern, '0.0.0.0', content)
+
+        with open(file_name, 'w', encoding="utf-8") as file:
+            file.write(modified_content)
+
+    def remove_urls_from_json(self, file_name):
+        with open(file_name, 'r', encoding="utf-8") as file:
+            data = json.load(file)
+            
+        if data.get('formats', None) is not None:
+            for format in data['formats']:
+                if format.get('url') is not None:
+                    format['url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+                    
+                if format.get('manifest_url') is not None:
+                    format['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+                
+                format.pop('fragment_base_url', None)
+                format.pop('fragments', None)
+                    
+        if data.get('thumbnails', None) is not None:
+            for thumbnail in data['thumbnails']:
+                if thumbnail.get('url', None) is not None:
+                    parsed_url = urlparse(thumbnail.get('url', ""))
+                    thumbnail['url'] = "{0}://{1}{2}".format(parsed_url.scheme, parsed_url.netloc, parsed_url.path)
+                    
+        if data.get('url', None) is not None:
+            data['url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+
+        if data.get('manifest_url', None) is not None:
+            data['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+            
+        data['removed_urls'] = True
+        
+        with open(file_name, "w", encoding='utf-8') as file:
+            json.dump(data, file)
+            
+    def download_auxiliary_files(self, info_dict, options):
+        if options.get('filename') is not None:
+            filename = options.get('filename')
+        else:
+            filename = info_dict.get('id')
+        
+        if options.get("temp_folder"):
+            base_output = os.path.join(options.get("temp_folder"), filename)
+        else:
+            base_output = filename
+        
+        created_files = {}
+
+        ydl_opts = {
+            'skip_download': True,
+            'quiet': True,
+    #        'cookiefile': options.get('cookies', None),
+            'writeinfojson': options.get('write_info_json', False),
+            'writedescription': options.get('write_description', False),
+            'writethumbnail': (options.get('write_thumbnail', False) or options.get("embed_thumbnail", False)),
+            'outtmpl': base_output,
+            'retries': 10,
+            
+        }
         if options.get('proxy', None) is not None:
             ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                result = ydl.process_ie_result(info_dict)
-                #result = ydl.download_with_info_file(info_dict)
-                #result = ydl._writesubtitles()
-        except Exception as e:
-            logging.exception("\033[31m{0}\033[0m".format(e)) 
-     
-         
-    except Exception as e:
-        logging.exception("\033[31m{0}\033[0m".format(e))
-    time.sleep(1)
-    part_file = "{0}.part".format(livechat_filename)
-    if os.path.exists(part_file):
-        # Append part to 
-        chunk_size = 1024*1024*10  # number of characters per chunk, up to 10M characters
-        with open(part_file, "r", encoding="utf-8") as fa, \
-            open(livechat_filename, "a", encoding="utf-8") as fb:
-            while chunk := fa.read(chunk_size):
-                fb.write(chunk)
-        os.remove("{0}.part".format(livechat_filename))
-
-    
-    try:
-        with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
-            zipf.write(livechat_filename, arcname=os.path.basename(livechat_filename))
-        os.remove(livechat_filename)
-        live_chat = {
-            'live_chat': FileInfo(zip_filename, file_type='live_chat')
-        }
-        file_names.update(live_chat)
-        return live_chat, 'live_chat'
-    except Exception as e:
-        logging.exception("\033[31m{0}\033[0m".format(e))
-    
-def replace_ip_in_json(file_name):
-    import re
-    pattern = re.compile(r'((?:[0-9]{1,3}\.){3}[0-9]{1,3})|((?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4})')
-
-    with open(file_name, 'r', encoding="utf-8") as file:
-        content = file.read()
-
-    modified_content = re.sub(pattern, '0.0.0.0', content)
-
-    with open(file_name, 'w', encoding="utf-8") as file:
-        file.write(modified_content)
-
-def remove_urls_from_json(file_name):
-    with open(file_name, 'r', encoding="utf-8") as file:
-        data = json.load(file)
-        
-    if data.get('formats', None) is not None:
-        for format in data['formats']:
-            if format.get('url') is not None:
-                format['url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
-                
-            if format.get('manifest_url') is not None:
-                format['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
             
-            format.pop('fragment_base_url', None)
-            format.pop('fragments', None)
-                
-    if data.get('thumbnails', None) is not None:
-        for thumbnail in data['thumbnails']:
-            if thumbnail.get('url', None) is not None:
-                parsed_url = urlparse(thumbnail.get('url', ""))
-                thumbnail['url'] = "{0}://{1}{2}".format(parsed_url.scheme, parsed_url.netloc, parsed_url.path)
-                
-    if data.get('url', None) is not None:
-        data['url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
-
-    if data.get('manifest_url', None) is not None:
-        data['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
-        
-    data['removed_urls'] = True
-    
-    with open(file_name, "w", encoding='utf-8') as file:
-        json.dump(data, file)
-        
-def download_auxiliary_files(info_dict, options):
-    if options.get('filename') is not None:
-        filename = options.get('filename')
-    else:
-        filename = info_dict.get('id')
-    
-    if options.get("temp_folder"):
-        base_output = os.path.join(options.get("temp_folder"), filename)
-    else:
-        base_output = filename
-    
-    created_files = {}
-
-    ydl_opts = {
-        'skip_download': True,
-        'quiet': True,
-#        'cookiefile': options.get('cookies', None),
-        'writeinfojson': options.get('write_info_json', False),
-        'writedescription': options.get('write_description', False),
-        'writethumbnail': (options.get('write_thumbnail', False) or options.get("embed_thumbnail", False)),
-        'outtmpl': base_output,
-        'retries': 10,
-        
-    }
-    if options.get('proxy', None) is not None:
-        ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
-        
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        #base_name = ydl.prepare_filename(info_dict)
-        #result = ydl.download_with_info_file(info_dict)
-        
-        if ydl._write_info_json('video', info_dict, ydl.prepare_filename(info_dict, 'infojson')) or os.path.exists(ydl.prepare_filename(info_dict, 'infojson')):
-            created_files['info_json'] = FileInfo(ydl.prepare_filename(info_dict, 'infojson'), file_type='info_json')
-            try:
-                if options.get('remove_ip_from_json'):
-                    replace_ip_in_json(created_files['info_json'].absolute())
-                if options.get('clean_urls'):
-                    remove_urls_from_json(created_files['info_json'].absolute())
-            except Exception as e:
-                logging.exception(str(e))
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            #base_name = ydl.prepare_filename(info_dict)
+            #result = ydl.download_with_info_file(info_dict)
             
-        if ydl._write_description('video', info_dict, ydl.prepare_filename(info_dict, 'description')) or os.path.exists(ydl.prepare_filename(info_dict, 'description')):
-            created_files['description'] = FileInfo(ydl.prepare_filename(info_dict, 'description'), file_type='description')
-            
-        thumbnails = ydl._write_thumbnails('video', info_dict, ydl.prepare_filename(info_dict, 'thumbnail'))
-        
-        if thumbnails:            
-            created_files['thumbnail'] = FileInfo(thumbnails[0][0], file_type='thumbnail')
-            
-        
-    return created_files, 'auxiliary'
-    
-        
-def create_mp4(file_names, info_dict, options):
-    index = 0
-    thumbnail = None
-    video = None
-    audio = None
-    ext = options.get('ext', None)
-
-    
-    ffmpeg_builder = ['ffmpeg', '-y', 
-                      '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats'
-                      ]
-    
-    if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
-        if file_names.get('thumbnail').exists():
-            if str(file_names.get('thumbnail').suffix).lower() == '.webp':
-                logging.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
-                png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
-                thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
+            if ydl._write_info_json('video', info_dict, ydl.prepare_filename(info_dict, 'infojson')) or os.path.exists(ydl.prepare_filename(info_dict, 'infojson')):
+                created_files['info_json'] = FileInfo(ydl.prepare_filename(info_dict, 'infojson'), file_type='info_json')
                 try:
-                    result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
-                except subprocess.CalledProcessError as e:
-                    logging.error(e.stderr)
-                    logging.fatal(e)
-                    raise e
-                # Remove webp thumbnail
-                logging.debug("Replacing thumbnail with .png version")
-                file_names.pop('thumbnail').unlink(missing_ok=True)                
-                file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
+                    if options.get('remove_ip_from_json'):
+                        self.replace_ip_in_json(created_files['info_json'].absolute())
+                    if options.get('clean_urls'):
+                        self.remove_urls_from_json(created_files['info_json'].absolute())
+                except Exception as e:
+                    self.logger.exception(str(e))
+                
+            if ydl._write_description('video', info_dict, ydl.prepare_filename(info_dict, 'description')) or os.path.exists(ydl.prepare_filename(info_dict, 'description')):
+                created_files['description'] = FileInfo(ydl.prepare_filename(info_dict, 'description'), file_type='description')
+                
+            thumbnails = ydl._write_thumbnails('video', info_dict, ydl.prepare_filename(info_dict, 'thumbnail'))
             
-            input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
+            if thumbnails:            
+                created_files['thumbnail'] = FileInfo(thumbnails[0][0], file_type='thumbnail')
+                
+            
+        return created_files, 'auxiliary'
+        
+            
+    def create_mp4(self, file_names, info_dict, options):
+        index = 0
+        thumbnail = None
+        video = None
+        audio = None
+        ext = options.get('ext', None)
+
+        
+        ffmpeg_builder = ['ffmpeg', '-y', 
+                        '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats'
+                        ]
+        
+        if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
+            if file_names.get('thumbnail').exists():
+                if str(file_names.get('thumbnail').suffix).lower() == '.webp':
+                    self.logger.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
+                    png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
+                    thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
+                    try:
+                        result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+                    except subprocess.CalledProcessError as e:
+                        self.logger.error(e.stderr)
+                        self.logger.fatal(e)
+                        raise e
+                    # Remove webp thumbnail
+                    self.logger.debug("Replacing thumbnail with .png version")
+                    file_names.pop('thumbnail').unlink(missing_ok=True)                
+                    file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
+                
+                input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
+                ffmpeg_builder.extend(input)
+                thumbnail = index
+                index += 1
+            else:
+                self.logger.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
+        
+        # Add input files
+        if file_names.get('video', None):        
+            input = ['-i', str(file_names.get('video').absolute()), '-thread_queue_size', '1024']
             ffmpeg_builder.extend(input)
-            thumbnail = index
+            video = index
             index += 1
-        else:
-            logging.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
-    
-    # Add input files
-    if file_names.get('video', None):        
-        input = ['-i', str(file_names.get('video').absolute()), '-thread_queue_size', '1024']
-        ffmpeg_builder.extend(input)
-        video = index
-        index += 1
+                
+        if file_names.get('audio', None):
+            input = ['-i', str(file_names.get('audio').absolute()), '-thread_queue_size', '1024']
+            ffmpeg_builder.extend(input)
+            audio = index
+            index += 1
+            if video is None and ext is None:
+                ext = '.ogg'
+        # Add faststart
+        ffmpeg_builder.extend(['-movflags', 'faststart'])
+        
+        # Add mappings
+        for i in range(0, index):
+            input = ['-map', str(i)]
+            ffmpeg_builder.extend(input)
             
-    if file_names.get('audio', None):
-        input = ['-i', str(file_names.get('audio').absolute()), '-thread_queue_size', '1024']
-        ffmpeg_builder.extend(input)
-        audio = index
-        index += 1
-        if video is None and ext is None:
-            ext = '.ogg'
-    # Add faststart
-    ffmpeg_builder.extend(['-movflags', 'faststart'])
-    
-    # Add mappings
-    for i in range(0, index):
-        input = ['-map', str(i)]
-        ffmpeg_builder.extend(input)
+        if thumbnail is not None:
+            ffmpeg_builder.extend(['-disposition:v:{0}'.format(thumbnail), 'attached_pic'])
+            
+        #Add Copy codec
+        ffmpeg_builder.extend(['-c', 'copy'])
+            
+        # Add metadata
+        ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
+        ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description"))])
+        ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
+        ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
         
-    if thumbnail is not None:
-        ffmpeg_builder.extend(['-disposition:v:{0}'.format(thumbnail), 'attached_pic'])
+        if options.get('filename') is not None:
+            filename = options.get('filename')
+        else:
+            filename = info_dict.get('id')
         
-    #Add Copy codec
-    ffmpeg_builder.extend(['-c', 'copy'])
+        if options.get("temp_folder"):
+            base_output = os.path.join(options.get("temp_folder"), filename)
+        else:
+            base_output = filename
         
-    # Add metadata
-    ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
-    ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description"))])
-    ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
-    ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
-    
-    if options.get('filename') is not None:
-        filename = options.get('filename')
-    else:
-        filename = info_dict.get('id')
-    
-    if options.get("temp_folder"):
-        base_output = os.path.join(options.get("temp_folder"), filename)
-    else:
-        base_output = filename
-    
-    if ext is None:
-        logging.debug("No extension detected, switching to MP4")
-        ext = info_dict.get('ext', '.mp4')
-    if ext is not None and not str(ext).startswith("."):
-        ext = "." + str(ext)
-    if not base_output.endswith(ext):
-        base_output = base_output + ext  
+        if ext is None:
+            self.logger.debug("No extension detected, switching to MP4")
+            ext = info_dict.get('ext', '.mp4')
+        if ext is not None and not str(ext).startswith("."):
+            ext = "." + str(ext)
+        if not base_output.endswith(ext):
+            base_output = base_output + ext  
+            
+        ffmpeg_builder.append(os.path.abspath(base_output))
         
-    ffmpeg_builder.append(os.path.abspath(base_output))
-    
-    if options.get('write_ffmpeg_command', True):
-        ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
-        file_names['ffmpeg_cmd'] =  FileInfo(write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+        if options.get('write_ffmpeg_command', True):
+            ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
+            file_names['ffmpeg_cmd'] =  FileInfo(self.write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
 
-    if not (options.get('merge', True)):    
+        if not (options.get('merge', True)):    
+            return file_names
+        
+        self.logger.debug("FFmpeg command: {0}".format(' '.join(ffmpeg_builder)))
+        self.logger.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
+        try:
+            result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+            self.logger.debug("FFmpeg STDOUT: {0}".format(result.stdout))
+            self.logger.debug("FFmpeg STDERR: {0}".format(result.stderr))
+        except subprocess.CalledProcessError as e:
+            self.logger.error(e.stderr)
+            self.logger.fatal(e)
+            raise e
+        #print(result.stdout)
+        #print(result.stderr)
+        
+        
+        
+        file_names['merged'] = FileInfo(base_output, file_type='merged')
+        self.logger.info("Successfully merged files into: {0}".format(file_names.get('merged').absolute()))
+        
+        
+        # Remove temp video and audio files
+        if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
+            if file_names.get('video'): 
+                self.logger.info("Removing {0}".format(file_names.get('video').absolute()))
+                file_names.get('video').unlink(missing_ok=True)
+                file_names.pop('video',None)
+            if file_names.get('audio'): 
+                self.logger.info("Removing {0}".format(file_names.get('audio').absolute()))
+                file_names.get('audio').unlink(missing_ok=True)
+                file_names.pop('audio',None)       
+        
         return file_names
-    
-    logging.debug("FFmpeg command: {0}".format(' '.join(ffmpeg_builder)))
-    logging.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
-    try:
-        result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
-        logging.debug("FFmpeg STDOUT: {0}".format(result.stdout))
-        logging.debug("FFmpeg STDERR: {0}".format(result.stderr))
-    except subprocess.CalledProcessError as e:
-        logging.error(e.stderr)
-        logging.fatal(e)
-        raise e
-    #print(result.stdout)
-    #print(result.stderr)
-    
-    
-    
-    file_names['merged'] = FileInfo(base_output, file_type='merged')
-    logging.info("Successfully merged files into: {0}".format(file_names.get('merged').absolute()))
-    
-    
-    # Remove temp video and audio files
-    if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
-        if file_names.get('video'): 
-            logging.info("Removing {0}".format(file_names.get('video').absolute()))
-            file_names.get('video').unlink(missing_ok=True)
-            file_names.pop('video',None)
-        if file_names.get('audio'): 
-            logging.info("Removing {0}".format(file_names.get('audio').absolute()))
-            file_names.get('audio').unlink(missing_ok=True)
-            file_names.pop('audio',None)       
-    
-    return file_names
-    #for file in file_names:
-    #    os.remove(file)
+        #for file in file_names:
+        #    os.remove(file)
 
-def write_ffmpeg_command(command_array, filename):
-    import shlex
-    # Determine the platform
-    """
-    Builds a platform-compatible FFmpeg command with proper quoting.
+    def write_ffmpeg_command(self, command_array, filename):
+        import shlex
+        # Determine the platform
+        """
+        Builds a platform-compatible FFmpeg command with proper quoting.
 
-    Args:
-        command_array (list): List of arguments to append to the command.
-        filename: Filename to write command to 
+        Args:
+            command_array (list): List of arguments to append to the command.
+            filename: Filename to write command to 
 
-    Returns:
-        str: A properly quoted FFmpeg command.
-    """
-    if os.name == "nt":  # Windows
-        # Handle special quoting and escaping for Windows
-        quoted_args = []
-        for arg in command_array:
-            if "\n" in arg:
-                # Replace newlines with literal \n
-                arg = arg.replace("\n", "\\n")
-            # Escape double quotes and wrap in double quotes if necessary
-            if " " in arg or any(ch in arg for ch in ('&', '^', '%', '$', '#', '"')):
-                arg = '"{0}"'.format(arg.replace("\"", "\\\""))
-            quoted_args.append(arg)
-        command_string = "{0}".format(' '.join(quoted_args))
-    else:  # POSIX (Linux/macOS)
-        # Use shlex.quote for safe quoting
-        #quoted_args = [shlex.quote(arg) for arg in arguments]
-        command_string = shlex.join(command_array)
+        Returns:
+            str: A properly quoted FFmpeg command.
+        """
+        if os.name == "nt":  # Windows
+            # Handle special quoting and escaping for Windows
+            quoted_args = []
+            for arg in command_array:
+                if "\n" in arg:
+                    # Replace newlines with literal \n
+                    arg = arg.replace("\n", "\\n")
+                # Escape double quotes and wrap in double quotes if necessary
+                if " " in arg or any(ch in arg for ch in ('&', '^', '%', '$', '#', '"')):
+                    arg = '"{0}"'.format(arg.replace("\"", "\\\""))
+                quoted_args.append(arg)
+            command_string = "{0}".format(' '.join(quoted_args))
+        else:  # POSIX (Linux/macOS)
+            # Use shlex.quote for safe quoting
+            #quoted_args = [shlex.quote(arg) for arg in arguments]
+            command_string = shlex.join(command_array)
 
-    
+        
 
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(command_string + "\n")
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(command_string + "\n")
 
-    return filename
+        return filename
 
-def convert_bytes(bytes):
-    # List of units in order
-    units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB']
-    
-    # Start with bytes and convert to larger units
-    unit_index = 0
-    while bytes >= 1024 and unit_index < len(units) - 1:
-        bytes /= 1024
-        unit_index += 1
-    
-    # Format and return the result
-    return f"{bytes:.2f} {units[unit_index]}"
+    def convert_bytes(self, bytes):
+        # List of units in order
+        units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB']
+        
+        # Start with bytes and convert to larger units
+        unit_index = 0
+        while bytes >= 1024 and unit_index < len(units) - 1:
+            bytes /= 1024
+            unit_index += 1
+        
+        # Format and return the result
+        return f"{bytes:.2f} {units[unit_index]}"
 
-def print_stats(options):
-    if options.get('stats_as_json', False):
-        print(json.dumps(stats), end="\r")
-        return
-    
-    # If not info log level or below, don't print stats
-    if not options.get("log_level", None) in ["DEBUG", "INFO"]:
-        return
-    
-    if not (stats.get('video', None) or stats.get('audio', None)):
-        return
-    
-    print("{0}:".format(stats.get('id')), end=" ")
-    
-    if stats.get('video'):
-        print("Video: {0}/{1} segments".format(stats.get('video', {}).get('downloaded_segments', 0), stats.get('video', {}).get('latest_sequence', 0)), end="")
-        if stats.get('video', {}).get('status', None):
-            print(" ({0})".format(stats.get('video', {}).get('status', "").capitalize()), end="")
-        print(", ", end="")
-    if stats.get('audio'):
-        print("Audio: {0}/{1} segments".format(stats.get('audio', {}).get('downloaded_segments', 0), stats.get('audio', {}).get('latest_sequence', 0)), end="")
-        if stats.get('video', {}).get('status', None):
-            print(" ({0})".format(stats.get('audio', {}).get('status', "").capitalize()), end="")
-        print(", ", end="")
-    if stats.get('video', {}).get('current_filesize', None) or stats.get('audio', {}).get('current_filesize', None):
-        current_size = stats.get('video', {}).get('current_filesize', 0) + stats.get('audio', {}).get('current_filesize', 0)
-        current_size_string = convert_bytes(current_size)
-        print("~{0} downloaded".format(current_size_string), end=" ")
-    if options.get("new_line", False):
-        print()
-    else:
-        print("\r",end="")
-    
-def add_url_param(url: str, key, value) -> str:
-    parsed = urlparse(url)
-    query = parse_qs(parsed.query)
-    query[key] = [value]  # add or replace parameter
+    def print_stats(self, options):
+        if options.get('stats_as_json', False):
+            print(json.dumps(self.stats), end="\r")
+            return
+        
+        # If not info log level or below, don't print stats
+        if not options.get("log_level", None) in ["DEBUG", "INFO"]:
+            return
+        
+        if not (self.stats.get('video', None) or self.stats.get('audio', None)):
+            return
+        
+        print("{0}:".format(self.stats.get('id')), end=" ")
+        
+        if self.stats.get('video'):
+            print("Video: {0}/{1} segments".format(self.stats.get('video', {}).get('downloaded_segments', 0), self.stats.get('video', {}).get('latest_sequence', 0)), end="")
+            if self.stats.get('video', {}).get('status', None):
+                print(" ({0})".format(self.stats.get('video', {}).get('status', "").capitalize()), end="")
+            print(", ", end="")
+        if self.stats.get('audio'):
+            print("Audio: {0}/{1} segments".format(self.stats.get('audio', {}).get('downloaded_segments', 0), self.stats.get('audio', {}).get('latest_sequence', 0)), end="")
+            if self.stats.get('video', {}).get('status', None):
+                print(" ({0})".format(self.stats.get('audio', {}).get('status', "").capitalize()), end="")
+            print(", ", end="")
+        if self.stats.get('video', {}).get('current_filesize', None) or self.stats.get('audio', {}).get('current_filesize', None):
+            current_size = self.stats.get('video', {}).get('current_filesize', 0) + self.stats.get('audio', {}).get('current_filesize', 0)
+            current_size_string = self.convert_bytes(current_size)
+            print("~{0} downloaded".format(current_size_string), end=" ")
+        if options.get("new_line", False):
+            print()
+        else:
+            print("\r",end="")
+        
+    def add_url_param(self, url: str, key, value) -> str:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        query[key] = [value]  # add or replace parameter
 
-    new_query = urlencode(query, doseq=True)
-    new_url = parsed._replace(query=new_query)
-    return str(urlunparse(new_url))  
-    
+        new_query = urlencode(query, doseq=True)
+        new_url = parsed._replace(query=new_query)
+        return str(urlunparse(new_url))  
+        
 class FileInfo(Path):
     _file_type = None  # Class attribute for storing the file type    
     _format = None
@@ -986,7 +999,12 @@ class FileInfo(Path):
         }
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader = None):        
+        self.livestream_coordinator = livestream_coordinator
+        if self.livestream_coordinator:
+            self.logger = self.livestream_coordinator.logger
+        else:
+            self.logger = logging.getLogger()
         self.params = download_params or locals().copy()
         self.conn = None
         self.latest_sequence = -1
@@ -1020,7 +1038,7 @@ class DownloadStream:
         #parsed_url = urlparse(self.stream_url)        
         #self.url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
 
-        logging.debug("{0} stream URL parameters: {1}".format(self.id,json.dumps(self.stream_url.url_parameters)))
+        self.logger.debug("{0} stream URL parameters: {1}".format(self.id,json.dumps(self.stream_url.url_parameters)))
         
         self.database_in_memory = database_in_memory
         
@@ -1072,7 +1090,8 @@ class DownloadStream:
         
         self.conn, self.cursor = self.create_db(self.temp_db_file)    
         
-        stats[self.type] = {}
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type] = {}
 
     def __enter__(self):
         return self
@@ -1096,13 +1115,14 @@ class DownloadStream:
                 
     def live_dl(self):
         
-        logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        self.logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
         self.already_downloaded = self.segment_exists_batch()
         latest_downloaded_segment = -1
         wait = 0   
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
-        stats[self.type]['status'] = "recording"
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type]['status'] = "recording"
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
             submitted_segments = set()
             future_to_seg = {}
@@ -1122,21 +1142,21 @@ class DownloadStream:
                 if self.refresh_Check() is True:
                     break
                 
-                if stats.get(self.type, None) is None:
-                    stats[self.type] = {}
+                if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
+                    self.livestream_coordinator.stats[self.type] = {}
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
                     
-                    logging.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                    self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
                             seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
                         ))
 
                     if seg_num >= optimistic_seg and (status is None or status != 200):
                         optimistic_fails += 1
-                        logging.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
+                        self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
                         
                     elif seg_num >= optimistic_seg and status == 200:
                         optimistic_fails = 0
@@ -1144,9 +1164,10 @@ class DownloadStream:
                             latest_downloaded_segment = seg_num
                     
                     if head_seg_num > self.latest_sequence:
-                        logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                        self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
                         self.latest_sequence = head_seg_num
-                        stats[self.type]["latest_sequence"] = self.latest_sequence
+                        if self.livestream_coordinator:
+                            self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
@@ -1162,19 +1183,20 @@ class DownloadStream:
                         # If finished threads exceeds batch size, commit the whole batch of threads at once. 
                         # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
                         if uncommitted_inserts >= max(self.batch_size, len(done)):
-                            logging.debug("Writing segments to file...")
+                            self.logger.debug("Writing segments to file...")
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
                             
-                        stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
+                        if self.livestream_coordinator:
+                            self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
                         segment_retries.pop(seg_num, None)
 
                         if status == 200 and seg_num > latest_downloaded_segment:
                             latest_downloaded_segment = seg_num
                     elif status is None or status != 200:
                         segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                        logging.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+                        self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
                         
                     
                     # Remove from submitted segments in case it neeeds to be regrabbed
@@ -1182,7 +1204,7 @@ class DownloadStream:
 
                     # Remove completed thread to free RAM
                     future_to_seg.pop(future,None)
-                      
+                    
                 segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
 
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1  
@@ -1201,60 +1223,63 @@ class DownloadStream:
                 # If update has no segments and no segments are currently running, wait                              
                 if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                     wait += 1
-                    logging.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                    self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
                     if wait > 20:
-                        logging.debug("Wait time for new fragment exceeded, ending download...")
+                        self.logger.debug("Wait time for new fragment exceeded, ending download...")
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
                         if self.is_private:
-                            logging.debug("Video is private and no more segments are available. Ending...")
+                            self.logger.debug("Video is private and no more segments are available. Ending...")
                             break
                         else:
                             refresh = self.refresh_url()
                             if refresh is False:
                                 break       
                             elif refresh is True:
-                                logging.info("Video finished downloading via new manifest")
+                                self.logger.info("Video finished downloading via new manifest")
                                 break
                     time.sleep(10)
                     self.update_latest_segment()
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
-                    logging.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
+                    self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
                     time.sleep(5)
                     continue
                 elif len(segments_to_download) > 0 and self.is_private:
                     if self.stream_url.protocol == "https":
-                        logging.debug("Video is private and still has segments remaining, moving to stream recovery")
+                        self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
                         self.commit_batch(self.conn)
                         self.close_connection()
                         
                         for i in range(5, 0, -1):
-                            logging.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
+                            self.logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
                             time.sleep(60)
-                        logging.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
-                        downloader = StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
-                        downloader.live_dl()
-                        downloader.close_connection()
+                        self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
+                        if self.livestream_coordinator:
+                            downloader = self.livestream_coordinator.StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
+                            downloader.live_dl()
+                            downloader.close_connection()
+                        else:
+                            self.logger.warning("livestream_coordinator class has not been initialised, ending...")
                         time.sleep(1)
                         self.conn, self.cursor = self.create_connection(self.temp_db_file)
                         return True
                     else:
-                        logging.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
+                        self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
                         break
                 
                 elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
-                    logging.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
+                    self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
                     refresh = self.refresh_url()
                     if self.refresh_url() is True:
-                        logging.info("Video finished downloading via new manifest")
+                        self.logger.info("Video finished downloading via new manifest")
                         break
                     elif self.is_private or refresh is False:
-                        logging.warning("Failed to refresh URL or stream is private, ending...")
+                        self.logger.warning("Failed to refresh URL or stream is private, ending...")
                         break
                     else:
                         segment_retries = {}
@@ -1280,7 +1305,7 @@ class DownloadStream:
                     # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s if no segments are to be submitted
                     if not segments_to_download:
                         time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
-                    logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
+                    self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     future_to_seg.update({
                         executor.submit(self.download_segment, self.stream_url.segment(optimistic_seg), optimistic_seg): optimistic_seg
                     })
@@ -1314,7 +1339,7 @@ class DownloadStream:
         stream_url_info = self.get_Headers(self.stream_url)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
-            logging.debug("Latest sequence: {0}".format(self.latest_sequence))
+            self.logger.debug("Latest sequence: {0}".format(self.latest_sequence))
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
@@ -1330,28 +1355,28 @@ class DownloadStream:
                 #print(json.dumps(dict(response.headers), indent=4))  
                 return response.headers
             elif response.status_code == 403:
-                logging.warning("Received 403 error, marking for URL refresh...")
+                self.logger.warning("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 return None
             else:
-                logging.debug("Error retrieving headers: {0}".format(response.status_code))
-                logging.debug(json.dumps(dict(response.headers), indent=4))
+                self.logger.debug("Error retrieving headers: {0}".format(response.status_code))
+                self.logger.debug(json.dumps(dict(response.headers), indent=4))
                 return None
             
         except requests.exceptions.Timeout as e:
-            logging.info("Timed out updating fragments: {0}".format(e))
+            self.logger.info("Timed out updating fragments: {0}".format(e))
             #print(e)
             return None
         
         except Exception as e:
-            logging.exception("\033[31m{0}\033[0m".format(e))
+            self.logger.exception("\033[31m{0}\033[0m".format(e))
             return None
     
     def detect_manifest_change(self, info_json, follow_manifest=True):
         resolution = "Unknown"
         try:
             resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
-            logging.debug("Searching for new manifest of same format {0}".format(resolution))
+            self.logger.debug("Searching for new manifest of same format {0}".format(resolution))
             temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
             if temp_stream_url is not None:
                 #resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
@@ -1360,7 +1385,7 @@ class DownloadStream:
                 #temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
                 #if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
                 if temp_stream_url.itag is not None and temp_stream_url.protocol == self.stream_url.protocol and temp_stream_url.itag == self.stream_url.itag and temp_stream_url.manifest != self.stream_url.manifest:
-                    logging.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
+                    self.logger.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
                         new_params = copy.deepcopy(self.params)
@@ -1387,14 +1412,14 @@ class DownloadStream:
                 else:
                     return False
         except yt_dlp.utils.ExtractorError as e:
-            logging.warning("Unable to find stream of same format ({0}) for {1}".format(resolution, self.id))
+            self.logger.warning("Unable to find stream of same format ({0}) for {1}".format(resolution, self.id))
             
         try:
             if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
-                logging.debug("Searching for new manifest of same resolution {0}".format(resolution))
+                self.logger.debug("Searching for new manifest of same resolution {0}".format(resolution))
                 temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
-                    logging.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
+                    self.logger.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
                         new_params = copy.deepcopy(self.params)
@@ -1421,14 +1446,14 @@ class DownloadStream:
                 else:
                     return False
         except yt_dlp.utils.ExtractorError as e:
-            logging.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
+            self.logger.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
 
         try:
             if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
-                logging.debug("Searching for new best stream")
+                self.logger.debug("Searching for new best stream")
                 temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
-                    logging.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
+                    self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
                         new_params = copy.deepcopy(self.params)
@@ -1455,7 +1480,7 @@ class DownloadStream:
                 else:
                     return False
         except yt_dlp.utils.ExtractorError as e:
-            logging.warning("Unable to find any stream for {1} when attempting to find 'best' stream".format(self.resolution, self.id))
+            self.logger.warning("Unable to find any stream for {1} when attempting to find 'best' stream".format(self.resolution, self.id))
         return False
 
     def create_connection(self, file):
@@ -1514,22 +1539,22 @@ class DownloadStream:
             session.mount("https://", adapter)
             response = session.get(segment_url, timeout=30, proxies=self.proxies)
             if response.status_code == 200:
-                logging.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
+                self.logger.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
                 self.is_403 = False
                 #return latest header number and segmqnt content
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
             elif response.status_code == 403:
-                logging.debug("Received 403 error, marking for URL refresh...")
+                self.logger.debug("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 return int(response.headers.get("X-Head-Seqnum", -1)), None, segment_order, response.status_code, response.headers
             else:
-                logging.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+                self.logger.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
                 return int(response.headers.get("X-Head-Seqnum", -1)), None, segment_order, response.status_code, response.headers
         except requests.exceptions.Timeout as e:
-            logging.warning("Fragment timeout {1}: {0}".format(e, segment_order))
+            self.logger.warning("Fragment timeout {1}: {0}".format(e, segment_order))
             return -1, None, segment_order, None, None
         except requests.exceptions.RetryError as e:
-            logging.debug("Retries exceeded downloading fragment: {0}".format(e))
+            self.logger.debug("Retries exceeded downloading fragment: {0}".format(e))
             match = re.search(r"too many (\d{3}) error responses", str(e))
 
             if match:
@@ -1544,19 +1569,19 @@ class DownloadStream:
             else:
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
-            logging.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, bytes(), segment_order, None, None
         except requests.exceptions.ConnectionError as e:
-            logging.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.Timeout as e:
-            logging.debug("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.debug("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.HTTPError as e:
-            logging.debug("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.debug("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except Exception as e:
-            logging.warning("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.warning("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
     # Function to insert a single segment without committing
@@ -1583,11 +1608,12 @@ class DownloadStream:
             self.conn.close()
 
     def combine_segments_to_file(self, output_file, cursor=None):
-        stats[self.type]['status'] = "merging"
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type]['status'] = "merging"
         if cursor is None:
             cursor = self.cursor
         
-        logging.debug("Merging segments to {0}".format(output_file))
+        self.logger.debug("Merging segments to {0}".format(output_file))
         with open(output_file, 'wb') as f:
             cursor.execute('SELECT segment_data FROM segments ORDER BY id')
             first = True
@@ -1598,7 +1624,8 @@ class DownloadStream:
                     segment_piece = self.clean_segments(segment_piece, first)
                 first = False
                 f.write(segment_piece)
-        stats[self.type]['status'] = "merged"
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type]['status'] = "merged"
         return output_file
     
     ### Via ytarchive            
@@ -1659,7 +1686,7 @@ class DownloadStream:
     def check_kill(self, executor: concurrent.futures.ThreadPoolExecutor=None):
         # Kill if keyboard interrupt is detected
         if kill_all.is_set():
-            logging.debug("Kill command detected, ending thread")
+            self.logger.debug("Kill command detected, ending thread")
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
             self.close_connection()
@@ -1679,7 +1706,7 @@ class DownloadStream:
             os.remove(self.folder)
 
     def refresh_url(self, follow_manifest=True):
-        logging.info("Refreshing URL for {0}".format(self.format))
+        self.logger.info("Refreshing URL for {0}".format(self.format))
         if self.following_manifest_thread is None:
             try:
                 info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=(self.include_m3u8 or self.force_m3u8))
@@ -1701,7 +1728,7 @@ class DownloadStream:
                     self.stream_urls = filtered_array
                     self.refresh_retries = 0
                 else:
-                    logging.warning("Unable to refresh URLs for {0} on format {2} ({1})".format(self.id, self.format, resolution))
+                    self.logger.warning("Unable to refresh URLs for {0} on format {2} ({1})".format(self.id, self.format, resolution))
                     
                 if live_status is not None:
                     self.live_status = live_status
@@ -1710,37 +1737,37 @@ class DownloadStream:
                     self.info_dict = info_dict    
                 
             except getUrls.VideoInaccessibleError as e:
-                logging.warning("Video Inaccessible error: {0}".format(e))
+                self.logger.warning("Video Inaccessible error: {0}".format(e))
                 if "membership" in str(e) and not self.is_403:
-                    logging.warning("{0} is now members only. Continuing until 403 errors")
+                    self.logger.warning("{0} is now members only. Continuing until 403 errors")
                 else:
                     self.is_private = True
             except getUrls.VideoUnavailableError as e:
-                logging.critical("Video Unavailable error: {0}".format(e))
+                self.logger.critical("Video Unavailable error: {0}".format(e))
                 if self.get_expire_time(self.stream_url) < time.time():
                     raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
             except getUrls.VideoProcessedError as e:
                 # Livestream has been processed
-                logging.exception("Error refreshing URL: {0}".format(e))
-                logging.info("Livestream has ended and processed.")
+                self.logger.exception("Error refreshing URL: {0}".format(e))
+                self.logger.info("Livestream has ended and processed.")
                 return False
             except getUrls.LivestreamError:
-                logging.debug("Livestream has ended.")
+                self.logger.debug("Livestream has ended.")
                 self.live_status = "was_live"
                 return False 
             except Exception as e:
-                logging.exception("Error: {0}".format(e))                     
+                self.logger.exception("Error: {0}".format(e))                     
         self.url_checked = time.time()
 
         if self.live_status != 'is_live':
-            logging.debug("Livestream has ended.")
+            self.logger.debug("Livestream has ended.")
             #self.catchup()
             return False 
 
 class DownloadStreamDirect(DownloadStream):
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5,
-                 folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None,
-                 yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}):
+                folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None,
+                yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader=None):
         params = download_params or locals().copy()
         # Initialize base class, but use in-memory DB (unused)
         super().__init__(
@@ -1759,7 +1786,8 @@ class DownloadStreamDirect(DownloadStream):
             include_dash=include_dash,
             include_m3u8=include_m3u8,
             force_m3u8=force_m3u8,
-            download_params=params
+            download_params=params,
+            livestream_coordinator=livestream_coordinator,
         )
         # Close the unused in-memory DB connection
         if self.conn:
@@ -1782,9 +1810,9 @@ class DownloadStreamDirect(DownloadStream):
 
         # Attempt to restore existing state
         self._load_existing_state()
-
-        stats[self.type] = {}
-        logging.debug(f"DownloadStreamDirect initialized for {self.id} ({self.format})")
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type] = {}
+        self.logger.debug(f"DownloadStreamDirect initialized for {self.id} ({self.format})")
 
     def _load_existing_state(self):
         """Restore download progress if a state file exists"""
@@ -1796,10 +1824,10 @@ class DownloadStreamDirect(DownloadStream):
                     ts_size = os.path.getsize(self.merged_file_name)
                     if ts_size >= loaded.get('file_size', 0) and loaded.get('last_written', None) is not None:
                         self.state = loaded
-                        logging.debug(f"Resumed state: {self.state}")
+                        self.logger.debug(f"Resumed state: {self.state}")
                         return
                 except Exception as e:
-                    logging.warning(f"Failed to load state file {path}: {e}")
+                    self.logger.warning(f"Failed to load state file {path}: {e}")
 
     def _save_state(self):
         """Safely write the current state to disk"""
@@ -1809,13 +1837,14 @@ class DownloadStreamDirect(DownloadStream):
             with open(self.state_file_name, "w") as f:
                 json.dump(self.state, f, indent=4)
         except Exception as e:
-            logging.warning(f"Failed to save state file: {e}")
+            self.logger.warning(f"Failed to save state file: {e}")
     
     def live_dl(self):
-        logging.info(f"\033[31mStarting download of live fragments ({self.format}) [Direct Mode]\033[0m")
-        stats[self.type]['status'] = "recording"
-        stats[self.type]["downloaded_segments"] = self.state['last_written']
-        stats[self.type]["current_filesize"] = self.state['file_size']
+        self.logger.info(f"\033[31mStarting download of live fragments ({self.format}) [Direct Mode]\033[0m")
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type]['status'] = "recording"
+            self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state['last_written']
+            self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size']
 
         submitted_segments = set()
         downloaded_segments = {}
@@ -1827,7 +1856,7 @@ class DownloadStreamDirect(DownloadStream):
         
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers,
-                                                   thread_name_prefix=f"{self.id}-{self.format}") as executor:
+                                                thread_name_prefix=f"{self.id}-{self.format}") as executor:
             
             # Trackers for optimistic segment downloads 
             optimistic_fails_max = 10
@@ -1848,21 +1877,22 @@ class DownloadStreamDirect(DownloadStream):
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
                     submitted_segments.discard(seg_num)
                     future_to_seg.pop(future, None)
-                    logging.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                    self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
                             seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
                         ))
 
                     if seg_num >= optimistic_seg and (status is None or status != 200):
                         optimistic_fails += 1
-                        logging.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
+                        self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
                         
                     elif seg_num >= optimistic_seg and status == 200:
                         optimistic_fails = 0
                     
                     if head_seg_num > self.latest_sequence:
-                        logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                        self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
                         self.latest_sequence = head_seg_num
-                        stats[self.type]["latest_sequence"] = self.latest_sequence
+                        if self.livestream_coordinator:
+                            self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
                         
                     if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
@@ -1872,7 +1902,7 @@ class DownloadStreamDirect(DownloadStream):
                         segment_retries.pop(seg_num, None)
                     elif status is None or status != 200:
                         segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                        logging.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+                        self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
 
                 # Write contiguous downloaded segments
                 # Check if there is at least one segment to write
@@ -1899,10 +1929,10 @@ class DownloadStreamDirect(DownloadStream):
                             # f.tell() returns the current file position, which is the new
                             # file size after writing and truncating. This is much faster.
                             self.state['file_size'] = f.tell()                           
-                            
-                            stats[self.type]["downloaded_segments"] = self.state['last_written']
-                            stats[self.type]["current_filesize"] = self.state['file_size']
-                            logging.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
+                            if self.livestream_coordinator:
+                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state['last_written']
+                                self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size']
+                            self.logger.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
                     self._save_state()
 
                 # Remove any potential stray segments 
@@ -1919,29 +1949,29 @@ class DownloadStreamDirect(DownloadStream):
                     if not segments_to_download:
                         time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
                     
-                    logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
+                    self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     segments_to_download.append(optimistic_seg)
                                     
                 # If update has no segments and no segments are currently running, wait                              
                 if not segments_to_download and not future_to_seg:                 
                     wait += 1
-                    logging.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                    self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
                     if wait > 20:
-                        logging.debug("Wait time for new fragment exceeded, ending download...")
+                        self.logger.debug("Wait time for new fragment exceeded, ending download...")
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait > 10:
                         if self.is_private:
-                            logging.debug("Video is private and no more segments are available. Ending...")
+                            self.logger.debug("Video is private and no more segments are available. Ending...")
                             break
                         else:
                             refresh = self.refresh_url(follow_manifest=False)
                             if refresh is False:
                                 break       
                             elif refresh is True:
-                                logging.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
+                                self.logger.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
                                 break
                     time.sleep(10)
                     # Check for header updates
@@ -1949,21 +1979,21 @@ class DownloadStreamDirect(DownloadStream):
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
-                    logging.debug("Video is private, waiting for remaining threads to finish before ending")
+                    self.logger.debug("Video is private, waiting for remaining threads to finish before ending")
                     time.sleep(5)
                     continue
 
                 elif len(segments_to_download) > 0 and self.is_private:
-                    logging.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
+                    self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
                     break
 
                 elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
-                    logging.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
+                    self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
                     if self.refresh_url(follow_manifest=False) is True:
-                        logging.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
+                        self.logger.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
                         break
                     elif self.is_private or self.refresh_url(follow_manifest=False) is False:
-                        logging.warning("Failed to refresh URL or stream is private, ending...")
+                        self.logger.warning("Failed to refresh URL or stream is private, ending...")
                         break
                     else:
                         segment_retries = {}
@@ -1976,9 +2006,9 @@ class DownloadStreamDirect(DownloadStream):
                         submitted_segments.add(seg_num)
                     if len(future_to_seg) > 2 * self.max_workers:
                         break
-
-        stats[self.type]['status'] = "merged"
-        logging.info(f"Completed direct download for {self.format}")
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type]['status'] = "merged"
+        self.logger.info(f"Completed direct download for {self.format}")
         return self.merged_file_name
         
     def delete_state_file(self):
@@ -1988,7 +2018,7 @@ class DownloadStreamDirect(DownloadStream):
                 if os.path.exists(path):
                     os.remove(path)
             except Exception as e:
-                logging.warning(f"Failed to delete state file {path}: {e}")
+                self.logger.warning(f"Failed to delete state file {path}: {e}")
 
     def remove_folder(self):
         """Remove folder and associated files"""
@@ -2016,7 +2046,7 @@ class StreamRecovery(DownloadStream):
                 if self.downloader_instance:  # Ensure the instance exists
                     self.downloader_instance.is_403 = True
             if response and response.status and self.segment_number is not None:
-                logging.debug("{0} encountered a {1} code".format(self.segment_number, response.status))
+                self.logger.debug("{0} encountered a {1} code".format(self.segment_number, response.status))
                     
             return super().increment(method, url, response, error, _pool, _stacktrace)
         
@@ -2037,9 +2067,8 @@ class StreamRecovery(DownloadStream):
             return self.num_retries  # Return the number of 403 responses
         
 
-    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None):        
+    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None, livestream_coordinator: LiveStreamDownloader=None):        
         from datetime import datetime
-        
         # Call the base class __init__.
         # This will perform all common setup: file paths, proxy, cookies,
         # initial DB creation, etc.
@@ -2060,9 +2089,10 @@ class StreamRecovery(DownloadStream):
             yt_dlp_sort=yt_dlp_sort,
             include_dash=False, # StreamRecovery logic specifically excludes DASH
             include_m3u8=False,
-            force_m3u8=False,        
+            force_m3u8=False,
+            livestream_coordinator=livestream_coordinator,        
         )      
-        
+        self.expires = time.time()
         # --- Start of StreamRecovery-specific __init__ logic ---
         # The following logic overrides or extends the base class setup.
 
@@ -2070,16 +2100,16 @@ class StreamRecovery(DownloadStream):
         self.id = info_dict.get('id', self.get_id_from_url(stream_urls[0]) if stream_urls else self.id)
         self.live_status = info_dict.get('live_status', live_status)
         self.yt_dlp_sort = yt_dlp_sort
-               
+            
         # Override stream_urls and format
         # StreamRecovery can be passed URLs directly or finds *all* of them,
         # unlike DownloadStream which finds just one.
         if stream_urls:
-            logging.debug("{0} stream urls available".format(len(stream_urls)))
+            self.logger.debug("{0} stream urls available".format(len(stream_urls)))
             for url in stream_urls:
                 self.format = url.format_id
                 if self.format is not None:
-                    logging.debug("Stream recovery - Found format {0} from itags".format(self.format))
+                    self.logger.debug("Stream recovery - Found format {0} from itags".format(self.format))
                     break            
             self.stream_urls = stream_urls          
         else:
@@ -2097,12 +2127,9 @@ class StreamRecovery(DownloadStream):
             
         self.format = str(self.stream_urls[0].itag)            
         
-        logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
-
+        self.logger.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
         
-        self.expires = time.time()
-        
-        logging.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
+        self.logger.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
         
         # Override stream_url with a random choice
         self.stream_url = random.choice(self.stream_urls)
@@ -2159,7 +2186,7 @@ class StreamRecovery(DownloadStream):
             self.expires = max(expires)
             
         if self.expires and time.time() > self.expires:
-            logging.error("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
+            self.logger.error("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
             raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
@@ -2180,15 +2207,15 @@ class StreamRecovery(DownloadStream):
         self.user_agent_full_403s = {}
         
         # Ensure stats are set for the correct type
-        if self.type:
-            stats[self.type] = {}
+        if self.type and self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type] = {}
     
     def get_format_from_url(self, url):
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
-        logging.debug(query_params)
+        self.logger.debug(query_params)
         # Get the 'expire' parameter
-        logging.debug("Itags from url: {0}".format(query_params.get("itag", [None])))
+        self.logger.debug("Itags from url: {0}".format(query_params.get("itag", [None])))
         itag = query_params.get("itag", [None])[0]
         return str(itag).strip()
     
@@ -2202,8 +2229,9 @@ class StreamRecovery(DownloadStream):
         # This method is completely different from the base class.
         # It's designed to recover missing segments, not optimistically
         # download a live edge.
-        logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
-        stats[self.type]['status'] = "recording"
+        self.logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type]['status'] = "recording"
         self.already_downloaded = self.segment_exists_batch()
         self.cursor.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
@@ -2224,20 +2252,20 @@ class StreamRecovery(DownloadStream):
             
             if self.expires is not None:
                 from datetime import datetime
-                logging.debug("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')))
+                self.logger.debug("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')))
             else:
-                logging.debug("Recovery mode active")
-                       
+                self.logger.debug("Recovery mode active")
+                    
             
             while True:     
                 self.check_kill(executor)     
-                if stats.get(self.type, None) is None:
-                    stats[self.type] = {}     
+                if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
+                    self.livestream_coordinator.stats[self.type] = {}     
 
                 self.check_Expiry()
 
                 if (not self.stream_urls) or (self.expires and time.time() > self.expires):
-                    logging.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
+                    self.logger.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
                     self.commit_batch()
@@ -2248,7 +2276,7 @@ class StreamRecovery(DownloadStream):
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
 
-                    logging.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                    self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
                             seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
                         ))
                     
@@ -2256,7 +2284,7 @@ class StreamRecovery(DownloadStream):
                         submitted_segments.discard(seg_num)
                     
                     if head_seg_num > self.latest_sequence:
-                        logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
+                        self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
                         self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, head_seg_num) if key not in self.already_downloaded})
                         self.latest_sequence = head_seg_num
                         
@@ -2272,7 +2300,7 @@ class StreamRecovery(DownloadStream):
                             self.segments_retries.pop(seg_num,None)
                         
                         if uncommitted_inserts >= max(self.batch_size, len(done)):
-                            logging.debug("Writing segments to file...")
+                            self.logger.debug("Writing segments to file...")
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
                             self.cursor.execute('BEGIN TRANSACTION') 
@@ -2281,28 +2309,30 @@ class StreamRecovery(DownloadStream):
                             self.segments_retries[seg_num]['retries'] = self.segments_retries[seg_num]['retries'] + 1
                             self.segments_retries[seg_num]['last_retry'] = time.time()
                             if self.segments_retries[seg_num]['retries'] >= self.fragment_retries:
-                                logging.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
+                                self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
                                 
-                    
-                    stats[self.type]["latest_sequence"] = self.latest_sequence
                     future_to_seg.pop(future,None)
-                    stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
-                                               
+
+                    if self.livestream_coordinator:
+                        self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
+                    
+                        self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
+                                            
                     
                 if len(self.segments_retries) <= 0:
-                    logging.info("All segment downloads complete, ending...")
+                    self.logger.info("All segment downloads complete, ending...")
                     break
 
                 elif all(value['retries'] > self.fragment_retries for value in self.segments_retries.values()):
-                    logging.error("All remaining segments have exceeded their retry count, ending...")
+                    self.logger.error("All remaining segments have exceeded their retry count, ending...")
                     break
                 
                 elif self.is_403 and self.expires is not None and time.time() > self.expires:
-                    logging.fatal("URL(s) have expired and failures being detected, ending...")
+                    self.logger.fatal("URL(s) have expired and failures being detected, ending...")
                     break               
                 
                 elif self.is_401:
-                    logging.debug("401s detected for {0}, sleeping for a minute")
+                    self.logger.debug("401s detected for {0}, sleeping for a minute")
                     time.sleep(60)
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
@@ -2340,7 +2370,7 @@ class StreamRecovery(DownloadStream):
                     
                 if sorted_retries != -1:
                     potential_segments_to_download = sorted_retries.keys()
-                     
+                    
                 if not not_done or len(not_done) < self.max_workers:
                     new_download = set()
                     number_to_add = self.max_workers - len(not_done)
@@ -2354,7 +2384,7 @@ class StreamRecovery(DownloadStream):
                                 self.already_downloaded.add(seg_num)
                                 continue
                             new_download.add(seg_num)
-                            logging.debug("Adding segment {0} of {2} with retries: {1}".format(seg_num, self.segments_retries[seg_num]['retries'], self.format))
+                            self.logger.debug("Adding segment {0} of {2} with retries: {1}".format(seg_num, self.segments_retries[seg_num]['retries'], self.format))
                         if len(new_download) >= number_to_add:                            
                             break
                     segments_to_download = new_download
@@ -2367,10 +2397,10 @@ class StreamRecovery(DownloadStream):
                         i += 1
                 
                 if len(submitted_segments) == 0 and len(self.segments_retries) < 11 and time.time() - last_print > self.segment_retry_time:
-                    logging.debug("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
+                    self.logger.debug("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
                     last_print = time.time()
                 elif len(submitted_segments) == 0 and time.time() - last_print > self.segment_retry_time + 5:
-                    logging.debug("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
+                    self.logger.debug("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
                     last_print = time.time()
                 
             self.commit_batch(self.conn)
@@ -2401,7 +2431,7 @@ class StreamRecovery(DownloadStream):
         self.check_Expiry()  
 
         if (not self.stream_urls) or (self.expires and time.time() > self.expires):
-            logging.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
+            self.logger.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
             self.commit_batch()
@@ -2416,7 +2446,7 @@ class StreamRecovery(DownloadStream):
             if new_latest > self.latest_sequence and self.latest_sequence > -1:
                 self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, new_latest) if key not in self.already_downloaded})
             self.latest_sequence = new_latest
-            logging.debug("Latest sequence: {0}".format(self.latest_sequence))
+            self.logger.debug("Latest sequence: {0}".format(self.latest_sequence))
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
@@ -2424,11 +2454,12 @@ class StreamRecovery(DownloadStream):
         if stream_url_info is not None and stream_url_info.get("X-Head-Time-Sec", None) is not None:
             self.estimated_segment_duration = int(stream_url_info.get("X-Head-Time-Sec"))/max(self.latest_sequence,1)
         
-        if stats.get(self.type, None):    
-            stats[self.type]["latest_sequence"] = self.latest_sequence
-        else:
-            stats[self.type] = {}
-            stats[self.type]["latest_sequence"] = self.latest_sequence
+        if self.livestream_coordinator:
+            if self.livestream_coordinator.stats.get(self.type, None):    
+                self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
+            else:
+                self.livestream_coordinator.stats[self.type] = {}
+                self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
     
     def get_Headers(self, url):
         # Overrides base method to add 401 handling
@@ -2442,16 +2473,16 @@ class StreamRecovery(DownloadStream):
             elif response.status_code == 401:
                 self.is_401 = True # <-- Specific to StreamRecovery
             else:
-                logging.warning("Error retrieving headers: {0}".format(response.status_code))
-                logging.debug(json.dumps(dict(response.headers), indent=4))
+                self.logger.warning("Error retrieving headers: {0}".format(response.status_code))
+                self.logger.debug(json.dumps(dict(response.headers), indent=4))
             return response.headers
             
         except requests.exceptions.Timeout as e:
-            logging.debug("Timed out updating fragments: {0}".format(e))
+            self.logger.debug("Timed out updating fragments: {0}".format(e))
             return None
         
         except Exception as e:
-            logging.exception("\033[31m{0}\033[0m".format(e))
+            self.logger.exception("\033[31m{0}\033[0m".format(e))
             return None
 
     def download_segment(self, segment_url, segment_order):
@@ -2473,23 +2504,23 @@ class StreamRecovery(DownloadStream):
         try:            
             response = session.get(segment_url, timeout=30, headers=headers, proxies=self.proxies)
             if response.status_code == 200:
-                logging.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
+                self.logger.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
                 self.is_403 = False
                 self.is_401 = False
                 return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers
             elif response.status_code == 403:
-                logging.debug("Received 403 error, marking for URL refresh...")
+                self.logger.debug("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
                 return -1, None, segment_order, response.status_code, response.headers
             else:
-                logging.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
+                self.logger.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
                 return -1, None, segment_order, response.status_code, response.headers
         except requests.exceptions.Timeout as e:
-            logging.debug(e)
+            self.logger.debug(e)
             return -1, None, segment_order, None, None
         except requests.exceptions.RetryError as e:
             # Key difference: More detailed handling
-            logging.debug("Retries exceeded downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.debug("Retries exceeded downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             if "(Caused by ResponseError('too many 204 error responses')" in str(e):
                 self.is_403 = False
                 self.is_401 = False
@@ -2505,19 +2536,19 @@ class StreamRecovery(DownloadStream):
             else:
                 return -1, None, segment_order, None, None
         except requests.exceptions.ChunkedEncodingError as e:
-            logging.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, bytes(), segment_order, None, None
         except requests.exceptions.ConnectionError as e:
-            logging.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.Timeout as e:
-            logging.warning("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.warning("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except requests.exceptions.HTTPError as e:
-            logging.warning("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.warning("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
         except Exception as e:
-            logging.exception("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
+            self.logger.exception("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
             
     def save_stats(self):
@@ -3273,7 +3304,33 @@ class StreamRecovery:
  
     '''
 
-def setup_logging(log_level="INFO", console=True, file=None, force=False, file_options={}, logger=None):   
+import os
+import logging
+import logging.handlers
+
+def setup_logging(
+    log_level="INFO",
+    console=True,
+    file: str | None = None,
+    force=False,
+    file_options: dict = None,
+    logger: logging.Logger | None = None,
+    logger_name: str | None = None
+) -> logging.Logger:
+    """
+    Configure logging.
+
+    :param log_level: logging level name ("DEBUG", "INFO", etc.)
+    :param console: whether to log to console (StreamHandler)
+    :param file: path to log file; if provided, file logging is enabled
+    :param force: if True, remove existing handlers on the logger
+    :param file_options: dict for file handler options (e.g. rotation: maxBytes, when, interval, backupCount)
+    :param logger: optionally pass an existing logger object
+    :param logger_name: if provided, get/create a named logger; otherwise root logger
+    :return: the configured logger
+    """
+    file_options = file_options or {}
+
     def disable_quick_edit():
         import ctypes
         kernel32 = ctypes.windll.kernel32
@@ -3283,45 +3340,63 @@ def setup_logging(log_level="INFO", console=True, file=None, force=False, file_o
         mode.value &= ~0x40  # Remove ENABLE_QUICK_EDIT_MODE
         kernel32.SetConsoleMode(hStdin, mode)
 
+    # On Windows, disable quick edit so console input isn't paused by click:
     if os.name == "nt":
         disable_quick_edit()
 
-    # Get the root logger if no logger provided
+    # Get the logger: named if logger_name, else root
     if logger is None:
-        logger = logging.getLogger()
+        logger = logging.getLogger(logger_name)
+        #if logger_name:
+        #    logger = logging.getLogger(logger_name)
+        #else:
+        #    logger = logging.getLogger()  # root logger
 
+    # If force, clear handlers; else, if it already has handlers, do nothing
     if force:
-        logger.handlers.clear()
-    elif logger.hasHandlers():
-        return logger
+        # remove all handlers safely
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+    else:
+        # If logger already configured, skip
+        if logger.handlers:
+            return logger
 
-    # Convert string level to actual logging level
+    # Convert level string to logging level
     level = getattr(logging, log_level.upper(), logging.INFO)
     logger.setLevel(level)
 
-    formatter = logging.Formatter('[%(levelname)s] %(asctime)s - %(message)s',
-                                  datefmt='%Y-%m-%d %H:%M:%S')
+    # Build formatter, with logger_name if given
+    if logger_name:
+        fmt_str = f'[%(levelname)s] [{logger_name}] %(asctime)s - %(message)s'
+    else:
+        fmt_str = '[%(levelname)s] %(asctime)s - %(message)s'
+    formatter = logging.Formatter(fmt_str, datefmt='%Y-%m-%d %H:%M:%S')
 
+    # Optionally disable propagation so logs don't bubble up in unwanted ways
+    # If this is a named logger (i.e. not root), you may want to stop propagation
+    if logger_name:
+        logger.propagate = False
+
+    # Console handler
     if console:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(level)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
+    # File handler
     if file:
-        handler = None
-
-        # Check for size-based rotation
-        if file_options.get("maxBytes", None):
+        # Decide type of file handler
+        if file_options.get("maxBytes"):
             handler = logging.handlers.RotatingFileHandler(
                 file,
                 mode='a',
-                maxBytes=file_options.get("maxBytes", 10 * 1024 * 1024),  # 10MB default
+                maxBytes=file_options.get("maxBytes", 10 * 1024 * 1024),
                 backupCount=file_options.get("backupCount", 5),
                 encoding='utf-8'
             )
-        # Check for time-based rotation
-        elif file_options.get("when", None):
+        elif file_options.get("when"):
             handler = logging.handlers.TimedRotatingFileHandler(
                 file,
                 when=file_options.get("when", "midnight"),
@@ -3329,7 +3404,6 @@ def setup_logging(log_level="INFO", console=True, file=None, force=False, file_o
                 backupCount=file_options.get("backupCount", 7),
                 encoding='utf-8'
             )
-        # No rotation
         else:
             handler = logging.FileHandler(file, mode='a', encoding='utf-8')
 
@@ -3338,4 +3412,5 @@ def setup_logging(log_level="INFO", console=True, file=None, force=False, file_o
         logger.addHandler(handler)
 
     return logger
+
 
