@@ -1601,6 +1601,8 @@ class DownloadStream:
     # Function to commit after a batch of inserts
     def commit_batch(self, conn):
         conn.commit()
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats['file_size'] = os.path.getsize(self.temp_db_file)
         
     def close_connection(self):
         if self.conn:
