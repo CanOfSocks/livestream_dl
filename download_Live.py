@@ -766,7 +766,7 @@ class LiveStreamDownloader:
         
             
     def create_mp4(self, file_names, info_dict, options):
-        self.logger.debug("Files: {0}".format(json.dumps(file_names)))
+        #self.logger.debug("Files: {0}".format(json.dumps(file_names)))
         stream_manifests = list(self.file_names["streams"].items())
         for manifest, stream in stream_manifests:
             index = 0
