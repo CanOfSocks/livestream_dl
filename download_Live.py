@@ -1633,7 +1633,7 @@ class DownloadStream:
     def commit_batch(self, conn):
         conn.commit()
         if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size'] = os.path.getsize(self.temp_db_file)
+            self.livestream_coordinator.stats[self.type]["current_filesize"] = os.path.getsize(self.temp_db_file)
         
     def close_connection(self):
         if self.conn:
