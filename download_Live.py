@@ -62,7 +62,6 @@ class LiveStreamDownloader:
             "streams": {}
         }
         self.stats = {}
-        ["streams"]
 
     # Create runner function for each download format
     def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0):
@@ -85,7 +84,9 @@ class LiveStreamDownloader:
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
             filetype = downloader.type
 
-        self.file_names["streams"][manifest] = {str(filetype).lower(): file}
+        self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
+            str(filetype).lower(): file
+        })
         
         return file, filetype
 
@@ -104,7 +105,9 @@ class LiveStreamDownloader:
             filetype = downloader.type
             downloader.delete_state_file()
 
-        self.file_names["streams"][manifest] = {str(filetype).lower(): file}
+        self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
+            str(filetype).lower(): file
+        })
         return file, filetype
 
     def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0):
@@ -132,7 +135,9 @@ class LiveStreamDownloader:
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format) 
             filetype = downloader.type  
             
-        self.file_names["streams"][manifest] = {str(filetype).lower(): file}
+        self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
+            str(filetype).lower(): file
+        })
         return file, filetype
 
     def submit_download(self, executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False):
@@ -761,7 +766,7 @@ class LiveStreamDownloader:
         
             
     def create_mp4(self, file_names, info_dict, options):
-
+        self.logger.debug("Files: {0}".format(json.dumps(file_names)))
         stream_manifests = list(self.file_names["streams"].items())
         for manifest, stream in stream_manifests:
             index = 0
