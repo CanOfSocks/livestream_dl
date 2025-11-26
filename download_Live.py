@@ -62,7 +62,7 @@ class LiveStreamDownloader:
             "streams": {}
         }
         self.stats = {}
-        
+        ["streams"]
 
     # Create runner function for each download format
     def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0):
@@ -85,7 +85,7 @@ class LiveStreamDownloader:
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
             filetype = downloader.type
 
-        self.file_names.streams[manifest] = {str(filetype).lower(): file}
+        self.file_names["streams"][manifest] = {str(filetype).lower(): file}
         
         return file, filetype
 
@@ -104,7 +104,7 @@ class LiveStreamDownloader:
             filetype = downloader.type
             downloader.delete_state_file()
 
-        self.file_names.streams[manifest] = {str(filetype).lower(): file}
+        self.file_names["streams"][manifest] = {str(filetype).lower(): file}
         return file, filetype
 
     def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0):
@@ -132,7 +132,7 @@ class LiveStreamDownloader:
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format) 
             filetype = downloader.type  
             
-        self.file_names.streams[manifest] = {str(filetype).lower(): file}
+        self.file_names["streams"][manifest] = {str(filetype).lower(): file}
         return file, filetype
 
     def submit_download(self, executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False):
@@ -479,7 +479,7 @@ class LiveStreamDownloader:
                 lambda f: f"{output_file}{f.suffix}",
                 )
         
-        stream_manifests = list(self.file_names.streams.items())
+        stream_manifests = list(self.file_names["streams"].items())
         for manifest, stream in stream_manifests:
             stream_output_file = output_file
             if len(stream_manifests) > 1:
@@ -762,7 +762,7 @@ class LiveStreamDownloader:
             
     def create_mp4(self, file_names, info_dict, options):
 
-        stream_manifests = list(self.file_names.streams.items())
+        stream_manifests = list(self.file_names["streams"].items())
         for manifest, stream in stream_manifests:
             index = 0
             thumbnail = None
@@ -857,7 +857,7 @@ class LiveStreamDownloader:
             
             if options.get('write_ffmpeg_command', True):
                 ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
-                file_names.streams[manifest]['ffmpeg_cmd'] =  FileInfo(self.write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+                file_names["streams"][manifest]['ffmpeg_cmd'] =  FileInfo(self.write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
 
             if not (options.get('merge', True)):    
                 return file_names
@@ -877,20 +877,20 @@ class LiveStreamDownloader:
             
             
             
-            file_names.streams[manifest]['merged'] = FileInfo(base_output, file_type='merged')
-            self.logger.info("Successfully merged files into: {0}".format(file_names.streams[manifest].get('merged').absolute()))
+            file_names["streams"][manifest]['merged'] = FileInfo(base_output, file_type='merged')
+            self.logger.info("Successfully merged files into: {0}".format(file_names["streams"][manifest].get('merged').absolute()))
             
             
             # Remove temp video and audio files
             if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
-                if file_names.streams[manifest].get('video'): 
-                    self.logger.info("Removing {0}".format(file_names.streams[manifest].get('video').absolute()))
-                    file_names.streams[manifest].get('video').unlink(missing_ok=True)
-                    file_names.streams[manifest].pop('video',None)
+                if file_names["streams"][manifest].get('video'): 
+                    self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('video').absolute()))
+                    file_names["streams"][manifest].get('video').unlink(missing_ok=True)
+                    file_names["streams"][manifest].pop('video',None)
                 if file_names.get('audio'): 
-                    self.logger.info("Removing {0}".format(file_names.streams[manifest].get('audio').absolute()))
-                    file_names.streams[manifest].get('audio').unlink(missing_ok=True)
-                    file_names.streams[manifest].pop('audio',None)       
+                    self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('audio').absolute()))
+                    file_names["streams"][manifest].get('audio').unlink(missing_ok=True)
+                    file_names["streams"][manifest].pop('audio',None)       
         
         return file_names
         #for file in file_names:
@@ -1633,7 +1633,7 @@ class DownloadStream:
     def commit_batch(self, conn):
         conn.commit()
         if self.livestream_coordinator:
-            self.livestream_coordinator.stats['file_size'] = os.path.getsize(self.temp_db_file)
+            self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size'] = os.path.getsize(self.temp_db_file)
         
     def close_connection(self):
         if self.conn:
