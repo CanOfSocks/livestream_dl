@@ -440,14 +440,14 @@ class LiveStreamDownloader:
     """
 
     def move_to_final(self, options, output_file, file_names):
-        def maybe_move(key, dest_func, file_names=file_names, option_flag=None):
+        def maybe_move(key, dest_func, file_names_dict=file_names, option_flag=None):
             """
             key: key in file_names
             dest_func: func -> pathlib -> string dest path
             delete_if_false: if True, delete when option_flag not set
             option_flag: name of boolean option (write_thumbnail etc)
             """
-            f = file_names.get(key)
+            f = file_names_dict.get(key)
             if not f:
                 return
             try:
@@ -455,7 +455,7 @@ class LiveStreamDownloader:
                 if option_flag is not None and not options.get(option_flag, False):
                     self.logger.info(f"Removing {f.absolute()}")
                     f.unlink(missing_ok=True)
-                    file_names.pop(key, None)
+                    file_names_dict.pop(key, None)
                     return
 
                 dest = dest_func(f)
@@ -490,15 +490,15 @@ class LiveStreamDownloader:
             if len(stream_manifests) > 1:
                 stream_output_file = f"{output_file}.{manifest}"
             maybe_move('video',
-                    lambda f: f"{output_file}.{f._format}{f.suffix}",
+                    lambda f: f"{stream_output_file}.{f._format}{f.suffix}",
                     file_names=stream)
 
             maybe_move('audio',
-                    lambda f: f"{output_file}.{f._format}{f.suffix}",
+                    lambda f: f"{stream_output_file}.{f._format}{f.suffix}",
                     file_names=stream)
 
             maybe_move('merged',
-                    lambda f: f"{output_file}{f.suffix}",
+                    lambda f: f"{stream_output_file}{f.suffix}",
                     file_names=stream)
 
         maybe_move('live_chat',
@@ -851,7 +851,7 @@ class LiveStreamDownloader:
                 base_output = f"{base_output}.{manifest}" 
             
             if ext is None:
-                self.logger.debug("No extension detected, switching to MP4")
+                self.logger.debug("No extension detected, switching to yt-dlp decided video (defaulting to MP4)")
                 ext = info_dict.get('ext', '.mp4')
             if ext is not None and not str(ext).startswith("."):
                 ext = "." + str(ext)
@@ -892,7 +892,7 @@ class LiveStreamDownloader:
                     self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('video').absolute()))
                     file_names["streams"][manifest].get('video').unlink(missing_ok=True)
                     file_names["streams"][manifest].pop('video',None)
-                if file_names.get('audio'): 
+                if file_names["streams"][manifest].get('audio'): 
                     self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('audio').absolute()))
                     file_names["streams"][manifest].get('audio').unlink(missing_ok=True)
                     file_names["streams"][manifest].pop('audio',None)       
