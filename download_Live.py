@@ -189,12 +189,11 @@ class LiveStreamDownloader:
 
     # Multithreaded function to download new segments with delayed commit after a batch
     def download_segments(self, info_dict, resolution='best', options={}, thread_event: threading.Event=None):
-        global kill_all
         futures = set()
         #file_names = {}
 
         if thread_event is not None:        
-            kill_all = thread_event
+            self.kill_all = thread_event
             
         setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name=str(self.__class__.__name__))
         self.stats['id'] = info_dict.get('id', None)
@@ -249,7 +248,7 @@ class LiveStreamDownloader:
                     #futures.add(audio_future)
                     
                 while True:
-                    if kill_all.is_set():
+                    if self.kill_all.is_set():
                         raise KeyboardInterrupt("Thread kill event is set, ending...")
                     done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.ALL_COMPLETED)
                     # Continuously check for completion or interruption
@@ -287,7 +286,7 @@ class LiveStreamDownloader:
                     live_chat_thread.join()
                 
             except KeyboardInterrupt as e:
-                kill_all.set()
+                self.kill_all.set()
                 self.logger.debug("Keyboard interrupt detected")
                 if len(not_done) > 0:
                     self.logger.debug("Cancelling remaining threads")
@@ -583,7 +582,7 @@ class LiveStreamDownloader:
 
                 # Process chat messages for the duration of the timeout
                 for message in chat:
-                    if kill_all.is_set():
+                    if self.kill_all.is_set():
                         self.logger.debug("Killing live chat downloader")
                         chat_download.close()
                         break
@@ -1685,7 +1684,7 @@ class DownloadStream:
     
     def check_kill(self, executor: concurrent.futures.ThreadPoolExecutor=None):
         # Kill if keyboard interrupt is detected
-        if kill_all.is_set():
+        if self.kill_all.is_set():
             self.logger.debug("Kill command detected, ending thread")
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
