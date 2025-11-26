@@ -58,13 +58,14 @@ class LiveStreamDownloader:
         self.chat_timeout = None
         # File name dictionary
         self.file_names = {
-            'databases': []
+            'databases': [],
+            "streams": {}
         }
         self.stats = {}
         
 
     # Create runner function for each download format
-    def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
+    def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0):
         download_params = locals().copy()
         download_params.update({"download_function": self.download_stream})
         file = None
@@ -83,10 +84,13 @@ class LiveStreamDownloader:
 
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
             filetype = downloader.type
+
+        self.file_names.streams[manifest] = {str(filetype).lower(): file}
+        
         return file, filetype
 
     # Create runner function for each download format
-    def download_stream_direct(self, info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False):
+    def download_stream_direct(self, info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0):
         download_params = locals().copy()
         download_params.update({"download_function": self.download_stream_direct})
         file = None
@@ -100,9 +104,10 @@ class LiveStreamDownloader:
             filetype = downloader.type
             downloader.delete_state_file()
 
+        self.file_names.streams[manifest] = {str(filetype).lower(): file}
         return file, filetype
 
-    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0):
+    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0):
 
         file = None
         filetype = None
@@ -127,6 +132,7 @@ class LiveStreamDownloader:
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format) 
             filetype = downloader.type  
             
+        self.file_names.streams[manifest] = {str(filetype).lower(): file}
         return file, filetype
 
     def submit_download(self, executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False):
@@ -266,9 +272,11 @@ class LiveStreamDownloader:
                         if type == 'auxiliary':
                             self.file_names.update(result)
                         elif str(type).lower() == 'video':
-                            self.file_names['video'] = result
+                            #self.file_names['video'] = result
+                            pass
                         elif str(type).lower() == 'audio':
-                            self.file_names['audio'] = result    
+                            #self.file_names['audio'] = result  
+                            pass  
                         else:
                             self.file_names[str(type)] = result
                         
@@ -427,7 +435,7 @@ class LiveStreamDownloader:
     """
 
     def move_to_final(self, options, output_file, file_names):
-        def maybe_move(key, dest_func, option_flag=None):
+        def maybe_move(key, dest_func, file_names=file_names, option_flag=None):
             """
             key: key in file_names
             dest_func: func -> pathlib -> string dest path
@@ -464,22 +472,33 @@ class LiveStreamDownloader:
                 option_flag='write_thumbnail')
 
         maybe_move('info_json',
-                lambda f: f"{output_file}.info.json")
+                lambda f: f"{output_file}.info.json",
+                )
 
         maybe_move('description',
-                lambda f: f"{output_file}{f.suffix}")
+                lambda f: f"{output_file}{f.suffix}",
+                )
+        
+        stream_manifests = list(self.file_names.streams.items())
+        for manifest, stream in stream_manifests:
+            stream_output_file = output_file
+            if len(stream_manifests) > 1:
+                stream_output_file = f"{output_file}.{manifest}"
+            maybe_move('video',
+                    lambda f: f"{output_file}.{f._format}{f.suffix}",
+                    file_names=stream)
 
-        maybe_move('video',
-                lambda f: f"{output_file}.{f._format}{f.suffix}")
+            maybe_move('audio',
+                    lambda f: f"{output_file}.{f._format}{f.suffix}",
+                    file_names=stream)
 
-        maybe_move('audio',
-                lambda f: f"{output_file}.{f._format}{f.suffix}")
-
-        maybe_move('merged',
-                lambda f: f"{output_file}{f.suffix}")
+            maybe_move('merged',
+                    lambda f: f"{output_file}{f.suffix}",
+                    file_names=stream)
 
         maybe_move('live_chat',
-                lambda f: f"{output_file}.live_chat.zip")
+                lambda f: f"{output_file}.live_chat.zip",
+                file_names=file_names)
 
         # special: databases = list
         try:
@@ -497,7 +516,7 @@ class LiveStreamDownloader:
                 option_flag='write_ffmpeg_command')
 
         # remove temp folder
-        
+        """
         if options.get('temp_folder', None) is not None:
             try:
                 os.rmdir(options.get('temp_folder'))
@@ -508,7 +527,7 @@ class LiveStreamDownloader:
                     self.logger.exception(f"Error removing temp folder: {e}")
             except Exception as e:
                 self.logger.exception(f"Error removing temp folder: {e}")
-
+        """
         self.logger.info("Finished moving files from temporary directory to output destination")
 
     def download_live_chat(self, info_dict, options):
@@ -742,131 +761,136 @@ class LiveStreamDownloader:
         
             
     def create_mp4(self, file_names, info_dict, options):
-        index = 0
-        thumbnail = None
-        video = None
-        audio = None
-        ext = options.get('ext', None)
 
-        
-        ffmpeg_builder = ['ffmpeg', '-y', 
-                        '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats'
-                        ]
-        
-        if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
-            if file_names.get('thumbnail').exists():
-                if str(file_names.get('thumbnail').suffix).lower() == '.webp':
-                    self.logger.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
-                    png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
-                    thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
-                    try:
-                        result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
-                    except subprocess.CalledProcessError as e:
-                        self.logger.error(e.stderr)
-                        self.logger.fatal(e)
-                        raise e
-                    # Remove webp thumbnail
-                    self.logger.debug("Replacing thumbnail with .png version")
-                    file_names.pop('thumbnail').unlink(missing_ok=True)                
-                    file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
-                
-                input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
+        stream_manifests = list(self.file_names.streams.items())
+        for manifest, stream in stream_manifests:
+            index = 0
+            thumbnail = None
+            video = None
+            audio = None
+            ext = options.get('ext', None)
+
+            ffmpeg_builder = ['ffmpeg', '-y', 
+                            '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats'
+                            ]
+            
+            if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
+                if file_names.get('thumbnail').exists():
+                    if str(file_names.get('thumbnail').suffix).lower() == '.webp':
+                        self.logger.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
+                        png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
+                        thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
+                        try:
+                            result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+                        except subprocess.CalledProcessError as e:
+                            self.logger.error(e.stderr)
+                            self.logger.fatal(e)
+                            raise e
+                        # Remove webp thumbnail
+                        self.logger.debug("Replacing thumbnail with .png version")
+                        file_names.pop('thumbnail').unlink(missing_ok=True)                
+                        file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
+                    
+                    input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
+                    ffmpeg_builder.extend(input)
+                    thumbnail = index
+                    index += 1
+                else:
+                    self.logger.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
+            
+            # Add input files
+            if stream.get('video', None):        
+                input = ['-i', str(stream.get('video').absolute()), '-thread_queue_size', '1024']
                 ffmpeg_builder.extend(input)
-                thumbnail = index
+                video = index
                 index += 1
-            else:
-                self.logger.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
-        
-        # Add input files
-        if file_names.get('video', None):        
-            input = ['-i', str(file_names.get('video').absolute()), '-thread_queue_size', '1024']
-            ffmpeg_builder.extend(input)
-            video = index
-            index += 1
+                    
+            if stream.get('audio', None):
+                input = ['-i', str(stream.get('audio').absolute()), '-thread_queue_size', '1024']
+                ffmpeg_builder.extend(input)
+                audio = index
+                index += 1
+                if video is None and ext is None:
+                    ext = '.ogg'
+            # Add faststart
+            ffmpeg_builder.extend(['-movflags', 'faststart'])
+            
+            # Add mappings
+            for i in range(0, index):
+                input = ['-map', str(i)]
+                ffmpeg_builder.extend(input)
                 
-        if file_names.get('audio', None):
-            input = ['-i', str(file_names.get('audio').absolute()), '-thread_queue_size', '1024']
-            ffmpeg_builder.extend(input)
-            audio = index
-            index += 1
-            if video is None and ext is None:
-                ext = '.ogg'
-        # Add faststart
-        ffmpeg_builder.extend(['-movflags', 'faststart'])
-        
-        # Add mappings
-        for i in range(0, index):
-            input = ['-map', str(i)]
-            ffmpeg_builder.extend(input)
+            if thumbnail is not None:
+                ffmpeg_builder.extend(['-disposition:v:{0}'.format(thumbnail), 'attached_pic'])
+                
+            #Add Copy codec
+            ffmpeg_builder.extend(['-c', 'copy'])
+                
+            # Add metadata
+            ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
+            ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description"))])
+            ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
+            ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
             
-        if thumbnail is not None:
-            ffmpeg_builder.extend(['-disposition:v:{0}'.format(thumbnail), 'attached_pic'])
+            if options.get('filename') is not None:
+                filename = options.get('filename')
+            else:
+                filename = info_dict.get('id')
             
-        #Add Copy codec
-        ffmpeg_builder.extend(['-c', 'copy'])
-            
-        # Add metadata
-        ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
-        ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description"))])
-        ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
-        ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
-        
-        if options.get('filename') is not None:
-            filename = options.get('filename')
-        else:
-            filename = info_dict.get('id')
-        
-        if options.get("temp_folder"):
-            base_output = os.path.join(options.get("temp_folder"), filename)
-        else:
-            base_output = filename
-        
-        if ext is None:
-            self.logger.debug("No extension detected, switching to MP4")
-            ext = info_dict.get('ext', '.mp4')
-        if ext is not None and not str(ext).startswith("."):
-            ext = "." + str(ext)
-        if not base_output.endswith(ext):
-            base_output = base_output + ext  
-            
-        ffmpeg_builder.append(os.path.abspath(base_output))
-        
-        if options.get('write_ffmpeg_command', True):
-            ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
-            file_names['ffmpeg_cmd'] =  FileInfo(self.write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+            if options.get("temp_folder"):
+                base_output = os.path.join(options.get("temp_folder"), filename)
+            else:
+                base_output = filename
 
-        if not (options.get('merge', True)):    
-            return file_names
-        
-        self.logger.debug("FFmpeg command: {0}".format(' '.join(ffmpeg_builder)))
-        self.logger.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
-        try:
-            result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
-            self.logger.debug("FFmpeg STDOUT: {0}".format(result.stdout))
-            self.logger.debug("FFmpeg STDERR: {0}".format(result.stderr))
-        except subprocess.CalledProcessError as e:
-            self.logger.error(e.stderr)
-            self.logger.fatal(e)
-            raise e
-        #print(result.stdout)
-        #print(result.stderr)
-        
-        
-        
-        file_names['merged'] = FileInfo(base_output, file_type='merged')
-        self.logger.info("Successfully merged files into: {0}".format(file_names.get('merged').absolute()))
-        
-        
-        # Remove temp video and audio files
-        if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
-            if file_names.get('video'): 
-                self.logger.info("Removing {0}".format(file_names.get('video').absolute()))
-                file_names.get('video').unlink(missing_ok=True)
-                file_names.pop('video',None)
-            if file_names.get('audio'): 
-                self.logger.info("Removing {0}".format(file_names.get('audio').absolute()))
-                file_names.get('audio').unlink(missing_ok=True)
-                file_names.pop('audio',None)       
+            if len(stream_manifests) > 1:
+                base_output = f"{base_output}.{manifest}" 
+            
+            if ext is None:
+                self.logger.debug("No extension detected, switching to MP4")
+                ext = info_dict.get('ext', '.mp4')
+            if ext is not None and not str(ext).startswith("."):
+                ext = "." + str(ext)
+            if not base_output.endswith(ext):
+                base_output = base_output + ext  
+                
+            ffmpeg_builder.append(os.path.abspath(base_output))
+            
+            if options.get('write_ffmpeg_command', True):
+                ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
+                file_names.streams[manifest]['ffmpeg_cmd'] =  FileInfo(self.write_ffmpeg_command(ffmpeg_builder, ffmpeg_command_file), file_type='ffmpeg_command')
+
+            if not (options.get('merge', True)):    
+                return file_names
+            
+            self.logger.debug("FFmpeg command: {0}".format(' '.join(ffmpeg_builder)))
+            self.logger.info("Executing ffmpeg. Outputting to {0}".format(ffmpeg_builder[-1]))
+            try:
+                result = subprocess.run(ffmpeg_builder, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+                self.logger.debug("FFmpeg STDOUT: {0}".format(result.stdout))
+                self.logger.debug("FFmpeg STDERR: {0}".format(result.stderr))
+            except subprocess.CalledProcessError as e:
+                self.logger.error(e.stderr)
+                self.logger.fatal(e)
+                raise e
+            #print(result.stdout)
+            #print(result.stderr)
+            
+            
+            
+            file_names.streams[manifest]['merged'] = FileInfo(base_output, file_type='merged')
+            self.logger.info("Successfully merged files into: {0}".format(file_names.streams[manifest].get('merged').absolute()))
+            
+            
+            # Remove temp video and audio files
+            if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
+                if file_names.streams[manifest].get('video'): 
+                    self.logger.info("Removing {0}".format(file_names.streams[manifest].get('video').absolute()))
+                    file_names.streams[manifest].get('video').unlink(missing_ok=True)
+                    file_names.streams[manifest].pop('video',None)
+                if file_names.get('audio'): 
+                    self.logger.info("Removing {0}".format(file_names.streams[manifest].get('audio').absolute()))
+                    file_names.streams[manifest].get('audio').unlink(missing_ok=True)
+                    file_names.streams[manifest].pop('audio',None)       
         
         return file_names
         #for file in file_names:
@@ -1002,8 +1026,12 @@ class DownloadStream:
         self.livestream_coordinator = livestream_coordinator
         if self.livestream_coordinator:
             self.logger = self.livestream_coordinator.logger
+            self.kill_all = self.livestream_coordinator.kill_all
         else:
             self.logger = logging.getLogger()
+            self.kill_all = threading.Event()
+
+        
         self.params = download_params or locals().copy()
         self.conn = None
         self.latest_sequence = -1
@@ -1392,6 +1420,7 @@ class DownloadStream:
                             "info_dict": copy.deepcopy(info_json),
                             "resolution": str(self.format),
                             "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                            "manifest": temp_stream_url.manifest,
                         })
                         if new_params.get("download_function", None) is not None: 
                             self.following_manifest_thread = threading.Thread(
@@ -1426,6 +1455,7 @@ class DownloadStream:
                             "info_dict": copy.deepcopy(info_json),
                             "resolution": self.resolution,
                             "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                            "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
                         })
                         if new_params.get("download_function", None) is not None: 
                             self.following_manifest_thread = threading.Thread(
@@ -1460,6 +1490,7 @@ class DownloadStream:
                             "info_dict": copy.deepcopy(info_json),
                             "resolution": "best",
                             "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                            "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
                         })
                         if new_params.get("download_function", None) is not None: 
                             self.following_manifest_thread = threading.Thread(
