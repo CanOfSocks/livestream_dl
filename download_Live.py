@@ -462,6 +462,8 @@ class LiveStreamDownloader:
                 if str(f).strip() != str(dest).strip():
                     self.logger.info(f"Moving {f.absolute()} → {dest}")
                     shutil.move(f.absolute(), dest)
+                else:
+                    self.logger.debug(f"{f.absolute()} is already in final destination")
             except Exception as e:
                 self.logger.exception(f"unable to move {key}: {e}")
 
@@ -491,19 +493,19 @@ class LiveStreamDownloader:
                 stream_output_file = f"{output_file}.{manifest}"
             maybe_move('video',
                     lambda f: f"{stream_output_file}.{f._format}{f.suffix}",
-                    file_names=stream)
+                    file_names_dict=stream)
 
             maybe_move('audio',
                     lambda f: f"{stream_output_file}.{f._format}{f.suffix}",
-                    file_names=stream)
+                    file_names_dict=stream)
 
             maybe_move('merged',
                     lambda f: f"{stream_output_file}{f.suffix}",
-                    file_names=stream)
+                    file_names_dict=stream)
 
         maybe_move('live_chat',
                 lambda f: f"{output_file}.live_chat.zip",
-                file_names=file_names)
+                )
 
         # special: databases = list
         try:
