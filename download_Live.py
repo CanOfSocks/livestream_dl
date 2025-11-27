@@ -110,13 +110,13 @@ class LiveStreamDownloader:
         })
         return file, filetype
 
-    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0):
+    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0, stream_urls: list = []):
 
         file = None
         filetype = None
 
         with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                            proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self) as downloader:
+                            proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self, stream_urls=[]) as downloader:
             
             result = downloader.live_dl()
             #downloader.save_stats()    
@@ -1295,7 +1295,7 @@ class DownloadStream:
                         self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
                         if self.livestream_coordinator:
                             try:
-                                self.livestream_coordinator.recover_stream(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
+                                self.livestream_coordinator.recover_stream(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
                             except Exception as e:
                                 self.logger.exception("An error occurred while trying to recover the stream")
                         else:
