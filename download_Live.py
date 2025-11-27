@@ -1295,22 +1295,7 @@ class DownloadStream:
                         self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
                         if self.livestream_coordinator:
                             try:
-                                new_params = copy.deepcopy(self.params)
-                                new_params.update({
-                                    "info_dict": copy.deepcopy(self.info_dict),
-                                    "resolution": str(self.format),
-                                    "file_name": f"{self.file_base_name}",
-                                    "max_workers": max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier)
-                                })
-                                new_params.pop("include_dash", None)
-                                new_params.pop("include_m3u8", None)
-                                new_params.pop("force_m3u8", None)
-                                self.following_manifest_thread = threading.Thread(
-                                    target=self.livestream_coordinator.recover_stream,
-                                    kwargs=new_params,
-                                    daemon=True
-                                )
-                                self.following_manifest_thread.start()
+                                self.livestream_coordinator.recover_stream(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
                             except Exception as e:
                                 self.logger.exception("An error occurred while trying to recover the stream")
                         else:
