@@ -1294,11 +1294,32 @@ class DownloadStream:
                             time.sleep(60)
                         self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
                         if self.livestream_coordinator:
-                            downloader = self.livestream_coordinator.StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
-                            downloader.live_dl()
-                            downloader.close_connection()
+                            try:
+                                new_params = copy.deepcopy(self.params)
+                                new_params.update({
+                                    "info_dict": copy.deepcopy(self.info_dict),
+                                    "resolution": str(self.format),
+                                    "file_name": f"{self.file_base_name}",
+                                    "max_workers": max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier)
+                                })
+                                new_params.pop("include_dash", None)
+                                new_params.pop("include_m3u8", None)
+                                new_params.pop("force_m3u8", None)
+                                self.following_manifest_thread = threading.Thread(
+                                    target=self.livestream_coordinator.recover_stream,
+                                    kwargs=new_params,
+                                    daemon=True
+                                )
+                                self.following_manifest_thread.start()
+                            except Exception as e:
+                                self.logger.exception("An error occurred while trying to recover the stream")
                         else:
-                            self.logger.warning("livestream_coordinator class has not been initialised, ending...")
+                            try:
+                                downloader = StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
+                                downloader.live_dl()
+                                downloader.close_connection()
+                            except Exception as e:
+                                self.logger.exception("An error occurred while trying to recover the stream")
                         time.sleep(1)
                         self.conn, self.cursor = self.create_connection(self.temp_db_file)
                         return True
