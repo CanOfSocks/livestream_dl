@@ -42,7 +42,7 @@ import threading
 
 class LiveStreamDownloader:
 
-    def __init__(self, kill_all=threading.Event(), cleanup = threading.Event(), logger: logging = None):
+    def __init__(self, kill_all: threading.Event=threading.Event(), cleanup = threading.Event(), logger: logging = None):
         if logger:
             self.logger = logger
         else:
@@ -50,6 +50,8 @@ class LiveStreamDownloader:
             self.logger = logging.getLogger(self.__class__.__name__) 
             # Ensure it processes messages (important if you don't call setup_logging immediately)
         self.logger.propagate = False 
+
+        self.kill_this = threading.Event()
 
         # Global state converted to instance attributes
         self.kill_all = kill_all
@@ -259,7 +261,7 @@ class LiveStreamDownloader:
                     #futures.add(audio_future)
                     
                 while True:
-                    if self.kill_all.is_set():
+                    if self.kill_all.is_set() or self.kill_this.is_set():
                         raise KeyboardInterrupt("Thread kill event is set, ending...")
                     done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.ALL_COMPLETED)
                     # Continuously check for completion or interruption
@@ -608,7 +610,7 @@ class LiveStreamDownloader:
 
                 # Process chat messages for the duration of the timeout
                 for message in chat:
-                    if self.kill_all.is_set():
+                    if self.kill_all.is_set() or self.kill_this.is_set():
                         self.logger.debug("Killing live chat downloader")
                         chat_download.close()
                         break
@@ -1034,9 +1036,11 @@ class DownloadStream:
         if self.livestream_coordinator:
             self.logger = self.livestream_coordinator.logger
             self.kill_all = self.livestream_coordinator.kill_all
+            self.kill_this = self.livestream_coordinator.kill_this
         else:
             self.logger = logging.getLogger()
             self.kill_all = threading.Event()
+            self.kill_this = threading.Event()
 
         
         self.params = download_params or locals().copy()
@@ -1730,7 +1734,7 @@ class DownloadStream:
     
     def check_kill(self, executor: concurrent.futures.ThreadPoolExecutor=None):
         # Kill if keyboard interrupt is detected
-        if self.kill_all.is_set():
+        if self.kill_all.is_set() or self.kill_this.is_set():
             self.logger.debug("Kill command detected, ending thread")
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
@@ -2478,7 +2482,7 @@ class StreamRecovery(DownloadStream):
         if (not self.stream_urls) or (self.expires and time.time() > self.expires):
             self.logger.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
+            format_exp = datetime.fromtimestamp(self.expires).strftime('%Y-%m-%d %H:%M:%S')
             self.commit_batch()
             raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))         
         
