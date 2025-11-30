@@ -1304,9 +1304,10 @@ class DownloadStream:
                                 self.logger.exception("An error occurred while trying to recover the stream")
                         else:
                             try:
-                                downloader = StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
-                                downloader.live_dl()
-                                downloader.close_connection()
+                                with StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), 
+                                                    file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies) as downloader:
+                                    downloader.live_dl()
+                                    downloader.close_connection()
                             except Exception as e:
                                 self.logger.exception("An error occurred while trying to recover the stream")
                         time.sleep(1)
