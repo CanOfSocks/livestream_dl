@@ -1126,7 +1126,7 @@ class DownloadStream:
         self.update_latest_segment()
         self.url_checked = time.time()
         
-        self.conn, self.cursor = self.create_db(self.temp_db_file)    
+        self.conn = self.create_db(self.temp_db_file)    
         
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type] = {}
@@ -1157,7 +1157,7 @@ class DownloadStream:
         self.already_downloaded = self.segment_exists_batch()
         latest_downloaded_segment = -1
         wait = 0   
-        self.cursor.execute('BEGIN TRANSACTION')
+        self.conn.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "recording"
@@ -1215,7 +1215,7 @@ class DownloadStream:
 
                     if segment_data is not None:
                         # Insert segment data in the main thread (database interaction)
-                        self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
+                        self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
                         uncommitted_inserts += 1
                         
                         # If finished threads exceeds batch size, commit the whole batch of threads at once. 
@@ -1224,7 +1224,7 @@ class DownloadStream:
                             self.logger.debug("Writing segments to file...")
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
-                            self.cursor.execute('BEGIN TRANSACTION') 
+                            self.conn.execute('BEGIN TRANSACTION') 
                             
                         if self.livestream_coordinator:
                             self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
@@ -1311,7 +1311,7 @@ class DownloadStream:
                             except Exception as e:
                                 self.logger.exception("An error occurred while trying to recover the stream")
                         time.sleep(1)
-                        self.conn, self.cursor = self.create_connection(self.temp_db_file)
+                        self.conn = self.create_connection(self.temp_db_file)
                         return True
                     else:
                         self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
@@ -1333,10 +1333,10 @@ class DownloadStream:
                 
                 # Check if segments already exist within database (used to not create more connections). Needs fixing upstream
                 for seg_num in segments_to_download:
-                    if self.segment_exists(self.cursor, seg_num):
+                    if self.segment_exists(seg_num):
                         self.already_downloaded.add(seg_num)
                 # Check if optimistic segment has already downloaded or not
-                if optimistic_seg not in self.already_downloaded and self.segment_exists(self.cursor, optimistic_seg):
+                if optimistic_seg not in self.already_downloaded and self.segment_exists(optimistic_seg):
                     self.already_downloaded.add(optimistic_seg)
 
                 segments_to_download = segments_to_download - self.already_downloaded
@@ -1388,6 +1388,9 @@ class DownloadStream:
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
+
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
     
     def get_Headers(self, url):
         try:
@@ -1533,36 +1536,36 @@ class DownloadStream:
 
     def create_connection(self, file):
         conn = sqlite3.connect(file)
-        cursor = conn.cursor()
-        
-        # Database connection optimisation. Benefits will need to be tested
+
+        # Database connection optimization (when not in memory)
         if not self.database_in_memory:
-            # Set the journal mode to WAL
-            cursor.execute('PRAGMA journal_mode = WAL;')        
-            # Set the synchronous mode to NORMAL
-            cursor.execute('PRAGMA synchronous = NORMAL;')
-            # Increase page size to help with large blobs
-            cursor.execute('pragma page_size = 32768;')
-        
-        return conn, cursor
+            conn.execute('PRAGMA journal_mode = WAL;')
+            conn.execute('PRAGMA synchronous = NORMAL;')
+            conn.execute('PRAGMA page_size = 32768;')
+            # Optionally commit immediately to persist the PRAGMA settings
+            conn.commit()
+
+        return conn
+
     
     def create_db(self, temp_file):
         # Connect to SQLite database (or create it if it doesn't exist)
-        conn, cursor = self.create_connection(temp_file)
-        
-        # Create the table where id represents the segment order
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS segments (
-            id INTEGER PRIMARY KEY, 
-            segment_data BLOB
-        )
+        conn = self.create_connection(temp_file)  # should return a Connection object
+
+        # Create the table (id = segment order, segment_data as BLOB)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS segments (
+                id INTEGER PRIMARY KEY,
+                segment_data BLOB
+            )
         ''')
         conn.commit()
-        return conn, cursor
+
+        return conn
 
     # Function to check if a segment exists in the database
-    def segment_exists(self, cursor, segment_order):
-        cursor.execute('SELECT 1 FROM segments WHERE id = ?', (segment_order,))
+    def segment_exists(self, segment_order):
+        cursor = self.conn.execute('SELECT 1 FROM segments WHERE id = ?', (segment_order,))
         return cursor.fetchone() is not None
     
     def segment_exists_batch(self):
@@ -1571,8 +1574,10 @@ class DownloadStream:
         Returns a set of existing segment numbers.
         """
         query = "SELECT id FROM segments"
-        self.cursor.execute(query)
-        return set(row[0] for row in self.cursor.fetchall())
+        cur = self.conn.execute(query)
+        rows = cur.fetchall()
+        return set(row[0] for row in rows)
+
 
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
@@ -1633,9 +1638,8 @@ class DownloadStream:
             return -1, None, segment_order, None, None
             
     # Function to insert a single segment without committing
-    def insert_single_segment(self, cursor, segment_order, segment_data):
-
-        cursor.execute('''
+    def insert_single_segment(self, segment_order, segment_data):
+        self.conn.execute('''
             INSERT INTO segments (id, segment_data) 
             VALUES (?, ?) 
             ON CONFLICT(id) 
@@ -1645,7 +1649,6 @@ class DownloadStream:
                 ELSE segments.segment_data 
             END;
         ''', (segment_order, segment_data))
-
 
     # Function to commit after a batch of inserts
     def commit_batch(self, conn):
@@ -1657,25 +1660,25 @@ class DownloadStream:
         if self.conn:
             self.conn.close()
 
-    def combine_segments_to_file(self, output_file, cursor=None):
+    def combine_segments_to_file(self, output_file):
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "merging"
-        if cursor is None:
-            cursor = self.cursor
-        
-        self.logger.debug("Merging segments to {0}".format(output_file))
+
+        self.logger.debug(f"Merging segments to {output_file}")
+
         with open(output_file, 'wb') as f:
-            cursor.execute('SELECT segment_data FROM segments ORDER BY id')
-            first = True
-            for segment in cursor:  # Cursor iterates over rows one by one
-                segment_piece = segment[0]
-                # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
+            for (segment_data,) in self.conn.execute(
+                'SELECT segment_data FROM segments ORDER BY id'
+            ):
+                piece = segment_data
+                # Clean if needed
                 if str(self.ext).lower().endswith("mp4") or not str(self.ext):
-                    segment_piece = self.clean_segments(segment_piece, first)
-                first = False
-                f.write(segment_piece)
+                    piece = self.clean_segments(piece, first = False)  # note: you may want to manage first separately
+                f.write(piece)
+
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "merged"
+
         return output_file
     
     ### Via ytarchive            
@@ -1843,7 +1846,6 @@ class DownloadStreamDirect(DownloadStream):
         if self.conn:
             self.close_connection()
         self.conn = None
-        self.cursor = None
 
         # State tracking for direct writes
         self.state_file_name = f"{self.file_base_name}.{self.format}.state"
@@ -2119,6 +2121,7 @@ class StreamRecovery(DownloadStream):
 
     def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None, livestream_coordinator: LiveStreamDownloader=None):        
         from datetime import datetime
+        self.expires = time.time()
         # Call the base class __init__.
         # This will perform all common setup: file paths, proxy, cookies,
         # initial DB creation, etc.
@@ -2142,7 +2145,7 @@ class StreamRecovery(DownloadStream):
             force_m3u8=False,
             livestream_coordinator=livestream_coordinator,        
         )      
-        self.expires = time.time()
+        
         # --- Start of StreamRecovery-specific __init__ logic ---
         # The following logic overrides or extends the base class setup.
 
@@ -2204,7 +2207,7 @@ class StreamRecovery(DownloadStream):
         # and create a new one pointing to the correct file.
         if original_db_file != self.temp_db_file:
             self.close_connection()
-            self.conn, self.cursor = self.create_db(self.temp_db_file) 
+            self.conn = self.create_db(self.temp_db_file) 
         
         # Override retry_strategy with the custom one for recovery
         self.retry_strategy = self.CustomRetry(
@@ -2283,7 +2286,7 @@ class StreamRecovery(DownloadStream):
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "recording"
         self.already_downloaded = self.segment_exists_batch()
-        self.cursor.execute('BEGIN TRANSACTION')
+        self.conn.execute('BEGIN TRANSACTION')
         uncommitted_inserts = 0     
         
         self.sleep_time = max(self.estimated_segment_duration, 0.1)
@@ -2343,7 +2346,7 @@ class StreamRecovery(DownloadStream):
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
                         
                     if segment_data is not None:
-                        self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
+                        self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
                         uncommitted_inserts += 1
                         
                         if self.segments_retries.get(seg_num, None) is not None:
@@ -2353,7 +2356,7 @@ class StreamRecovery(DownloadStream):
                             self.logger.debug("Writing segments to file...")
                             self.commit_batch(self.conn)
                             uncommitted_inserts = 0
-                            self.cursor.execute('BEGIN TRANSACTION') 
+                            self.conn.execute('BEGIN TRANSACTION') 
                     else:
                         if self.segments_retries.get(seg_num, None) is not None:
                             self.segments_retries[seg_num]['retries'] = self.segments_retries[seg_num]['retries'] + 1
@@ -2430,7 +2433,7 @@ class StreamRecovery(DownloadStream):
                             if seg_num in self.already_downloaded:
                                 self.segments_retries.pop(seg_num,None)
                                 continue
-                            if self.segment_exists(self.cursor, seg_num):
+                            if self.segment_exists(seg_num):
                                 self.already_downloaded.add(seg_num)
                                 continue
                             new_download.add(seg_num)
@@ -2505,11 +2508,7 @@ class StreamRecovery(DownloadStream):
             self.estimated_segment_duration = int(stream_url_info.get("X-Head-Time-Sec"))/max(self.latest_sequence,1)
         
         if self.livestream_coordinator:
-            if self.livestream_coordinator.stats.get(self.type, None):    
-                self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
-            else:
-                self.livestream_coordinator.stats[self.type] = {}
-                self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
+            self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
     
     def get_Headers(self, url):
         # Overrides base method to add 401 handling
