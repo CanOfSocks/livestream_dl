@@ -2152,7 +2152,6 @@ class StreamRecovery(DownloadStream):
         # Override ID and live_status with fallback logic
         self.id = info_dict.get('id', self.get_id_from_url(stream_urls[0]) if stream_urls else self.id)
         self.live_status = info_dict.get('live_status', live_status)
-        self.yt_dlp_sort = yt_dlp_sort
             
         # Override stream_urls and format
         # StreamRecovery can be passed URLs directly or finds *all* of them,
