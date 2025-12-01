@@ -1292,7 +1292,7 @@ class DownloadStream:
                         self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
                         self.commit_batch(self.conn)
                         self.close_connection()
-                        
+
                         for i in range(5, 0, -1):
                             self.logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
                             time.sleep(60)
@@ -1313,6 +1313,7 @@ class DownloadStream:
                         time.sleep(1)
                         self.conn = self.create_connection(self.temp_db_file)
                         return True
+                        
                     else:
                         self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
                         break
@@ -1651,7 +1652,9 @@ class DownloadStream:
         ''', (segment_order, segment_data))
 
     # Function to commit after a batch of inserts
-    def commit_batch(self, conn):
+    def commit_batch(self, conn=None):
+        if conn is None:
+            conn=self.conn
         conn.commit()
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]["current_filesize"] = os.path.getsize(self.temp_db_file)
@@ -2486,7 +2489,7 @@ class StreamRecovery(DownloadStream):
             self.logger.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(self.expires).strftime('%Y-%m-%d %H:%M:%S')
-            self.commit_batch()
+            self.commit_batch(self.conn)
             raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))         
         
         if url is None:
