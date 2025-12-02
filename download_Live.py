@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 import errno
 
+from queue import Queue
+
 import copy
 
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
@@ -1536,13 +1538,14 @@ class DownloadStream:
         return False
 
     def create_connection(self, file):
-        conn = sqlite3.connect(file)
+        conn = sqlite3.connect(file, timeout=10)
 
         # Database connection optimization (when not in memory)
         if not self.database_in_memory:
             conn.execute('PRAGMA journal_mode = WAL;')
             conn.execute('PRAGMA synchronous = NORMAL;')
             conn.execute('PRAGMA page_size = 32768;')
+            conn.execute('PRAGMA busy_timeout = 10000;')
             # Optionally commit immediately to persist the PRAGMA settings
             conn.commit()
 
@@ -1653,9 +1656,7 @@ class DownloadStream:
 
     # Function to commit after a batch of inserts
     def commit_batch(self, conn=None):
-        if conn is None:
-            conn=self.conn
-        conn.commit()
+        self.conn.commit()
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]["current_filesize"] = os.path.getsize(self.temp_db_file)
         
