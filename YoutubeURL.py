@@ -363,11 +363,10 @@ class Formats:
             
             # --- Secondary Filter: Format ID (itag) ---
             # Now that we know the protocol matches, we check the format ID
-            
             if current_protocol == 'http_dash_segments':
                 url = ytdlp_format.get('fragment_base_url')
                 if not url: continue
-                yt_url = YoutubeURL(url)
+                yt_url = YoutubeURL(url=url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None))
                 itag = yt_url.itag
                 if format_id == itag: 
                     urls.append(yt_url) # Append the matching URL
@@ -380,7 +379,7 @@ class Formats:
                 try:
                     # Fetch all stream URLs from the playlist
                     for stream_url in self.getM3u8Url(m3u8_playlist_url, first_only=False):
-                        yt_url = YoutubeURL(stream_url)
+                        yt_url = YoutubeURL(url=stream_url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None))
                         itag = yt_url.itag
                         if format_id == itag: 
                             # Append the matching URL (using your original video_base_url call)
@@ -390,8 +389,9 @@ class Formats:
                     
             else: # Handles 'https' and any other direct protocols
                 url = ytdlp_format.get('url')
-                if not url: continue
-                yt_url = YoutubeURL(url)
+                if not url: 
+                    continue
+                yt_url = YoutubeURL(url=url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None))
                 itag = yt_url.itag 
                 if format_id == itag:
                     # Append the matching URL (using your original video_base_url call)

@@ -120,7 +120,7 @@ class LiveStreamDownloader:
         filetype = None
 
         with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                            proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self, stream_urls=[]) as downloader:
+                            proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self, stream_urls=stream_urls) as downloader:
             
             result = downloader.live_dl()
             #downloader.save_stats()    
@@ -1065,13 +1065,13 @@ class DownloadStream:
         
         self.info_dict = info_dict
         self.stream_urls = []
-        
+
         self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
-        
-        self.format = self.stream_url.format_id
 
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
+        
+        self.format = self.stream_url.format_id
         
         self.stream_urls.append(self.stream_url)
         # Extract and parse the query parameters into a dictionary
@@ -2130,36 +2130,26 @@ class StreamRecovery(DownloadStream):
         # This will perform all common setup: file paths, proxy, cookies,
         # initial DB creation, etc.
         # We pass flags that are specific to StreamRecovery's logic (e.g., no DASH).
-        super().__init__(
-            info_dict=info_dict,
-            resolution=resolution,
-            batch_size=batch_size,
-            max_workers=max_workers,
-            fragment_retries=fragment_retries,
-            folder=folder,
-            file_name=file_name,
-            database_in_memory=database_in_memory,
-            cookies=cookies,
-            recovery_thread_multiplier=2, # Default value, not used by StreamRecovery
-            yt_dlp_options=None, # StreamRecovery doesn't use this
-            proxies=proxies,
-            yt_dlp_sort=yt_dlp_sort,
-            include_dash=False, # StreamRecovery logic specifically excludes DASH
-            include_m3u8=False,
-            force_m3u8=False,
-            livestream_coordinator=livestream_coordinator,        
-        )      
-        
-        # --- Start of StreamRecovery-specific __init__ logic ---
-        # The following logic overrides or extends the base class setup.
+        self.livestream_coordinator = livestream_coordinator
+        if self.livestream_coordinator:
+            self.logger = self.livestream_coordinator.logger
+            self.kill_all = self.livestream_coordinator.kill_all
+            self.kill_this = self.livestream_coordinator.kill_this
+        else:
+            self.logger = logging.getLogger()
+            self.kill_all = threading.Event()
+            self.kill_this = threading.Event()
 
-        # Override ID and live_status with fallback logic
-        self.id = info_dict.get('id', self.get_id_from_url(stream_urls[0]) if stream_urls else self.id)
-        self.live_status = info_dict.get('live_status', live_status)
-            
-        # Override stream_urls and format
-        # StreamRecovery can be passed URLs directly or finds *all* of them,
-        # unlike DownloadStream which finds just one.
+        self.conn = None
+        self.latest_sequence = -1
+        self.already_downloaded = set()
+        self.batch_size = batch_size
+        self.max_workers = max_workers
+        self.proxies = proxies
+        
+        self.resolution = resolution
+        self.yt_dlp_sort = yt_dlp_sort
+
         if stream_urls:
             self.logger.debug("{0} stream urls available".format(len(stream_urls)))
             for url in stream_urls:
@@ -2173,44 +2163,53 @@ class StreamRecovery(DownloadStream):
                 info_json=info_dict, 
                 resolution=resolution,  
                 sort=self.yt_dlp_sort, 
-                get_all=True, # Key difference: get all URLs
+                get_all=True, 
                 include_dash=False,
                 include_m3u8=False
             )
 
         if not self.stream_urls:
             raise ValueError("No compatible stream URLs not found for {0}, unable to continue".format(resolution))
+        
+        self.id = info_dict.get('id', self.get_id_from_url(self.stream_urls[0].id))
+        self.live_status = info_dict.get('live_status')
+        
+        self.info_dict = info_dict
+
+        self.id = info_dict.get('id', self.get_id_from_url(self.stream_urls[0].id))
+        self.live_status = info_dict.get('live_status', live_status)
             
-        self.format = str(self.stream_urls[0].itag)            
+        self.stream_url = random.choice(self.stream_urls)
+        self.format = self.stream_url.format_id           
         
         self.logger.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
         
         self.logger.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
         
         # Override stream_url with a random choice
-        self.stream_url = random.choice(self.stream_urls)
-        self.format = self.stream_url.format_id
         
-        # The base __init__ already set file names based on its format detection.
-        # We must re-set them using the format this class detected, which may differ.
-        original_db_file = self.temp_db_file
-        self.merged_file_name = "{0}.{1}.ts".format(self.file_base_name, self.format)     
+        self.database_in_memory = database_in_memory
+        
+        if file_name is None:
+            file_name = self.id    
+        
+        self.file_base_name = file_name
+        
+        self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)     
         if self.database_in_memory:
             self.temp_db_file = ':memory:'
         else:
-            self.temp_db_file = '{0}.{1}.temp'.format(self.file_base_name, self.format)
+            self.temp_db_file = '{0}.{1}.temp'.format(file_name, self.format)
         
+        self.folder = folder    
         if self.folder:
-            self.merged_file_name = os.path.join(self.folder, os.path.basename(self.merged_file_name))
+            os.makedirs(folder, exist_ok=True)
+            self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
+            self.file_base_name = os.path.join(self.folder, self.file_base_name)
             if not self.database_in_memory:
-                self.temp_db_file = os.path.join(self.folder, os.path.basename(self.temp_db_file))
+                self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
 
-        # If the determined format (and thus DB file) is different from the
-        # one the base class created, we must close the old DB connection
-        # and create a new one pointing to the correct file.
-        if original_db_file != self.temp_db_file:
-            self.close_connection()
-            self.conn = self.create_db(self.temp_db_file) 
+        self.conn = self.create_db(self.temp_db_file) 
         
         # Override retry_strategy with the custom one for recovery
         self.retry_strategy = self.CustomRetry(
@@ -2222,7 +2221,14 @@ class StreamRecovery(DownloadStream):
         )  
         
         self.fragment_retries = fragment_retries  
-        self.segment_retry_time = segment_retry_time  
+        self.segment_retry_time = segment_retry_time 
+
+        self.is_403 = False
+        self.is_private = False
+        self.estimated_segment_duration = 0
+
+        self.type = None
+        self.ext = None  
         
         # Set StreamRecovery-specific properties
         self.is_401 = False
