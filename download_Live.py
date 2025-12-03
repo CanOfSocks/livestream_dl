@@ -1538,14 +1538,13 @@ class DownloadStream:
         return False
 
     def create_connection(self, file):
-        conn = sqlite3.connect(file, timeout=10)
+        conn = sqlite3.connect(file)
 
         # Database connection optimization (when not in memory)
         if not self.database_in_memory:
             conn.execute('PRAGMA journal_mode = WAL;')
             conn.execute('PRAGMA synchronous = NORMAL;')
             conn.execute('PRAGMA page_size = 32768;')
-            conn.execute('PRAGMA busy_timeout = 10000;')
             # Optionally commit immediately to persist the PRAGMA settings
             conn.commit()
 
