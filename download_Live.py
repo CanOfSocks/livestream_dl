@@ -44,7 +44,7 @@ import threading
 
 class LiveStreamDownloader:
 
-    def __init__(self, kill_all: threading.Event=threading.Event(), cleanup = threading.Event(), logger: logging = None):
+    def __init__(self, kill_all: threading.Event=threading.Event(), cleanup = threading.Event(), logger: logging = None, kill_this: threading.Event = None):
         if logger:
             self.logger = logger
         else:
@@ -53,7 +53,7 @@ class LiveStreamDownloader:
             # Ensure it processes messages (important if you don't call setup_logging immediately)
         self.logger.propagate = False 
 
-        self.kill_this = threading.Event()
+        self.kill_this = kill_this or threading.Event()
 
         # Global state converted to instance attributes
         self.kill_all = kill_all
