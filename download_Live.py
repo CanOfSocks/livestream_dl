@@ -230,7 +230,8 @@ class LiveStreamDownloader:
             os.makedirs(download_folder, exist_ok=True)
             
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:  
+        with concurrent.futures.ThreadPoolExecutor() as executor: 
+            done = not_done = set() 
             try: 
                 
                 # Download auxiliary files (thumbnail, info,json etc)
@@ -265,7 +266,7 @@ class LiveStreamDownloader:
                     self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
                     #futures.add(audio_future)
                     
-                done = not_done = set()
+                
                 while True:
                     if self.kill_all.is_set() or self.kill_this.is_set():
                         raise KeyboardInterrupt("Thread kill event is set, ending...")
