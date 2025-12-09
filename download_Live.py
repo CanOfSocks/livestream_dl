@@ -265,7 +265,7 @@ class LiveStreamDownloader:
                     self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
                     #futures.add(audio_future)
                     
-                done, not_done = set()
+                done = not_done = set()
                 while True:
                     if self.kill_all.is_set() or self.kill_this.is_set():
                         raise KeyboardInterrupt("Thread kill event is set, ending...")
