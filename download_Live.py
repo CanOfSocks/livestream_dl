@@ -75,7 +75,8 @@ class LiveStreamDownloader:
         filetype = None
         with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                                         yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
-                                        download_params=download_params, livestream_coordinator=self) as downloader:              
+                                        download_params=download_params, livestream_coordinator=self) as downloader:       
+            self.stats["status"] = "Recording"       
             downloader.live_dl()
             file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
             if not keep_database:
@@ -104,6 +105,7 @@ class LiveStreamDownloader:
         with DownloadStreamDirect(info_dict, resolution=resolution, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                                             yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
                                             download_params=download_params, livestream_coordinator=self) as downloader:
+            self.stats["status"] = "Recording"
             file_name = downloader.live_dl()
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
             filetype = downloader.type
@@ -121,7 +123,7 @@ class LiveStreamDownloader:
 
         with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                             proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self, stream_urls=stream_urls) as downloader:
-            
+            self.stats["status"] = "Recording"
             result = downloader.live_dl()
             #downloader.save_stats()    
             if force_merge or result <= 0 or result <= recovery_failure_tolerance:
@@ -212,6 +214,7 @@ class LiveStreamDownloader:
             
         setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name=str(self.__class__.__name__))
         self.stats['id'] = info_dict.get('id', None)
+        self.stats["status"] = "Starting"
         self.logger.debug(json.dumps(options, indent=4))
         outputFile = self.output_filename(info_dict=info_dict, outtmpl=options.get('output'))
         file_name = None
@@ -312,14 +315,15 @@ class LiveStreamDownloader:
                 done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
                 executor.shutdown(wait=False,cancel_futures=True)
                 self.logger.debug("Shutdown all threads")
+                self.stats["status"] = "Cancelled"
                 raise
                 
-        
+        self.stats["status"] = "Muxing"
         self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options)
             
-        
+        self.stats["status"] = "Moving"
         self.move_to_final(options=options, output_file=outputFile, file_names=self.file_names)
-                    
+        self.stats["status"] = "Finished"            
         #move_to_final(info_dict, options, file_names)
         
     def output_filename(self, info_dict, outtmpl):
