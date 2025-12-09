@@ -308,7 +308,7 @@ class LiveStreamDownloader:
                     live_chat_thread.join()
                 
             except KeyboardInterrupt as e:
-                self.kill_all.set()
+                self.kill_this.set()
                 self.logger.debug("Keyboard interrupt detected")
                 if len(not_done) > 0:
                     self.logger.debug("Cancelling remaining threads")
