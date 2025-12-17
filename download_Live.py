@@ -116,7 +116,7 @@ class LiveStreamDownloader:
         })
         return file, filetype
 
-    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0, stream_urls: list = []):
+    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0, stream_urls: list = [], no_merge=False):
 
         file = None
         filetype = None
@@ -126,7 +126,7 @@ class LiveStreamDownloader:
             self.stats["status"] = "Recording"
             result = downloader.live_dl()
             #downloader.save_stats()    
-            if force_merge or result <= 0 or result <= recovery_failure_tolerance:
+            if (force_merge or result <= 0 or result <= recovery_failure_tolerance) and (not no_merge):
                 if result > 0:
                     self.logger.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
                 file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
@@ -1307,7 +1307,7 @@ class DownloadStream:
                         self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
                         if self.livestream_coordinator:
                             try:
-                                self.livestream_coordinator.recover_stream(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies)
+                                self.livestream_coordinator.recover_stream(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies, no_merge=True)
                             except Exception as e:
                                 self.logger.exception("An error occurred while trying to recover the stream")
                         else:
@@ -2277,20 +2277,6 @@ class StreamRecovery(DownloadStream):
         if self.type and self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type] = {}
     
-    def get_format_from_url(self, url):
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-        self.logger.debug(query_params)
-        # Get the 'expire' parameter
-        self.logger.debug("Itags from url: {0}".format(query_params.get("itag", [None])))
-        itag = query_params.get("itag", [None])[0]
-        return str(itag).strip()
-    
-    def get_id_from_url(self, url):
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-        id = str(query_params.get("id", [None])[0])[:11].strip()
-        return id
                 
     def live_dl(self):
         # This method is completely different from the base class.
