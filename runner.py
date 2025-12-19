@@ -128,6 +128,7 @@ def main(id, resolution='best', options={}, info_dict=None, thread_kill: threadi
 
 def monitor_channel(options={}):
     import logging
+    import copy
     download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None))
     import monitor_channel
     from typing import Dict
@@ -147,12 +148,13 @@ def monitor_channel(options={}):
         try:
             videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options)
             for video_id in videos_to_get:
+                video_options = copy.deepcopy(options)
                 t = threading.Thread(
                     target=main,
                     args=(video_id,),
                     kwargs={
-                        'resolution': options.get("resolution"),
-                        'options': options,
+                        'resolution': video_options.get("resolution"),
+                        'options': video_options,
                         'thread_kill': kill_all
                     },
                     daemon=True
