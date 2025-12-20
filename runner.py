@@ -148,6 +148,8 @@ def monitor_channel(options={}):
         try:
             videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options)
             for video_id in videos_to_get:
+                if threads.get(video_id, None) is not None:
+                    continue
                 video_options = copy.deepcopy(options)
                 t = threading.Thread(
                     target=main,
