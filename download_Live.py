@@ -817,13 +817,13 @@ class LiveStreamDownloader:
             
             # Add input files
             if stream.get('video', None):        
-                input = ['-thread_queue_size', '1024', '-i', str(stream.get('video').absolute()), ]
+                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('video').absolute()), ]
                 ffmpeg_builder.extend(input)
                 video = index
                 index += 1
                     
             if stream.get('audio', None):
-                input = ['-thread_queue_size', '1024', '-i', str(stream.get('audio').absolute()), ]
+                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('audio').absolute()), ]
                 ffmpeg_builder.extend(input)
                 audio = index
                 index += 1
