@@ -1,18 +1,15 @@
 from __future__ import annotations
-import yt_dlp
+
+import yt_dlp.YoutubeDL
+import yt_dlp.utils
 import sqlite3
 import requests
 from requests.adapters import HTTPAdapter, Retry
 import random
-from datetime import datetime
 import time
 import concurrent.futures
 import json
 from pathlib import Path
-import errno
-
-from queue import Queue
-
 import copy
 
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
@@ -26,7 +23,7 @@ except ModuleNotFoundError as e:
     from . import YoutubeURL
     from .headers import user_agents
 
-import subprocess
+
 import os  
 
 from urllib.parse import urlparse, parse_qs
@@ -331,123 +328,7 @@ class LiveStreamDownloader:
     def output_filename(self, info_dict, outtmpl):
         outputFile = str(yt_dlp.YoutubeDL().prepare_filename(info_dict, outtmpl=outtmpl))
         return outputFile
-    """
-    def move_to_final(options, outputFile, file_names):
-        logging.debug("Tracked Files: {0}".format(json.dumps(file_names, indent=4)))
-        if os.path.dirname(outputFile):
-            os.makedirs(os.path.dirname(outputFile), exist_ok=True)
-        try:
-            if file_names.get('thumbnail'):
-                # Remove thumbnail if write_thumbnail isn't True as it may have only been requested for embedding      
-                if options.get('write_thumbnail', False):
-                    thumbnail = file_names.get('thumbnail')
-                    thumb_output = "{0}{1}".format(outputFile, thumbnail.suffix)
-                    if str(thumbnail).strip() != str(thumb_output).strip():
-                        logging.debug("Moving {0} to {1}".format(thumbnail.absolute(), thumb_output))                
-                        shutil.move(thumbnail.absolute(), thumb_output)
-                else:
-                    logging.info("Removing {0}".format(file_names.get('thumbnail').absolute()))
-                    file_names.get('thumbnail').unlink(missing_ok=True)
-                    file_names.pop('thumbnail',None)
-
-        except Exception as e:
-            logging.exception("unable to move thumbnail: {0}".format(e))
-        
-        try:
-            if file_names.get('info_json'):
-                info_json = file_names.get('info_json')
-                info_output = "{0}{1}".format(outputFile, '.info.json')
-                if str(info_json).strip() != str(info_output).strip():
-                    logging.info("Moving {0} to {1}".format(info_json.absolute(), info_output))            
-                    shutil.move(info_json.absolute(), info_output)
-        except Exception as e:
-            logging.exception("unable to move info_json: {0}".format(e))
-            
-        try:
-            if file_names.get('description'):
-                description = file_names.get('description')
-                description_output = "{0}{1}".format(outputFile, description.suffix)            
-                if str(description).strip() != str(description_output).strip():
-                    logging.info("Moving {0} to {1}".format(description.absolute(), description_output))
-                    shutil.move(description.absolute(), description_output)
-        except Exception as e:
-            logging.exception("unable to move description: {0}".format(e))
-        
-        try:
-            if file_names.get('video'):
-                video = file_names.get('video')
-                video_output = "{0}.{1}{2}".format(outputFile, video._format, video.suffix)
-                if str(video).strip() != str(video_output).strip():
-                    logging.info("Moving {0} to {1}".format(video.absolute(), video_output))
-                    shutil.move(video.absolute(), video_output)
-        except Exception as e:
-            logging.exception("unable to move video stream: {0}".format(e))
-            
-        try:
-            if file_names.get('audio'):
-                audio = file_names.get('audio')
-                audio_output = "{0}.{1}{2}".format(outputFile, audio._format, audio.suffix)
-                if str(audio).strip() != str(audio_output).strip():
-                    logging.info("Moving {0} to {1}".format(audio.absolute(), audio_output))
-                    shutil.move(audio.absolute(), audio_output)
-        except Exception as e:
-            logging.exception("unable to move audio stream: {0}".format(e))
-            
-        try:
-            if file_names.get('merged'):
-                merged = file_names.get('merged')
-                merged_output = "{0}{1}".format(outputFile, merged.suffix)
-                if str(merged).strip() != str(merged_output).strip():
-                    logging.info("Moving {0} to {1}".format(merged.absolute(), merged_output))
-                    shutil.move(merged.absolute(), merged_output)
-        except Exception as e:
-            logging.exception("unable to move merged video: {0}".format(e))
-                    
-        try:
-            if file_names.get('live_chat'):
-                live_chat = file_names.get('live_chat')
-                live_chat_output = "{0}{1}".format(outputFile, ".live_chat.zip")
-                if str(live_chat).strip() != str(live_chat_output).strip():
-                    logging.info("Moving {0} to {1}".format(live_chat.absolute(), live_chat_output))
-                    shutil.move(live_chat.absolute(), live_chat_output)
-        except Exception as e:
-            logging.exception("unable to move live chat zip: {0}".format(e))
-        
-        try:
-            if file_names.get('databases'):
-                for file in file_names.get('databases'):
-                    db_output = "{0}.{1}{2}".format(outputFile, file.format, file.suffix)
-                    if str(file).strip() != str(db_output).strip():
-                        logging.info("Moving {0} to {1}".format(file.absolute(), db_output))
-                        shutil.move(file.absolute(), db_output)
-        except Exception as e:
-            logging.exception("unable to move database files: {0}".format(e))
-        try:
-            if file_names.get('ffmpeg_cmd') and file_names.get('ffmpeg_cmd').exists():
-                if options.get('write_ffmpeg_command', False):
-                    ffmpeg_command = file_names.get('ffmpeg_cmd')
-                    ffmpeg_command_output = "{0}{1}".format(outputFile, ".ffmpeg.txt")
-                    if str(ffmpeg_command).strip() != str(ffmpeg_command_output).strip():
-                        logging.info("Moving {0} to {1}".format(ffmpeg_command.absolute(), ffmpeg_command_output))
-                        shutil.move(ffmpeg_command.absolute(), ffmpeg_command_output)
-                else:
-                    file_names.get('ffmpeg_cmd').unlink()
-        except Exception as e:
-            logging.exception("unable to move ffmpeg command file: {0}".format(e))
-            
-        try:
-            os.rmdir(options.get('temp_folder'))
-        except OSError as e:
-            if e.errno == errno.ENOTEMPTY:
-                logging.warning(f"Error: Directory not empty: {e.filename}")
-                # Optional: handle non-empty directory (e.g., log, retry, or remove contents)
-            else:
-                logging.exception("Error removing temp folder: {0}".format(e))
-        except Exception as e:
-            logging.exception("Error removing temp folder: {0}".format(e))
-            
-        logging.info("Finished moving files from temporary directory to output destination")
-    """
+    
 
     def move_to_final(self, options, output_file, file_names):
         def maybe_move(key, dest_func, file_names_dict=file_names, option_flag=None):
@@ -548,7 +429,6 @@ class LiveStreamDownloader:
         self.logger.info("Finished moving files from temporary directory to output destination")
 
     def download_live_chat(self, info_dict, options):
-        import yt_dlp
         import zipfile
         
         if options.get('filename') is not None:
@@ -591,7 +471,7 @@ class LiveStreamDownloader:
             'concurrent_fragment_downloads': 2,
             'outtmpl': base_output          # Save to a JSON file        
         }
-        print(options.get('ytdlp_options', {}))
+        self.logger.debug(options.get('ytdlp_options', {}))
         ydl_opts.update(options.get('ytdlp_options', {}))
         
         livechat_filename = base_output + ".live_chat.json"
@@ -778,6 +658,7 @@ class LiveStreamDownloader:
         
             
     def create_mp4(self, file_names, info_dict, options):
+        import subprocess
         #self.logger.debug("Files: {0}".format(json.dumps(file_names)))
         stream_manifests = list(self.file_names["streams"].items())
         for manifest, stream in stream_manifests:
@@ -796,8 +677,11 @@ class LiveStreamDownloader:
                     if str(file_names.get('thumbnail').suffix).lower() == '.webp':
                         self.logger.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
                         png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
-                        thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
+
+
+                        thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()).replace('%', '%%'), str(png_thumbnail.absolute()).replace('%', '%%')]
                         try:
+                            
                             result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
                         except subprocess.CalledProcessError as e:
                             self.logger.error(e.stderr)
@@ -808,7 +692,7 @@ class LiveStreamDownloader:
                         file_names.pop('thumbnail').unlink(missing_ok=True)                
                         file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
                     
-                    input = ['-i', str(file_names.get('thumbnail').absolute()), '-thread_queue_size', '1024']
+                    input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(file_names.get('thumbnail').absolute()).replace('%', '%%')]
                     ffmpeg_builder.extend(input)
                     thumbnail = index
                     index += 1
@@ -817,13 +701,13 @@ class LiveStreamDownloader:
             
             # Add input files
             if stream.get('video', None):        
-                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('video').absolute()), ]
+                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('video').absolute()).replace('%', '%%'), ]
                 ffmpeg_builder.extend(input)
                 video = index
                 index += 1
                     
             if stream.get('audio', None):
-                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('audio').absolute()), ]
+                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('audio').absolute()).replace('%', '%%'), ]
                 ffmpeg_builder.extend(input)
                 audio = index
                 index += 1
@@ -845,7 +729,7 @@ class LiveStreamDownloader:
                 
             # Add metadata
             ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
-            ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description"))])
+            ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description",""))])
             ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
             ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
             
@@ -870,7 +754,8 @@ class LiveStreamDownloader:
             if not base_output.endswith(ext):
                 base_output = base_output + ext  
                 
-            ffmpeg_builder.append(os.path.abspath(base_output))
+            # Add output file to ffmpeg command
+            ffmpeg_builder.append(str(Path(base_output).absolute()).replace('%', '%%'))
             
             if options.get('write_ffmpeg_command', True):
                 ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
@@ -2608,754 +2493,7 @@ class StreamRecovery(DownloadStream):
             json.dump(self.user_agent_403s, outfile, indent=4)
         with open("{0}.{1}_usr_ag_full_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
             json.dump(self.user_agent_full_403s, outfile, indent=4)
-'''
-class StreamRecovery:
-    
-    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None):        
-        self.conn = None
-        from datetime import datetime
-        self.latest_sequence = -1
-        self.already_downloaded = set()
-        self.batch_size = batch_size
-        self.max_workers = max_workers
-        
-        # If info.json is defined, use the value within that, otherwise attempt to extracct ID from the first stream URL
-        self.id = info_dict.get('id', self.get_id_from_url(stream_urls[0]) if stream_urls else None)
 
-        # Use info.json if available, otherwise try using passed live_status value (default is_live)
-        self.live_status = info_dict.get('live_status', live_status)
-        
-        self.yt_dlp_sort = yt_dlp_sort
-        
-        #print("Stream recovery info dict: {0}".format(info_dict))
-        #print("Stream recovery format: {0}".format(resolution))
-        
-        
-        # If stream URLs are given, use them to get the format and also try to extract any URLs from the info.json too. If no stream URLs are passed, use the given resolution and the info.json only               
-        if stream_urls:
-            logging.debug("{0} stream urls available".format(len(stream_urls)))
-            for url in stream_urls:
-                self.format = self.get_format_from_url(url)
-                if self.format is not None:
-                    logging.debug("Stream recovery - Found format {0} from itags".format(self.format))
-                    break            
-            self.stream_urls = stream_urls          
-        else:
-            self.stream_urls, self.format = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, return_format=True, sort=self.yt_dlp_sort, get_all=True, include_dash=False)
-        
-        logging.debug("Recovery - Resolution: {0}, Format: {1}".format(resolution, self.format))
-        """        
-        if stream_urls:
-            if not self.stream_urls:
-                self.stream_urls = []
-            self.stream_urls = list(set(self.stream_urls) | set(stream_urls))
-        """
-        if self.stream_urls is None:
-            raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
-        
-        logging.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
-        self.stream_url = random.choice(self.stream_urls)
-        
-        self.database_in_memory = database_in_memory
-        
-        if file_name is None:
-            file_name = self.id    
-        
-        self.file_base_name = file_name
-        
-        self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)     
-        if self.database_in_memory:
-            self.temp_db_file = ':memory:'
-        else:
-            self.temp_db_file = '{0}.{1}.temp'.format(file_name, self.format)
-        
-        self.folder = folder    
-        if self.folder:
-            os.makedirs(folder, exist_ok=True)
-            self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
-            self.file_base_name = os.path.join(self.folder, self.file_base_name)
-            if not self.database_in_memory:
-                self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
-        
-        self.retry_strategy = self.CustomRetry(
-            total=3,  # maximum number of retries
-            backoff_factor=1, 
-            status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
-            downloader_instance=self,
-            backoff_max=4
-        )  
-        
-        self.fragment_retries = fragment_retries  
-        self.segment_retry_time = segment_retry_time  
-        
-        self.is_403 = False
-        self.is_401 = False
-        self.is_private = False
-        self.estimated_segment_duration = 0
-        self.refresh_retries = 0
-        self.recover = recovery
-        
-        self.sequential = False
-        
-        self.count_400s = 0
-        
-        self.sleep_time = 1
-        
-        self.cookies = cookies
-        
-        self.type = None
-        self.ext = None        
-        
-        self.expires = None
-        expires = []
-        for url in self.stream_urls:
-            expire_value = self.get_expire_time(url)
-            if expire_value is not None:
-                expires.append(int(expire_value))
-        if expires:
-            self.expires = int(max(expires))
-            
-        if time.time() > self.expires:
-            
-            logging.error("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
-            raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
-        
-        self.proxies = proxies
-        
-        self.update_latest_segment()
-        
-        
-        self.url_checked = time.time()
-
-        self.conn, self.cursor = self.create_db(self.temp_db_file) 
-        
-        self.count_403s = {}        
-        self.user_agent_403s = {}
-        self.user_agent_full_403s = {}
-        stats[self.type] = {}
-
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close_connection()
-        return False
-        
-    def get_expire_time(self, url):
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-
-        # Get the 'expire' parameter
-        expire_value = query_params.get('expire', [-1])[0]
-        if expire_value is not None:
-            return int(expire_value)
-        return expire_value
-    
-    def get_format_from_url(self, url):
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-        logging.debug(query_params)
-        # Get the 'expire' parameter
-        logging.debug("Itags from url: {0}".format(query_params.get("itag", [None])))
-        itag = query_params.get("itag", [None])[0]
-        return str(itag).strip()
-    
-    def get_id_from_url(self, url):
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-        id = str(query_params.get("id", [None])[0])[:11].strip()
-        return id
-                
-    def live_dl(self):
-        #from itertools import groupby
-        logging.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
-        stats[self.type]['status'] = "recording"
-        self.already_downloaded = self.segment_exists_batch()
-        #wait = 0   
-        self.cursor.execute('BEGIN TRANSACTION')
-        uncommitted_inserts = 0     
-        
-        self.sleep_time = max(self.estimated_segment_duration, 0.1)
-        
-        # Track retries of all missing segments in database      
-        self.segments_retries = {key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
-        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
-        
-        i = 0
-        
-        last_print = time.time()
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
-            submitted_segments = set()
-            future_to_seg = {}
-            
-            # Trackers for optimistic segment downloads 
-            if self.expires is not None:
-                from datetime import datetime
-                #print(datetime.fromtimestamp(int(self.expires)))
-                logging.debug("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')))
-            else:
-                logging.debug("Recovery mode active")
-                       
-            
-            while True:     
-                self.check_kill()     
-                if stats.get(self.type, None) is None:
-                    stats[self.type] = {}                                   
-                # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
-                
-                for future in done:
-                    head_seg_num, segment_data, seg_num, status, headers = future.result()
-                    
-                    # Remove from submitted segments in case it neeeds to be regrabbed
-                    if seg_num in submitted_segments:
-                        submitted_segments.discard(seg_num)
-                    
-                    if head_seg_num > self.latest_sequence:
-                        logging.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
-                        self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, head_seg_num) if key not in self.already_downloaded})
-                        self.latest_sequence = head_seg_num
-                        
-                        
-                    if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
-                        
-                    #if headers and headers.get('X-Bandwidth-Est'):
-                    #    stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est'))
-
-                    if segment_data is not None:
-                        # Insert segment data in the main thread (database interaction)
-                        self.insert_single_segment(cursor=self.cursor, segment_order=seg_num, segment_data=segment_data)
-                        uncommitted_inserts += 1
-                        
-                        # Assume segment will be added
-                        if self.segments_retries.get(seg_num, None) is not None:
-                            self.segments_retries.pop(seg_num,None)
-                        
-                        # If finished threads exceeds batch size, commit the whole batch of threads at once. 
-                        # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
-                        if uncommitted_inserts >= max(self.batch_size, len(done)):
-                            logging.debug("Writing segments to file...")
-                            self.commit_batch(self.conn)
-                            uncommitted_inserts = 0
-                            self.cursor.execute('BEGIN TRANSACTION') 
-                    else:
-                        if self.segments_retries.get(seg_num, None) is not None:
-                            self.segments_retries[seg_num]['retries'] = self.segments_retries[seg_num]['retries'] + 1
-                            self.segments_retries[seg_num]['last_retry'] = time.time()
-                            if self.segments_retries[seg_num]['retries'] >= self.fragment_retries:
-                                logging.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
-                                
-                    
-                    stats[self.type]["latest_sequence"] = self.latest_sequence
-                    # Remove completed thread to free RAM
-                    future_to_seg.pop(future,None)
-                    stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
-                      
-                #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded    
-                                       
-                if len(self.segments_retries) <= 0:
-                    logging.info("All segment downloads complete, ending...")
-                    break
-
-                elif all(value['retries'] > self.fragment_retries for value in self.segments_retries.values()):
-                    logging.error("All remaining segments have exceeded their retry count, ending...")
-                    break
-                
-                elif self.is_403 and self.expires is not None and time.time() > self.expires:
-                    logging.fatal("URL(s) have expired and failures being detected, ending...")
-                    break               
-                
-                elif self.is_401:
-                    logging.debug("401s detected for {0}, sleeping for a minute")
-                    time.sleep(60)
-                    for url in self.stream_urls:
-                        if self.live_status == 'post_live':
-                            self.update_latest_segment(url=add_url_param(self.stream_url, "sq", self.latest_sequence+1))
-                        else:
-                            self.update_latest_segment(url=url)
-                # Request base url if receiving 403s
-                elif self.is_403:
-                    for url in self.stream_urls:
-                        if self.live_status == 'post_live':
-                            self.update_latest_segment(url=add_url_param(self.stream_url, "sq", self.latest_sequence+1))
-                        else:
-                            self.update_latest_segment(url=url)
-                    
-                segments_to_download = set()
-                potential_segments_to_download = set(self.segments_retries.keys()) - self.already_downloaded
-                # Don't bother calculating if there are threads not done
-                #if len(not_done) <= 0:      
-                sorted_retries = -1
-                if self.sequential:
-                    # Create a dictionary sorted by number of retries, lowest first, then by segment number, lowest first
-                    sorted_retries = dict(sorted(self.segments_retries.items(), key=lambda item: (item[1]['retries'], item[0])))
-                else:
-                    """
-                    # Step 1: Sort the dictionary by `retries` first
-                    sorted_retries = sorted(segments_retries.items(), key=lambda item: item[1]['retries'])
-
-                    # Step 2: Group by `retries` and shuffle each group
-                    grouped_and_shuffled = []
-                    for _, group in groupby(sorted_retries, key=lambda item: item[1]['retries']):
-                        group_list = list(group)
-                        random.shuffle(group_list)  # Shuffle within the same `retries` count
-                        grouped_and_shuffled.extend(group_list)
-
-                    # Step 3: Convert back to a dictionary
-                    sorted_retries = dict(grouped_and_shuffled)
-                    """
-                    current_time = time.time()
-                    # Step 1: Separate items into two groups
-                    priority_items = {
-                        key: value for key, value in self.segments_retries.items()
-                        if (current_time - value['last_retry']) > value['ideal_retry_time'] and value['retries'] > 0
-                    }
-                    non_priority_items = {
-                        key: value for key, value in self.segments_retries.items()
-                        if not ((current_time - value['last_retry']) > value['ideal_retry_time'] and value['retries'] > 0)
-                    }
-
-                    # Step 2: Sort each group (preserve keys)
-                    priority_items_sorted = dict(sorted(priority_items.items(), key=lambda item: item[1]['retries']))
-                    non_priority_items_sorted = dict(sorted(non_priority_items.items(), key=lambda item: item[1]['retries']))
-
-                    # Combine the results
-                    sorted_retries = priority_items_sorted | non_priority_items_sorted
-                    
-                    
-                if sorted_retries != -1:
-                    potential_segments_to_download = sorted_retries.keys()
-                     
-                #if len(not_done) < 1 or (len(not_done) < self.max_workers and not (self.is_403 or self.is_401)):
-                if not not_done or len(not_done) < self.max_workers:
-                #elif len(not_done) <= 0 and not self.is_401 and not self.is_403:
-                    new_download = set()
-                    number_to_add = self.max_workers - len(not_done)
-                    """
-                    if self.is_403:
-                        number_to_add = self.max_workers - len(not_done)
-                    else:
-                        number_to_add = self.max_workers*2 - len(not_done)
-                    """
-                    for seg_num in potential_segments_to_download:
-                        #print("{0}: {1} seconds since last retry".format(seg_num,time.time() - segments_retries[seg_num]['last_retry']))
-                        if seg_num not in submitted_segments and self.segments_retries[seg_num]['retries'] <= self.fragment_retries and time.time() - self.segments_retries[seg_num]['last_retry'] > self.segment_retry_time:                            
-                            if seg_num in self.already_downloaded:
-                                self.segments_retries.pop(seg_num,None)
-                                continue
-                            if self.segment_exists(self.cursor, seg_num):
-                                self.already_downloaded.add(seg_num)
-                                continue
-                            new_download.add(seg_num)
-                            logging.debug("Adding segment {0} of {2} with retries: {1}".format(seg_num, self.segments_retries[seg_num]['retries'], self.format))
-                        if len(new_download) >= number_to_add:                            
-                            break
-                    segments_to_download = new_download
-                    """
-                    self.sleep_time = max(self.sleep_time/2, 1)    
-                        
-                elif (self.is_403 or self.is_401) and len(not_done) <= 0: 
-                    new_download = set()
-                    number_to_add = 1
-                    for seg_num in segments_to_download:
-                        if segments_retries[seg_num]['retries'] < self.fragment_retries and time.time() - segments_retries[seg_num]['last_retry'] > self.segment_retry_time:
-                            new_download.add(seg_num)
-                        if len(new_download) >= number_to_add:                            
-                            break
-                    segments_to_download = new_download                        
-                    self.sleep_time = min(self.sleep_time*2, self.segment_retry_time)                
-                    # Sleep to prevent 400 errors, may only be included if 400 errors occur   
-                    print("Sleeping for {0}s before adding segment downloads".format(self.sleep_time))
-                    #time.sleep(self.sleep_time) 
-                
-                if self.is_403 or self.is_401:
-                    time.sleep(self.estimated_segment_duration)
-                """    
-                # New
-                for seg_num in segments_to_download:
-                    if seg_num not in submitted_segments:
-                        future_to_seg[executor.submit(self.download_segment, add_url_param(self.stream_urls[i % len(self.stream_urls)], "sq", seg_num), seg_num)] = seg_num
-                        submitted_segments.add(seg_num)
-                        i += 1
-                        #time.sleep(0.25)
-                """
-                # Old        
-                for url in self.stream_urls:
-                    future_to_seg.update(
-                        {
-                            executor.submit(self.download_segment, add_url_param(self.stream_url, "sq", seg_num), seg_num): seg_num
-                            for seg_num in segments_to_download
-                            if not submitted_segments.add(seg_num) and not time.sleep(0.25)
-                        }
-                    )
-                """
-                if len(submitted_segments) == 0 and len(self.segments_retries) < 11 and time.time() - last_print > self.segment_retry_time:
-                    logging.debug("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
-                    last_print = time.time()
-                elif len(submitted_segments) == 0 and time.time() - last_print > self.segment_retry_time + 5:
-                    logging.debug("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
-                    last_print = time.time()
-                
-            self.commit_batch(self.conn)
-        self.commit_batch(self.conn)
-        return len(self.segments_retries)
-
-    def update_latest_segment(self, url=None):
-        # Kill if keyboard interrupt is detected
-        self.check_kill()
-        
-        # Remove expired URLs
-        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
-        
-        if len(filtered_array) > 0:
-            self.stream_urls = filtered_array
-            expire_times = []
-            for url in self.stream_urls:
-                exp_time = self.get_expire_time(url)
-                if exp_time:
-                    expire_times.append(exp_time)
-            self.expires = max(expire_times)
-            
-        if time.time() > self.expires:
-            
-            logging.fatal("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
-            raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
-        
-        if url is None:
-            if len(self.stream_urls) > 1:
-                url = random.choice(self.stream_urls)
-            else:
-                url = self.stream_urls[0]
-        
-        stream_url_info = self.get_Headers(url)
-        if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
-            new_latest = int(stream_url_info.get("X-Head-Seqnum"))
-            if new_latest > self.latest_sequence and self.latest_sequence > -1:
-                self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, new_latest) if key not in self.already_downloaded})
-            self.latest_sequence = new_latest
-            logging.debug("Latest sequence: {0}".format(self.latest_sequence))
-            
-        if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
-            self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
-            
-        if stream_url_info is not None and stream_url_info.get("X-Head-Time-Sec", None) is not None:
-            self.estimated_segment_duration = int(stream_url_info.get("X-Head-Time-Sec"))/max(self.latest_sequence,1)
-        
-        if stats.get(self.type, None):    
-            stats[self.type]["latest_sequence"] = self.latest_sequence
-        else:
-            stats[self.type] = {}
-            stats[self.type]["latest_sequence"] = self.latest_sequence
-    
-    def get_Headers(self, url):
-        try:
-            # Send a GET request to a URL
-            #response = requests.get(url, timeout=30)
-            response = requests.get(url, timeout=30, proxies=self.proxies)
-            #print("Print response: {0}".format(response.status_code))
-            # 200 and 204 responses appear to have valid headers so far
-            if response.status_code == 200 or response.status_code == 204:
-                self.is_403 = False
-                self.is_401 = False
-                # Print the response headers
-                #print(json.dumps(dict(response.headers), indent=4))  
-            elif response.status_code == 403:
-                self.is_403 = True
-            elif response.status_code == 401:
-                self.is_401 = True
-            else:
-                logging.warning("Error retrieving headers: {0}".format(response.status_code))
-                logging.debug(json.dumps(dict(response.headers), indent=4))
-            return response.headers
-            
-        except requests.exceptions.Timeout as e:
-            logging.debug("Timed out updating fragments: {0}".format(e))
-            return None
-        
-        except Exception as e:
-            logging.exception("\033[31m{0}\033[0m".format(e))
-            return None
-    
-
-    def create_connection(self, file):
-        conn = sqlite3.connect(file)
-        cursor = conn.cursor()
-        
-        # Database connection optimisation. Benefits will need to be tested
-        if not self.database_in_memory:
-            # Set the journal mode to WAL
-            cursor.execute('PRAGMA journal_mode = WAL;')        
-            # Set the synchronous mode to NORMAL
-            cursor.execute('PRAGMA synchronous = NORMAL;')
-            # Increase page size to help with large blobs
-            cursor.execute('pragma page_size = 32768;')
-        
-        return conn, cursor
-    
-    def create_db(self, temp_file):
-        # Connect to SQLite database (or create it if it doesn't exist)
-        conn, cursor = self.create_connection(temp_file)
-        
-        # Create the table where id represents the segment order
-        cursor.execute(\'''
-        CREATE TABLE IF NOT EXISTS segments (
-            id INTEGER PRIMARY KEY, 
-            segment_data BLOB
-        )
-        \''')
-        conn.commit()
-        return conn, cursor
-
-    # Function to check if a segment exists in the database
-    def segment_exists(self, cursor, segment_order):
-        cursor.execute('SELECT 1 FROM segments WHERE id = ?', (segment_order,))
-        return cursor.fetchone() is not None
-    
-    def segment_exists_batch(self):
-        """
-        Queries the database to check if a batch of segment numbers are already downloaded.
-        Returns a set of existing segment numbers.
-        """
-        query = "SELECT id FROM segments"
-        self.cursor.execute(query)
-        return set(row[0] for row in self.cursor.fetchall())
-    
-    class CustomRetry(Retry):
-        def __init__(self, *args, downloader_instance=None, retry_time_clamp=4, segment_number=None, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.downloader_instance = downloader_instance  # Store the Downloader instance
-            self.retry_time_clamp = retry_time_clamp
-            self.segment_number = segment_number
-
-        def increment(self, method=None, url=None, response=None, error=None, _pool=None, _stacktrace=None):
-            # Check the response status code and set self.is_403 if it's 403
-            if response and response.status == 403:
-                if self.downloader_instance:  # Ensure the instance exists
-                    self.downloader_instance.is_403 = True
-            if response and response.status and self.segment_number is not None:
-                logging.debug("{0} encountered a {1} code".format(self.segment_number, response.status))
-                    
-            return super().increment(method, url, response, error, _pool, _stacktrace)
-        
-        # Limit backoff to a maximum of 4 seconds
-        def get_backoff_time(self):
-            # Calculate the base backoff time using exponential backoff
-            base_backoff = super().get_backoff_time()
-
-            clamped_backoff = min(self.retry_time_clamp, base_backoff)
-            return clamped_backoff
-
-    class SessionWith403Counter(requests.Session):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.num_retries = 0  # Initialize counter for 403 responses
-
-        def get_403_count(self):
-            return self.num_retries  # Return the number of 403 responses
-        
-
-    # Function to download a single segment
-    def download_segment(self, segment_url, segment_order):
-        self.check_kill()
-
-        # create an HTTP adapter with the retry strategy and mount it to the session
-        adapter = HTTPAdapter(max_retries=self.retry_strategy)
-        # create a new session object
-        #session = requests.Session()
-        session = requests.Session()
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        user_agent = random.choice(user_agents)
-        headers = {
-            "User-Agent": user_agent,
-        }
-        
-        try:            
-            response = session.get(segment_url, timeout=30, headers=headers, proxies=self.proxies)
-            if response.status_code == 200:
-                logging.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
-                self.is_403 = False
-                self.is_401 = False
-                #return latest header number and segment content                
-                return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers  # Return segment order and data
-            elif response.status_code == 403:
-                logging.debug("Received 403 error, marking for URL refresh...")
-                self.is_403 = True
-                return -1, None, segment_order, response.status_code, response.headers
-            else:
-                logging.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
-                return -1, None, segment_order, response.status_code, response.headers
-        except requests.exceptions.Timeout as e:
-            logging.debug(e)
-            return -1, None, segment_order, None, None
-        except requests.exceptions.RetryError as e:
-            logging.debug("Retries exceeded downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            if "(Caused by ResponseError('too many 204 error responses')" in str(e):
-                self.is_403 = False
-                self.is_401 = False
-                return -1, bytes(), segment_order, 204, None
-            elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
-                self.is_403 = True
-                self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + 1)})
-                self.user_agent_full_403s.update({user_agent: (self.user_agent_full_403s.get(user_agent, 0) + 1)})
-                return -1, None, segment_order, 403, None
-            elif "(Caused by ResponseError('too many 401 error responses')" in str(e):
-                self.is_401 = True
-                return -1, None, segment_order, 401, None
-            else:
-                return -1, None, segment_order, None, None
-        except requests.exceptions.ChunkedEncodingError as e:
-            logging.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, bytes(), segment_order, None, None
-        except requests.exceptions.ConnectionError as e:
-            logging.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, None, None
-        except requests.exceptions.Timeout as e:
-            logging.warning("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, None, None
-        except requests.exceptions.HTTPError as e:
-            logging.warning("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, None, None
-        except Exception as e:
-            logging.exception("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, None, None
-            
-    # Function to insert a single segment without committing
-    def insert_single_segment(self, cursor, segment_order, segment_data):
-
-        cursor.execute(\'''
-            INSERT INTO segments (id, segment_data) 
-            VALUES (?, ?) 
-            ON CONFLICT(id) 
-            DO UPDATE SET segment_data = CASE 
-                WHEN LENGTH(excluded.segment_data) > LENGTH(segments.segment_data) 
-                THEN excluded.segment_data 
-                ELSE segments.segment_data 
-            END;
-        \''', (segment_order, segment_data))
-
-
-    # Function to commit after a batch of inserts
-    def commit_batch(self, conn):
-        conn.commit()
-        
-    def close_connection(self):
-        if self.conn:
-            self.conn.close()
-
-    # Function to combine segments into a single file
-    def combine_segments_to_file(self, output_file, cursor=None):
-        stats[self.type]['status'] = "merging"
-        if cursor is None:
-            cursor = self.cursor
-        
-        logging.debug("Merging segments to {0}".format(output_file))
-        with open(output_file, 'wb') as f:
-            cursor.execute('SELECT segment_data FROM segments ORDER BY id')
-            first = True
-            for segment in cursor:  # Cursor iterates over rows one by one
-                segment_piece = segment[0]
-                # Clean each segment if required as ffmpeg sometimes doesn't like the segments from YT
-                if str(self.ext).lower().endswith("mp4") or not str(self.ext):
-                    segment_piece = self.clean_segments(segment_piece, first)
-                first = False
-                f.write(segment_piece)
-        stats[self.type]['status'] = "merged"
-        return output_file
-    
-    ### Via ytarchive            
-    def get_atoms(self, data):
-        """
-        Get the name of top-level atoms along with their offset and length
-        In our case, data should be the first 5kb - 8kb of a fragment
-
-        :param data:
-        """
-        atoms = {}
-        ofs = 0
-
-        while True:
-            try:
-                if ofs + 8 > len(data):
-                    break
-
-                alen = int(data[ofs:ofs + 4].hex(), 16)
-                if alen > len(data) or alen < 8:
-                    break
-
-                aname = data[ofs + 4:ofs + 8].decode()
-                atoms[aname] = {"ofs": ofs, "len": alen}
-                ofs += alen
-            except Exception:
-                break
-
-        return atoms
-
-    def remove_atoms(self, data, atom_list):
-        """
-        Remove specified atoms from a chunk of data
-
-        :param data: The byte data containing atoms
-        :param atom_list: List of atom names to remove
-        """
-        atoms = self.get_atoms(data)
-        atoms_to_remove = [atoms[name] for name in atom_list if name in atoms]
-        
-        # Sort by offset in descending order to avoid shifting issues
-        atoms_to_remove.sort(key=lambda x: x["ofs"], reverse=True)
-        
-        for atom in atoms_to_remove:
-            ofs = atom["ofs"]
-            rlen = ofs + atom["len"]
-            data = data[:ofs] + data[rlen:]
-        
-        return data
-    
-    def clean_segments(self, data, first=True):
-        bad_atoms = ["sidx"]
-        if first is False:
-            bad_atoms.append("ftyp")
-
-        return self.remove_atoms(data=data, atom_list=bad_atoms)
-    
-    def check_kill(self):
-        # Kill if keyboard interrupt is detected
-        if kill_all:
-            logging.debug("Kill command detected, ending thread")
-            raise KeyboardInterrupt("Kill command executed")
-        
-    def delete_temp_database(self):
-        self.close_connection()
-        os.remove(self.temp_db_file)
-        
-    def delete_ts_file(self):
-        os.remove(self.merged_file_name)
-        
-    def remove_folder(self):
-        if self.folder:
-            self.delete_temp_database()
-            self.delete_ts_file()
-            os.remove(self.folder)
-    def save_stats(self):
-        # Stats files
-        with open("{0}.{1}_seg_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
-            json.dump(self.count_403s, outfile, indent=4)
-        with open("{0}.{1}_usr_ag_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
-            json.dump(self.user_agent_403s, outfile, indent=4)
-        with open("{0}.{1}_usr_ag_full_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
-            json.dump(self.user_agent_full_403s, outfile, indent=4)
- 
-    '''
-
-import os
-import logging
-import logging.handlers
 
 def setup_logging(
     log_level="INFO",
