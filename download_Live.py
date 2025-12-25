@@ -2061,12 +2061,11 @@ class StreamRecovery(DownloadStream):
         if not self.stream_urls:
             raise ValueError("No compatible stream URLs not found for {0}, unable to continue".format(resolution))
         
-        self.id = info_dict.get('id', self.get_id_from_url(self.stream_urls[0].id))
+        self.id = info_dict.get('id', self.stream_urls[0].id)
         self.live_status = info_dict.get('live_status')
         
         self.info_dict = info_dict
 
-        self.id = info_dict.get('id', self.get_id_from_url(self.stream_urls[0].id))
         self.live_status = info_dict.get('live_status', live_status)
             
         self.stream_url = random.choice(self.stream_urls)
