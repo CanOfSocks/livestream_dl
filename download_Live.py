@@ -668,7 +668,7 @@ class LiveStreamDownloader:
             audio = None
             ext = options.get('ext', None)
 
-            ffmpeg_builder = ['ffmpeg', '-y', 
+            ffmpeg_builder = ['ffmpeg', '-y', "-pattern_type", "none", 
                             '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats'
                             ]
             
@@ -679,7 +679,7 @@ class LiveStreamDownloader:
                         png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
 
 
-                        thumbnail_conversion = ["ffmpeg", "-y", "-i", str(file_names.get('thumbnail').absolute()).replace('%', '%%'), str(png_thumbnail.absolute()).replace('%', '%%')]
+                        thumbnail_conversion = ["ffmpeg", "-y", "-pattern_type", "none", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
                         try:
                             
                             result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
@@ -692,7 +692,7 @@ class LiveStreamDownloader:
                         file_names.pop('thumbnail').unlink(missing_ok=True)                
                         file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
                     
-                    input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(file_names.get('thumbnail').absolute()).replace('%', '%%')]
+                    input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(file_names.get('thumbnail').absolute())]
                     ffmpeg_builder.extend(input)
                     thumbnail = index
                     index += 1
@@ -701,13 +701,13 @@ class LiveStreamDownloader:
             
             # Add input files
             if stream.get('video', None):        
-                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('video').absolute()).replace('%', '%%'), ]
+                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('video').absolute()), ]
                 ffmpeg_builder.extend(input)
                 video = index
                 index += 1
                     
             if stream.get('audio', None):
-                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('audio').absolute()).replace('%', '%%'), ]
+                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(stream.get('audio').absolute()), ]
                 ffmpeg_builder.extend(input)
                 audio = index
                 index += 1
@@ -755,7 +755,7 @@ class LiveStreamDownloader:
                 base_output = base_output + ext  
                 
             # Add output file to ffmpeg command
-            ffmpeg_builder.append(str(Path(base_output).absolute()).replace('%', '%%'))
+            ffmpeg_builder.append(str(Path(base_output).absolute()))
             
             if options.get('write_ffmpeg_command', True):
                 ffmpeg_command_file = "{0}.ffmpeg.txt".format(filename)
