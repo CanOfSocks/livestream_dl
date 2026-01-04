@@ -326,7 +326,7 @@ class LiveStreamDownloader:
         #move_to_final(info_dict, options, file_names)
         
     def output_filename(self, info_dict, outtmpl):
-        outputFile = str(yt_dlp.YoutubeDL().prepare_filename(info_dict, outtmpl=outtmpl))
+        outputFile = str(yt_dlp.YoutubeDL().prepare_filename(info_dict, outtmpl=outtmpl)).replace("%", "％") # Replace normal percent sign with unicode version to prevent ffmpeg errors
         return outputFile
     
 
@@ -659,6 +659,7 @@ class LiveStreamDownloader:
             
     def create_mp4(self, file_names, info_dict, options):
         import subprocess
+        import mimetypes
         #self.logger.debug("Files: {0}".format(json.dumps(file_names)))
         stream_manifests = list(self.file_names["streams"].items())
         for manifest, stream in stream_manifests:
@@ -668,36 +669,9 @@ class LiveStreamDownloader:
             audio = None
             ext = options.get('ext', None)
 
-            ffmpeg_builder = ['ffmpeg', '-y', "-pattern_type", "none", 
+            ffmpeg_builder = ['ffmpeg', '-y', 
                             '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats'
                             ]
-            
-            if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
-                if file_names.get('thumbnail').exists():
-                    if str(file_names.get('thumbnail').suffix).lower() == '.webp':
-                        self.logger.info("{0} is a webp file, converting to png".format(file_names.get('thumbnail').name))
-                        png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
-
-
-                        thumbnail_conversion = ["ffmpeg", "-y", "-pattern_type", "none", "-i", str(file_names.get('thumbnail').absolute()), str(png_thumbnail.absolute())]
-                        try:
-                            
-                            result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
-                        except subprocess.CalledProcessError as e:
-                            self.logger.error(e.stderr)
-                            self.logger.fatal(e)
-                            raise e
-                        # Remove webp thumbnail
-                        self.logger.debug("Replacing thumbnail with .png version")
-                        file_names.pop('thumbnail').unlink(missing_ok=True)                
-                        file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
-                    
-                    input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(file_names.get('thumbnail').absolute())]
-                    ffmpeg_builder.extend(input)
-                    thumbnail = index
-                    index += 1
-                else:
-                    self.logger.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
             
             # Add input files
             if stream.get('video', None):        
@@ -713,26 +687,8 @@ class LiveStreamDownloader:
                 index += 1
                 if video is None and ext is None:
                     ext = '.ogg'
-            # Add faststart
-            ffmpeg_builder.extend(['-movflags', 'faststart'])
-            
-            # Add mappings
-            for i in range(0, index):
-                input = ['-map', str(i)]
-                ffmpeg_builder.extend(input)
-                
-            if thumbnail is not None:
-                ffmpeg_builder.extend(['-disposition:v:{0}'.format(thumbnail), 'attached_pic'])
-                
-            #Add Copy codec
-            ffmpeg_builder.extend(['-c', 'copy'])
-                
-            # Add metadata
-            ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
-            ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description",""))])
-            ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
-            ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
-            
+
+            # Determine output path
             if options.get('filename') is not None:
                 filename = options.get('filename')
             else:
@@ -753,6 +709,65 @@ class LiveStreamDownloader:
                 ext = "." + str(ext)
             if not base_output.endswith(ext):
                 base_output = base_output + ext  
+
+            if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
+                if file_names.get('thumbnail').exists():
+                    # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
+                    guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
+
+                    mime_type, _ = guess(file_names.get('thumbnail'))
+                    if str(mime_type) in ["image/jpeg", "image/png"]:
+                        ffmpeg_builder.extend(["-attach", "high_res.jpg"])
+                        self.logger.info("{0} is not a JPG or PNG file, converting to png".format(file_names.get('thumbnail').name))
+                        png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
+
+                        thumbnail_conversion = ffmpeg_builder.copy().extend(["-i", str(file_names.get('thumbnail').absolute()), "-c", "png", "-compression_level", "9", "-pred", "mixed", str(png_thumbnail.absolute())])
+                        try:                            
+                            result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+                            self.logger.debug("Replacing thumbnail with .png version")
+                            file_names.pop('thumbnail').unlink(missing_ok=True)                
+                            file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
+
+                            thumbnail = index    
+                            if not ext == ".mkv": # Don't add input file for mkv, use attach later
+                                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(file_names.get('thumbnail').absolute())]
+                                ffmpeg_builder.extend(input)                    
+                                index += 1
+                        except subprocess.CalledProcessError as e:
+                            self.logger.error(e.stderr)
+                            self.logger.fatal(e)
+                    
+                else:
+                    self.logger.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
+
+            # Add faststart
+            ffmpeg_builder.extend(['-movflags', 'faststart'])
+            
+            # Add mappings
+            for i in range(0, index):
+                input = ['-map', str(i)]
+                ffmpeg_builder.extend(input)
+                
+            if thumbnail is not None:
+                if ext == ".mkv": # If file will be mkv, attach file instead
+                    # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
+                    guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
+                    mime_type, _ = mimetypes.guess_file_type(file_names.get('thumbnail'))  
+                    ffmpeg_builder.extend(['-attach', str(file_names.get('thumbnail').absolute()), "-metadata:s:t:0", "filename=cover{0}".format(file_names.get('thumbnail').suffix), "-metadata:s:t:0", "mimetype={0}".format(mime_type or "application/octet-stream")])
+                
+                else: # For other formats, attach using disposition instead
+                    ffmpeg_builder.extend(['-disposition:v:{0}'.format(thumbnail), 'attached_pic'])
+                
+            #Add Copy codec
+            ffmpeg_builder.extend(['-c', 'copy'])
+                
+            # Add metadata
+            ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
+            ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description",""))])
+            ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
+            ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
+            
+            
                 
             # Add output file to ffmpeg command
             ffmpeg_builder.append(str(Path(base_output).absolute()))
