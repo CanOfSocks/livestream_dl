@@ -66,7 +66,7 @@ class LiveStreamDownloader:
 
         self.refresh_json = {}
         self.live_status = ""
-        self.lock = threading.Lock()
+        self.lock: threading.Lock = threading.Lock()
 
     # Create runner function for each download format
     def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0):
@@ -723,11 +723,13 @@ class LiveStreamDownloader:
 
                     # If not jpeg or png, convert to png
                     if not str(mime_type) in ["image/jpeg", "image/png"]:
-                        ffmpeg_builder.extend(["-attach", "high_res.jpg"])
                         self.logger.info("{0} is not a JPG or PNG file, converting to png".format(file_names.get('thumbnail').name))
                         png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
 
-                        thumbnail_conversion = ffmpeg_builder.copy().extend(["-i", str(file_names.get('thumbnail').absolute()), "-c", "png", "-compression_level", "9", "-pred", "mixed", str(png_thumbnail.absolute())])
+                        thumbnail_conversion = ['ffmpeg', '-y', 
+                                '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats',
+                                "-i", str(file_names.get('thumbnail').absolute()), "-c", "png", "-compression_level", "9", "-pred", "mixed", str(png_thumbnail.absolute())
+                            ]
                         try:                            
                             result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
                             self.logger.debug("Replacing thumbnail with .png version")
@@ -762,7 +764,7 @@ class LiveStreamDownloader:
                     ffmpeg_builder.extend(['-attach', str(file_names.get('thumbnail').absolute()), "-metadata:s:t:0", "filename=cover{0}".format(file_names.get('thumbnail').suffix), "-metadata:s:t:0", "mimetype={0}".format(mime_type or "application/octet-stream")])
                 
                 else: # For other formats, attach using disposition instead
-                    ffmpeg_builder.extend(['-disposition:v:{0}'.format(thumbnail), 'attached_pic'])
+                    ffmpeg_builder.extend(['-disposition:{0}'.format(thumbnail), 'attached_pic'])
                 
             #Add Copy codec
             ffmpeg_builder.extend(['-c', 'copy'])
@@ -911,9 +913,10 @@ class LiveStreamDownloader:
         new_url = parsed._replace(query=new_query)
         return str(urlunparse(new_url))  
     
-    def refresh_info_json(self, update_threshold, cookies=None, additional_options=None, include_dash=False, include_m3u8=False):
-        if time.time() - self.refresh_json.get("refresh_time", 0) > update_threshold:
-            self.refresh_json, self.live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8)
+    def refresh_info_json(self, update_threshold: int, id, cookies=None, additional_options=None, include_dash=False, include_m3u8=False):
+        # Check if time difference is greater than the threshold. If doesn't exist, subtraction of zero will always be true
+        if time.time() - self.refresh_json.get("refresh_time", 0.0) > update_threshold:
+            self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8)
             self.refresh_json["refresh_time"] = time.time()
             return self.refresh_json, self.live_status
         else:
@@ -1685,7 +1688,19 @@ class DownloadStream:
         self.logger.info("Refreshing URL for {0}".format(self.format))
         if self.following_manifest_thread is None:
             try:
-                info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=(self.include_m3u8 or self.force_m3u8))
+                # Attempt to use coordinator check if available to reduce the overall stream information extration between video and audio streams
+                if self.livestream_coordinator:
+                    if self.livestream_coordinator.lock.acquire(timeout=5.0):  # wait up to 5 seconds for lock, otherwise try next loop. If unable to aquire, return False before other fields try to update
+                        try:
+                            # use existing info.json if coordinator was refreshed within last 15 mins, or within the time since the last refresh, whatever is smaller
+                            # 15 minutes should be enough time to be efficient with natural jitter of the each download stream for a majority of livestreams
+                            info_dict, live_status = self.livestream_coordinator.refresh_info_json(update_threshold=min(900.0, time.time()-self.url_checked), id=self.id, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=(self.include_m3u8 or self.force_m3u8))
+                        finally:
+                            self.livestream_coordinator.lock.release()
+                    else:
+                        return False
+                else:
+                    info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=(self.include_m3u8 or self.force_m3u8))
                 
                 # Check for new manifest, if it has, start a nested download session
                 if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
@@ -1726,10 +1741,13 @@ class DownloadStream:
                 # Livestream has been processed
                 self.logger.exception("Error refreshing URL: {0}".format(e))
                 self.logger.info("Livestream has ended and processed.")
+                self.live_status = "was_live"
+                self.url_checked = time.time()
                 return False
             except getUrls.LivestreamError:
                 self.logger.debug("Livestream has ended.")
                 self.live_status = "was_live"
+                self.url_checked = time.time()
                 return False 
             except Exception as e:
                 self.logger.exception("Error: {0}".format(e))                     
