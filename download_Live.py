@@ -64,6 +64,10 @@ class LiveStreamDownloader:
         }
         self.stats = {}
 
+        self.refresh_json = {}
+        self.live_status = ""
+        self.lock = threading.Lock()
+
     # Create runner function for each download format
     def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0):
         download_params = locals().copy()
@@ -716,7 +720,9 @@ class LiveStreamDownloader:
                     guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
 
                     mime_type, _ = guess(file_names.get('thumbnail'))
-                    if str(mime_type) in ["image/jpeg", "image/png"]:
+
+                    # If not jpeg or png, convert to png
+                    if not str(mime_type) in ["image/jpeg", "image/png"]:
                         ffmpeg_builder.extend(["-attach", "high_res.jpg"])
                         self.logger.info("{0} is not a JPG or PNG file, converting to png".format(file_names.get('thumbnail').name))
                         png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
@@ -727,16 +733,16 @@ class LiveStreamDownloader:
                             self.logger.debug("Replacing thumbnail with .png version")
                             file_names.pop('thumbnail').unlink(missing_ok=True)                
                             file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
-
-                            thumbnail = index    
-                            if not ext == ".mkv": # Don't add input file for mkv, use attach later
-                                input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(file_names.get('thumbnail').absolute())]
-                                ffmpeg_builder.extend(input)                    
-                                index += 1
+                            
                         except subprocess.CalledProcessError as e:
                             self.logger.error(e.stderr)
                             self.logger.fatal(e)
-                    
+                
+                    thumbnail = index    
+                    if not ext.lower() == ".mkv": # Don't add input file for mkv, use attach later
+                        input = ['-thread_queue_size', '1024', "-seekable", "0", '-i', str(file_names.get('thumbnail').absolute())]
+                        ffmpeg_builder.extend(input)                    
+                        index += 1
                 else:
                     self.logger.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
 
@@ -749,7 +755,7 @@ class LiveStreamDownloader:
                 ffmpeg_builder.extend(input)
                 
             if thumbnail is not None:
-                if ext == ".mkv": # If file will be mkv, attach file instead
+                if ext.lower() == ".mkv": # If file will be mkv, attach file instead
                     # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
                     guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
                     mime_type, _ = mimetypes.guess_file_type(file_names.get('thumbnail'))  
@@ -904,6 +910,14 @@ class LiveStreamDownloader:
         new_query = urlencode(query, doseq=True)
         new_url = parsed._replace(query=new_query)
         return str(urlunparse(new_url))  
+    
+    def refresh_info_json(self, update_threshold, cookies=None, additional_options=None, include_dash=False, include_m3u8=False):
+        if time.time() - self.refresh_json.get("refresh_time", 0) > update_threshold:
+            self.refresh_json, self.live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8)
+            self.refresh_json["refresh_time"] = time.time()
+            return self.refresh_json, self.live_status
+        else:
+            return self.refresh_json, self.live_status
         
 class FileInfo(Path):
     _file_type = None  # Class attribute for storing the file type    
