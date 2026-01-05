@@ -760,7 +760,7 @@ class LiveStreamDownloader:
                 if ext.lower() == ".mkv": # If file will be mkv, attach file instead
                     # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
                     guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
-                    mime_type, _ = mimetypes.guess_file_type(file_names.get('thumbnail'))  
+                    mime_type, _ = guess(file_names.get('thumbnail'))  
                     ffmpeg_builder.extend(['-attach', str(file_names.get('thumbnail').absolute()), "-metadata:s:t:0", "filename=cover{0}".format(file_names.get('thumbnail').suffix), "-metadata:s:t:0", "mimetype={0}".format(mime_type or "application/octet-stream")])
                 
                 else: # For other formats, attach using disposition instead
@@ -774,9 +774,7 @@ class LiveStreamDownloader:
             ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description",""))])
             ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
             ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
-            
-            
-                
+
             # Add output file to ffmpeg command
             ffmpeg_builder.append(str(Path(base_output).absolute()))
             
