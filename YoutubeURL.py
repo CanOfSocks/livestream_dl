@@ -323,8 +323,9 @@ class Formats:
         return combined_list
     """
     def getM3u8Url(self, m3u8_url, first_only=True):
-        import requests
-        response = requests.get(m3u8_url)
+        import httpx
+        client = httpx.Client(timeout=30)
+        response = client.get(m3u8_url)
         response.raise_for_status()
         self.logger.debug(response)
         urls = [

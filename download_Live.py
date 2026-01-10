@@ -3,8 +3,8 @@ from __future__ import annotations
 import yt_dlp.YoutubeDL
 import yt_dlp.utils
 import sqlite3
-import requests
-from requests.adapters import HTTPAdapter, Retry
+#import requests
+#from requests.adapters import HTTPAdapter, Retry
 import random
 import time
 import concurrent.futures
@@ -36,6 +36,9 @@ import logging.handlers
 import re
 
 import threading
+
+import httpx
+
 
 
 
@@ -1024,12 +1027,13 @@ class DownloadStream:
 
             
         self.fragment_retries = fragment_retries
+        """
         self.retry_strategy = Retry(
             total=fragment_retries,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504],  # the HTTP status codes to retry on
             backoff_max=4
-        )        
+        )        """
         
         self.is_403 = False
         self.is_private = False
@@ -1045,6 +1049,17 @@ class DownloadStream:
         self.following_manifest_thread = None
         
         self.proxies = proxies   
+
+        current_level = self.logger.getEffectiveLevel()            
+
+        # Set log level of httpx to one level above other loggers
+        if current_level == logging.NOTSET:
+            target_level = logging.WARNING # Default fallback
+        else:
+            target_level = min(current_level + 10, logging.ERROR)
+
+        logging.getLogger("httpx").setLevel(target_level)
+        logging.getLogger("httpcore").setLevel(target_level)
         
         self.update_latest_segment()
         self.url_checked = time.time()
@@ -1073,7 +1088,7 @@ class DownloadStream:
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
         if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403) or len(self.stream_urls) <= 0) and not self.is_private:
             return self.refresh_url()
-                
+    
     def live_dl(self):
         
         self.logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
@@ -1084,7 +1099,12 @@ class DownloadStream:
         uncommitted_inserts = 0     
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "recording"
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
+
+        # Connection Limits
+        # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
+        limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
+        with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
+            httpx.Client(timeout=30, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
             submitted_segments = set()
             future_to_seg = {}
             
@@ -1098,6 +1118,8 @@ class DownloadStream:
 
             segment_retries = {}
 
+            thread_windows_size = self.max_workers*2
+
             while True:     
                 self.check_kill(executor)
                 if self.refresh_Check() is True:
@@ -1106,7 +1128,7 @@ class DownloadStream:
                 if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
                     self.livestream_coordinator.stats[self.type] = {}
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
@@ -1139,15 +1161,7 @@ class DownloadStream:
                     if segment_data is not None:
                         # Insert segment data in the main thread (database interaction)
                         self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                        uncommitted_inserts += 1
-                        
-                        # If finished threads exceeds batch size, commit the whole batch of threads at once. 
-                        # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
-                        if uncommitted_inserts >= max(self.batch_size, len(done)):
-                            self.logger.debug("Writing segments to file...")
-                            self.commit_batch(self.conn)
-                            uncommitted_inserts = 0
-                            self.conn.execute('BEGIN TRANSACTION') 
+                        uncommitted_inserts += 1                       
                             
                         if self.livestream_coordinator:
                             self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
@@ -1165,10 +1179,24 @@ class DownloadStream:
 
                     # Remove completed thread to free RAM
                     future_to_seg.pop(future,None)
+
+                # If finished threads exceeds batch size, commit the whole batch of threads at once. 
+                # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
+                if uncommitted_inserts >= self.batch_size:
+                    self.logger.debug("Writing segments to file...")
+                    self.commit_batch(self.conn)
+                    uncommitted_inserts = 0
+                    self.conn.execute('BEGIN TRANSACTION') 
+
+                optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1
+
+                # Check if optimistic segment has already downloaded or not
+                if optimistic_seg not in self.already_downloaded and self.segment_exists(optimistic_seg):
+                    self.already_downloaded.add(optimistic_seg)
                     
                 segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
 
-                optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1  
+                  
                                         
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 """
@@ -1203,7 +1231,7 @@ class DownloadStream:
                                 self.logger.info("Video finished downloading via new manifest")
                                 break
                     time.sleep(10)
-                    self.update_latest_segment()
+                    self.update_latest_segment(client=client)
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
@@ -1254,20 +1282,14 @@ class DownloadStream:
                         segment_retries = {}
                 else:
                     wait = 0
+                    
                 
-                # Check if segments already exist within database (used to not create more connections). Needs fixing upstream
-                for seg_num in segments_to_download:
-                    if self.segment_exists(seg_num):
-                        self.already_downloaded.add(seg_num)
-                # Check if optimistic segment has already downloaded or not
-                if optimistic_seg not in self.already_downloaded and self.segment_exists(optimistic_seg):
-                    self.already_downloaded.add(optimistic_seg)
 
-                segments_to_download = segments_to_download - self.already_downloaded
+                #segments_to_download = segments_to_download - self.already_downloaded
 
                 #print("Segments to download: {0}".format(segments_to_download))
                 #print("remaining threads: {0}".format(future_to_seg))
-                
+
                 # Add optimistic segment if conditions are right
                 # Only attempt to grab optimistic segment a number of times to ensure it does not cause a loop at the end of a stream
                 if (self.max_workers > 1 or not segments_to_download) and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in submitted_segments:
@@ -1276,36 +1298,534 @@ class DownloadStream:
                         time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
                     self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     future_to_seg.update({
-                        executor.submit(self.download_segment, self.stream_url.segment(optimistic_seg), optimistic_seg): optimistic_seg
+                        executor.submit(self.download_segment, self.stream_url.segment(optimistic_seg), optimistic_seg, client): optimistic_seg
                     })
                     submitted_segments.add(optimistic_seg)
 
                     # Ensure wait isn't triggered while optimistic segments is enabled
                     wait = 0
                 
+                # Get current state of futures to determine if more threads should be added this loop
+                if len(not_done) <= 0 and len(done) > 0:
+                    thread_windows_size = 3*thread_windows_size
+                else:
+                    thread_windows_size = max(thread_windows_size//2, 2*self.max_workers)
                 
+                #self.logger.debug("{0} segments in thread queue, set window size to {1}".format(len(not_done), thread_windows_size))
+
                 # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
                 for seg_num in segments_to_download:
+                    # Have up to 2x max workers of threads submitted
+                    if len(future_to_seg) > max(10,2*self.max_workers, thread_windows_size):
+                        break
                     if seg_num not in submitted_segments:
+                        # Check if segment already exist within database (used to not create more connections). Needs fixing upstream
+                        if self.segment_exists(seg_num):
+                            self.already_downloaded.add(seg_num)
+                            segment_retries.pop(seg_num,None)
+                            continue
                         future_to_seg.update({
-                            executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num): seg_num
+                            executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num, client): seg_num
                         })
                         submitted_segments.add(seg_num)
-                    # Have up to 2x max workers of threads submitted
-                    if len(future_to_seg) > 2*self.max_workers:
-                        break
+                    
                 
             self.commit_batch(self.conn)
         self.commit_batch(self.conn)
         if self.following_manifest_thread is not None:
             self.following_manifest_thread.join()
+        return True           
+    
+
+    def download_segment(self, segment_url, segment_order, client: httpx.Client=None, immediate_403s=False):
+        if client is None:
+            client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
+        total_retries = self.fragment_retries
+        backoff_factor = 1
+        backoff_max = 4
+        status_forcelist = {204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504}
+
+        for attempt in range(total_retries + 1):
+            try:
+                self.check_kill() 
+                response = client.get(segment_url)
+                status = response.status_code
+                headers = response.headers
+                head_seq = int(headers.get("X-Head-Seqnum", -1))
+
+                if status == 403 and immediate_403s:
+                    self.is_403 = True
+
+                if status in status_forcelist and attempt < total_retries:
+                     # Raise to trigger the except block below for backoff
+                    raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
+                
+                if status == 403:
+                    self.is_403 = True
+                elif status == 401:
+                    self.is_401 = True
+                elif status == 200 or status == 204:
+                    self.is_403 = self.is_401 = False
+                
+                if status == 200:
+                    return head_seq, response.content, int(segment_order), status, headers
+                elif status == 204:
+                    return head_seq, bytes(), int(segment_order), status, headers
+                else:
+                    return head_seq, None, int(segment_order), status, headers
+
+            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                if attempt >= total_retries:
+                    return -1, None, segment_order, getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None, None
+                
+                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
+                time.sleep(sleep_time)
+            except Exception as e:
+                self.logger.exception(f"Unknown error: {e}")
+                if attempt >= total_retries:                    
+                    return -1, None, segment_order, None, None
+                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
+                time.sleep(sleep_time)
+
+    # ---------------------------------------------------------
+    # 1. The Sync Bridge 
+    # ---------------------------------------------------------
+    '''
+    def live_dl(self):
+        """
+        Synchronous wrapper that launches the async event loop.
+        """
+        try:
+            return asyncio.run(self._live_dl_async())
+        except KeyboardInterrupt:
+            self.logger.info("Download interrupted by user.")
+            return False
+
+    # ---------------------------------------------------------
+    # 2. The Main Async Logic
+    # ---------------------------------------------------------
+    async def _live_dl_async(self):
+        self.logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        
+        # --- Initialization ---
+        self.already_downloaded = self.segment_exists_batch()
+        self.conn.execute('BEGIN TRANSACTION')
+        
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type]['status'] = "recording"
+
+        # --- Tracking Variables ---
+        optimistic_fails_max = 10
+        optimistic_fails = 0
+        latest_downloaded_segment = -1
+        wait = 0
+        uncommitted_inserts = 0
+        
+        # Priority Queue: Stores (priority, seg_num). 0=High, 1=Low
+        pending_segments_pq = []
+        submitted_segments = set() # Track what is in Queue OR Currently Running
+        
+        # Async Task Management
+        # Maps {Task object: segment_number}
+        active_tasks = {} 
+        
+        # Initial Population
+        initial_segments = set(range(0, self.latest_sequence + 1)) - self.already_downloaded
+        for seg in initial_segments:
+            heapq.heappush(pending_segments_pq, (1, seg))
+            submitted_segments.add(seg)
+
+
+        # Extract the proxy string from the requests-style dict
+        httpx_proxy = None
+        if isinstance(self.proxies, dict):
+            # Get the URL, but ensure we don't pass the dictionary itself
+            httpx_proxy = self.proxies.get("https") or self.proxies.get("http")
+        else:
+            httpx_proxy = self.proxies
+
+        # Important: Remove the 'h' from socks5h if it exists for httpx compatibility
+        if httpx_proxy and httpx_proxy.startswith("socks5h"):
+            httpx_proxy = httpx_proxy.replace("socks5h", "socks5", 1)
+
+        current_level = self.logger.getEffectiveLevel()            
+
+        # Set log level of httpx to one level above other loggers
+        if current_level == logging.NOTSET:
+            target_level = logging.WARNING # Default fallback
+        else:
+            target_level = min(current_level + 10, logging.ERROR)
+
+        logging.getLogger("httpx").setLevel(target_level)
+        logging.getLogger("httpcore").setLevel(target_level)
+
+        # Connection Limits
+        # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
+        limits = httpx.Limits(max_keepalive_connections=self.max_workers, max_connections=self.max_workers, keepalive_expiry=15)
+        async with httpx.AsyncClient(proxy=self.proxies, limits=limits, timeout=30.0, http1=True, http2=self.http2_available()) as client:
+            segment_retries = {}
+            while True:
+                # --- A. External Checks (Sync) ---
+                self.check_kill(tasks=active_tasks.keys()) # Note: check_kill might need to be adapted if it raises exceptions
+                if self.refresh_Check() is True:
+                    break
+                
+                if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type) is None:
+                    self.livestream_coordinator.stats[self.type] = {}
+
+                # --- B. Optimistic Segment Logic ---
+                optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1
+                
+                # Check if we should add optimistic segment
+                if (self.max_workers > 1 and
+                    optimistic_fails < optimistic_fails_max and 
+                    optimistic_seg not in submitted_segments and 
+                    optimistic_seg not in self.already_downloaded):
+                    
+                    # If idle, small wait to allow segment to appear on server
+                    if not pending_segments_pq and not active_tasks:
+                         await asyncio.sleep(max(getattr(self, 'estimated_segment_duration', 2), 2) + 0.1)
+
+                    self.logger.debug(f"\033[93mQueuing optimistic segment {optimistic_seg} (Priority 0) (Fails {optimistic_fails})\033[0m")
+                    heapq.heappush(pending_segments_pq, (0, optimistic_seg))
+                    submitted_segments.add(optimistic_seg)
+                    wait = 0
+
+                # --- C. Submit Tasks from Queue ---
+                # Fill up the active slots with highest priority items
+                while len(active_tasks) < max(10, self.max_workers*2) and pending_segments_pq:
+                    priority, seg_num = heapq.heappop(pending_segments_pq)
+                    
+                    # Double check existence (race condition safety)
+                    if seg_num in self.already_downloaded:
+                        continue
+
+                    # Create and track the async task
+                    task = asyncio.create_task(
+                        self._download_segment_httpx(client, self.stream_url.segment(seg_num), seg_num)
+                    )
+                    active_tasks[task] = seg_num
+                # Ensure done is defined and reset
+                done = set()
+                # --- D. Wait for Results ---
+                if active_tasks:
+                    # Wait for the FIRST task to complete to maximize throughput
+                    done, pending = await asyncio.wait(
+                        active_tasks.keys(), 
+                        return_when=asyncio.FIRST_COMPLETED,
+                        timeout=1.0
+                    )
+                    """
+                else:
+                    # IDLE STATE: No tasks running, queue empty.
+                    wait += 1
+                    self.logger.debug(f"No active downloads. Waiting... ({wait})")
+                    
+                    if wait > 20:
+                        self.logger.debug("Wait time exceeded, ending download...")
+                        break
+                    elif wait > 10:
+                        # --- Refresh / Private Logic ---
+                        if self.is_private:
+                             self.logger.debug("Video private, ending...")
+                             break
+                        
+                        refresh = self.refresh_url() # This is sync!
+                        if refresh is True:
+                            self.logger.info("Video finished via new manifest")
+                            break
+                        elif refresh is False:
+                            break
+
+                    await asyncio.sleep(2) # Non-blocking sleep
+                    self.update_latest_segment() # Sync call to update self.latest_sequence
+                    done = set() # Empty set for next loop
+                    """
+
+                # --- E. Process Completed Results ---
+                for task in done:
+                    seg_num = active_tasks.pop(task)
+                    
+                    try:
+                        # Retrieve result from the task
+                        head_seg_num, segment_data, _, status, headers = task.result()
+                    except Exception as e:
+                        self.logger.error(f"Task exception for {seg_num}: {e}")
+                        head_seg_num, segment_data, _, status, headers = -1, None, seg_num, None, None
+
+                    if seg_num >= optimistic_seg and (status is None or status != 200):
+                        optimistic_fails += 1
+                        self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
+                        
+                    elif seg_num >= optimistic_seg and status == 200:
+                        optimistic_fails = 0
+
+                    if head_seg_num > self.latest_sequence:
+                        self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                        self.latest_sequence = head_seg_num
+                        if self.livestream_coordinator:
+                            self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
+                        
+                    if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
+                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
+                    
+                    # -- Success --
+                    if status == 200 or (status == 204 and segment_data is not None and seg_num < optimistic_seg):
+                        
+                        if seg_num >= latest_downloaded_segment:
+                            latest_downloaded_segment = seg_num
+                            
+
+                        if segment_data:
+                            # DB Insert (Synchronous - OK because it's fast)
+                            self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
+                            uncommitted_inserts += 1
+                            self.already_downloaded.add(seg_num)                         
+
+                        if self.livestream_coordinator:
+                            self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
+
+                        segment_retries.pop(seg_num, None)
+
+                    # -- Failure --
+                    else:
+                        if seg_num >= optimistic_seg:
+                            optimistic_fails += 1
+                        
+                        segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
+                        self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+                        # Simple retry logic: if it failed, remove from submitted so it can be picked up again
+                        # (You can implement complex retry counters here if needed)
+                    submitted_segments.discard(seg_num)
+
+                # --- F. DB Commit Batching ---
+                if uncommitted_inserts >= self.batch_size or (uncommitted_inserts > 0 and not active_tasks):
+                    self.commit_batch(self.conn) # Sync call
+                    uncommitted_inserts = 0
+                    self.conn.execute('BEGIN TRANSACTION')
+
+                # Add segments
+                new_segments = set(range(0, self.latest_sequence + 1)) - self.already_downloaded - submitted_segments - set(v > self.fragment_retries for v in segment_retries.values())
+                for seg in new_segments:
+                    heapq.heappush(pending_segments_pq, (1, seg))
+                    submitted_segments.add(seg)
+
+                # Check current state variables
+                len_segments_to_download = len(pending_segments_pq)
+                len_future_to_seg = len(active_tasks)
+
+                # 1. IDLE / NO FRAGMENTS AVAILABLE
+                if len_segments_to_download <= 0 and len_future_to_seg <= 0:
+                    wait += 1
+                    self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+
+                    if wait > 20:
+                        self.logger.debug("Wait time for new fragment exceeded, ending download...")
+                        break
+                    
+                    elif wait > 10:
+                        if self.is_private:
+                            self.logger.debug("Video is private and no more segments are available. Ending...")
+                            break
+                        elif self.live_status in ["was_live", "post_live"]:
+                            self.logger.info("Livestream has finished downloading")
+                            break
+                        else:
+                            refresh = self.refresh_url()
+                            if refresh is False:
+                                break
+                            elif refresh is True:
+                                self.logger.info("Video finished downloading via new manifest")
+                                break
+                    
+                    # Async Sleep replacement for time.sleep(10)
+                    await asyncio.sleep(10)
+                    self.update_latest_segment()
+                    
+                    # Re-populate queue after update
+                    new_segments = set(range(0, self.latest_sequence + 1)) - self.already_downloaded - submitted_segments
+                    for seg in new_segments:
+                        heapq.heappush(pending_segments_pq, (1, seg))
+                        submitted_segments.add(seg)
+                    
+                    continue
+
+                # 2. PRIVATE & ACTIVE THREADS (Wait for drain)
+                elif len_segments_to_download > 0 and self.is_private and len_future_to_seg > 0:
+                    self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
+                    await asyncio.sleep(5)
+                    continue
+
+                # 3. PRIVATE & QUEUED SEGMENTS (Stream Recovery)
+                elif len_segments_to_download > 0 and self.is_private:
+                    if self.stream_url.protocol == "https":
+                        self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
+                        
+                        # Commit and Close DB before long wait
+                        self.commit_batch(self.conn)
+                        self.close_connection()
+
+                        # 5 Minute Countdown
+                        for i in range(5, 0, -1):
+                            self.logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
+                            await asyncio.sleep(60) # Async sleep ensures we handle signals if needed
+
+                        self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
+                        
+                        # --- Run Recovery Synchronously ---
+                        # This blocks the loop, which is fine as we are leaving the loop anyway or resetting
+                        try:
+                            if self.livestream_coordinator:
+                                self.livestream_coordinator.recover_stream(
+                                    info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, 
+                                    max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))), self.recovery_thread_multiplier), 
+                                    file_name=self.file_base_name, cookies=self.cookies, retries=self.fragment_retries, 
+                                    stream_urls=self.stream_urls, proxies=self.proxies, no_merge=True
+                                )
+                            else:
+                                with StreamRecovery(
+                                    info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, 
+                                    max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))), self.recovery_thread_multiplier), 
+                                    file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, 
+                                    stream_urls=self.stream_urls, proxies=self.proxies
+                                ) as downloader:
+                                    downloader.live_dl()
+                                    downloader.close_connection()
+                        except Exception as e:
+                            self.logger.exception("An error occurred while trying to recover the stream")
+
+                        # Recovery done, re-open DB and return True (matches original logic)
+                        await asyncio.sleep(1)
+                        self.conn = self.create_connection(self.temp_db_file)
+                        return True
+
+                    else:
+                        self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
+                        break
+                
+                # 4. GIVE UP (All remaining segments have exceeded retry limit)
+                elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
+                    self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
+                    refresh = self.refresh_url()
+                    if self.refresh_url() is True:
+                        self.logger.info("Video finished downloading via new manifest")
+                        break
+                    elif self.is_private or refresh is False:
+                        self.logger.warning("Failed to refresh URL or stream is private, ending...")
+                        break
+                    elif self.live_status in ["was_live", "post_live"]:
+                        self.logger.info("Livestream has finished downloading")
+                    else:
+                        segment_retries = {}
+
+                # 5. RESET WAIT (If we have active tasks or segments and aren't private)
+                else:
+                    wait = 0
+
+        # --- Cleanup ---
+        self.commit_batch(self.conn)
+        if self.following_manifest_thread:
+            self.following_manifest_thread.join()
         return True
 
-    def update_latest_segment(self):
+    # ---------------------------------------------------------
+    # 3. The Helper (Async Logic)
+    # ---------------------------------------------------------
+    async def _download_segment_httpx(self, client, segment_url, segment_order):
+        total_retries = self.fragment_retries
+        backoff_factor = 1
+        backoff_max = 4
+        status_forcelist = {204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504}
+
+        for attempt in range(total_retries + 1):
+            try:
+                self.check_kill() 
+                response = await client.get(segment_url)
+                status = response.status_code
+                headers = response.headers
+                head_seq = int(headers.get("X-Head-Seqnum", -1))
+
+                if status == 403:
+                    self.is_403 = True
+
+                if status in status_forcelist and attempt < total_retries:
+                     # Raise to trigger the except block below for backoff
+                    raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
+
+                if status == 200:
+                    self.is_403 = False
+                    return head_seq, response.content, int(segment_order), status, headers
+                elif status == 204:
+                    return head_seq, bytes(), int(segment_order), status, headers
+                else:
+                    return head_seq, None, int(segment_order), status, headers
+
+            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                if attempt >= total_retries:
+                    return -1, None, segment_order, getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None, None
+                
+                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
+                await asyncio.sleep(sleep_time) # Yields control!
+            except Exception as e:
+                self.logger.exception(f"Unknown error: {e}")
+                if attempt >= total_retries:                    
+                    return -1, None, segment_order, None, None
+                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
+                await asyncio.sleep(sleep_time) # Yields control!
+    '''        
+    def process_proxies_for_httpx(self, proxy_string):
+        if not proxy_string:
+            return None
+        
+        proxy_string = str(proxy_string)
+        """
+        # Handle JSON input if necessary
+        if proxy_string.startswith('{'):
+            try:
+                data = json.loads(proxy_string)
+                # Extract the first available proxy URL from the dict
+                return data.get("https") or data.get("http")
+            except:
+                return None
+        """
+        if isinstance(self.proxies, dict):
+            # Get the URL, but ensure we don't pass the dictionary itself
+            proxy_string = self.proxies.get("https") or self.proxies.get("http")
+        else:
+            proxy_string = self.proxies
+
+        #from urllib.parse import urlparse
+        parsed = urlparse(proxy_string)
+        
+        scheme = parsed.scheme
+        username = parsed.username
+        password = parsed.password
+        hostname = parsed.hostname
+        port = parsed.port
+        
+        auth = f"{username}:{password}@" if username and password else ""
+        
+        # httpx uses 'socks5://', it handles remote DNS internally. 
+        # 'socks5h' will often throw a 'Scheme not supported' error.
+        if scheme.startswith("socks"):
+            scheme = "socks5"
+            
+        return f"{scheme}://{auth}{hostname}:{port}"
+    
+    def http2_available(self):
+        HAS_HTTP2 = False
+        try:
+            import h2
+            HAS_HTTP2 = True
+        except ImportError:
+            HAS_HTTP2 = False
+        return HAS_HTTP2
+
+    def update_latest_segment(self, client: httpx.Client = None):
         # Kill if keyboard interrupt is detected
         self.check_kill()
         
-        stream_url_info = self.get_Headers(self.stream_url)
+        stream_url_info = self.get_Headers(url=self.stream_url, client=client)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
             self.logger.debug("Latest sequence: {0}".format(self.latest_sequence))
@@ -1316,26 +1836,32 @@ class DownloadStream:
         if self.livestream_coordinator:
             self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
     
-    def get_Headers(self, url):
+    def get_Headers(self, url, client: httpx.Client=None):
+        if client is None:
+            client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
         try:
             # Send a GET request to a URL
-            response = requests.get(url, timeout=30, proxies=self.proxies)
+            #response = requests.get(url, timeout=30, proxies=self.proxies)
+            response = client.get(str(url))
             # 200 and 204 responses appear to have valid headers so far
             if response.status_code == 200 or response.status_code == 204:
-                self.is_403 = False
+                self.is_403 = self.is_401 = False
+
                 # Print the response headers
                 #print(json.dumps(dict(response.headers), indent=4))  
-                return response.headers
+                
             elif response.status_code == 403:
                 self.logger.warning("Received 403 error, marking for URL refresh...")
                 self.is_403 = True
-                return None
+                
+            elif response.status_code == 401:
+                self.is_401 = True
             else:
                 self.logger.debug("Error retrieving headers: {0}".format(response.status_code))
                 self.logger.debug(json.dumps(dict(response.headers), indent=4))
-                return None
+            return response.headers
             
-        except requests.exceptions.Timeout as e:
+        except httpx.TimeoutException as e:
             self.logger.info("Timed out updating fragments: {0}".format(e))
             #print(e)
             return None
@@ -1492,7 +2018,7 @@ class DownloadStream:
         cursor = self.conn.execute('SELECT 1 FROM segments WHERE id = ?', (segment_order,))
         return cursor.fetchone() is not None
     
-    def segment_exists_batch(self):
+    def segment_exists_batch(self) -> set:
         """
         Queries the database to check if a batch of segment numbers are already downloaded.
         Returns a set of existing segment numbers.
@@ -1502,7 +2028,7 @@ class DownloadStream:
         rows = cur.fetchall()
         return set(row[0] for row in rows)
 
-
+    r'''
     # Function to download a single segment
     def download_segment(self, segment_url, segment_order):
         self.check_kill()
@@ -1560,7 +2086,7 @@ class DownloadStream:
         except Exception as e:
             self.logger.warning("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
-            
+        '''    
     # Function to insert a single segment without committing
     def insert_single_segment(self, segment_order, segment_data):
         self.conn.execute('''
@@ -1660,13 +2186,29 @@ class DownloadStream:
 
         return self.remove_atoms(data=data, atom_list=bad_atoms)
     
-    def check_kill(self, executor: concurrent.futures.ThreadPoolExecutor=None):
-        # Kill if keyboard interrupt is detected
+    def check_kill(self, executor: concurrent.futures.ThreadPoolExecutor = None, tasks=None):
+        """
+        Checks kill flags. If set, cancels threads or async tasks and shuts down.
+        """
         if self.kill_all.is_set() or self.kill_this.is_set():
-            self.logger.debug("Kill command detected, ending thread")
-            if executor is not None:
-                executor.shutdown(wait=True, cancel_futures=True)
-            self.close_connection()
+            try:
+                self.logger.debug("Kill command detected, ending...")
+                
+                # Shutdown ThreadPool (Old way)
+                if executor is not None:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                    
+                # Cancel Async Tasks (New way)
+                if tasks is not None:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                            
+                self.close_connection()
+            except Exception as e:
+                self.logger.exception("Unable to perform cleanup")
+            # Raising KeyboardInterrupt will bubble up to asyncio.run() 
+            # which handles the final cleanup of the event loop.
             raise KeyboardInterrupt("Kill command executed")
         
     def delete_temp_database(self):
@@ -1755,6 +2297,8 @@ class DownloadStream:
             self.logger.debug("Livestream has ended.")
             #self.catchup()
             return False 
+        
+        return None
 
 class DownloadStreamDirect(DownloadStream):
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5,
@@ -1843,11 +2387,9 @@ class DownloadStreamDirect(DownloadStream):
         optimistic_seg = 0
         optimistic = True
         wait = 0
-
-        
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers,
-                                                thread_name_prefix=f"{self.id}-{self.format}") as executor:
+        limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
+        with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"{self.id}-{self.format}") as executor,
+            httpx.Client(timeout=30, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
             
             # Trackers for optimistic segment downloads 
             optimistic_fails_max = 10
@@ -1862,7 +2404,7 @@ class DownloadStreamDirect(DownloadStream):
                 if self.refresh_Check() is True:
                     break
 
-                done, _ = concurrent.futures.wait(future_to_seg, timeout=1, return_when=concurrent.futures.ALL_COMPLETED)
+                done, _ = concurrent.futures.wait(future_to_seg, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
@@ -1897,6 +2439,8 @@ class DownloadStreamDirect(DownloadStream):
 
                 # Write contiguous downloaded segments
                 # Check if there is at least one segment to write
+                
+
                 if downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
                     # If segments exist, open the file *once*
                     mode = 'wb' if self.state['file_size'] == 0 else 'r+b'
@@ -1925,6 +2469,9 @@ class DownloadStreamDirect(DownloadStream):
                                 self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size']
                             self.logger.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
                     self._save_state()
+                elif segment_retries.get(self.state['last_written'] + 1, 0) > self.fragment_retries:
+                    self.logger.warning("Segment {0} has exceeded maximum segment retries, advancing count to save data...".format(self.state.get('last_written', 0)))
+                    self.state['last_written'] = self.state.get('last_written', 0) + 1
 
                 # Remove any potential stray segments 
                 downloaded_segments = dict((k, v) for k, v in downloaded_segments.items() if k >= self.state.get('last_written',0))
@@ -1966,7 +2513,7 @@ class DownloadStreamDirect(DownloadStream):
                                 break
                     time.sleep(10)
                     # Check for header updates
-                    self.update_latest_segment()
+                    self.update_latest_segment(client=client)
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
@@ -1992,11 +2539,12 @@ class DownloadStreamDirect(DownloadStream):
                     wait = 0
 
                 for seg_num in segments_to_download:
-                    if seg_num not in submitted_segments:
-                        future_to_seg[executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num)] = seg_num
-                        submitted_segments.add(seg_num)
                     if len(future_to_seg) > 2 * self.max_workers:
                         break
+                    if seg_num not in submitted_segments:
+                        future_to_seg[executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num, client)] = seg_num
+                        submitted_segments.add(seg_num)
+                    
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "merged"
         self.logger.info(f"Completed direct download for {self.format}")
@@ -2023,7 +2571,7 @@ class DownloadStreamDirect(DownloadStream):
 
 # Gemini super class version - remains untested with youtube changes
 class StreamRecovery(DownloadStream):
-    
+    """
     class CustomRetry(Retry):
         def __init__(self, *args, downloader_instance=None, retry_time_clamp=4, segment_number=None, **kwargs):
             super().__init__(*args, **kwargs)
@@ -2056,7 +2604,7 @@ class StreamRecovery(DownloadStream):
 
         def get_403_count(self):
             return self.num_retries  # Return the number of 403 responses
-        
+    """    
 
     def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None, livestream_coordinator: LiveStreamDownloader=None):        
         from datetime import datetime
@@ -2146,13 +2694,14 @@ class StreamRecovery(DownloadStream):
         self.conn = self.create_db(self.temp_db_file) 
         
         # Override retry_strategy with the custom one for recovery
+        """
         self.retry_strategy = self.CustomRetry(
             total=3,  # maximum number of retries
             backoff_factor=1, 
             status_forcelist=[204, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504],
             downloader_instance=self,
             backoff_max=4
-        )  
+        )  """
         
         self.fragment_retries = fragment_retries  
         self.segment_retry_time = segment_retry_time 
@@ -2186,6 +2735,17 @@ class StreamRecovery(DownloadStream):
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
             raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
+        
+        current_level = self.logger.getEffectiveLevel()            
+
+        # Set log level of httpx to one level above other loggers
+        if current_level == logging.NOTSET:
+            target_level = logging.WARNING # Default fallback
+        else:
+            target_level = min(current_level + 10, logging.ERROR)
+
+        logging.getLogger("httpx").setLevel(target_level)
+        logging.getLogger("httpcore").setLevel(target_level)
         
         # The base __init__ already called update_latest_segment(),
         # but we must call it again because self.stream_url and self.stream_urls
@@ -2222,13 +2782,15 @@ class StreamRecovery(DownloadStream):
         
         # Track retries of all missing segments in database      
         self.segments_retries = {key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
-        segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
+        segment_retries = {}
+        #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
         
         i = 0
         
         last_print = time.time()
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor:
+        limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
+        with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
+              httpx.Client(timeout=30, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
             submitted_segments = set()
             future_to_seg = {}
             
@@ -2238,7 +2800,7 @@ class StreamRecovery(DownloadStream):
             else:
                 self.logger.debug("Recovery mode active")
                     
-            
+            thread_windows_size = 2*self.max_workers
             while True:     
                 self.check_kill(executor)     
                 if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
@@ -2253,7 +2815,7 @@ class StreamRecovery(DownloadStream):
                     self.commit_batch()
                     raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp)) 
                 
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.ALL_COMPLETED)
+                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED)
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
@@ -2276,22 +2838,18 @@ class StreamRecovery(DownloadStream):
                         
                     if segment_data is not None:
                         self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                        uncommitted_inserts += 1
+                        uncommitted_inserts += 1                        
                         
-                        if self.segments_retries.get(seg_num, None) is not None:
-                            self.segments_retries.pop(seg_num,None)
+                        self.segments_retries.pop(seg_num,None)
                         
-                        if uncommitted_inserts >= max(self.batch_size, len(done)):
-                            self.logger.debug("Writing segments to file...")
-                            self.commit_batch(self.conn)
-                            uncommitted_inserts = 0
-                            self.conn.execute('BEGIN TRANSACTION') 
-                    else:
-                        if self.segments_retries.get(seg_num, None) is not None:
-                            self.segments_retries[seg_num]['retries'] = self.segments_retries[seg_num]['retries'] + 1
-                            self.segments_retries[seg_num]['last_retry'] = time.time()
-                            if self.segments_retries[seg_num]['retries'] >= self.fragment_retries:
-                                self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
+                        
+                    else:                        
+                        self.segments_retries.setdefault(seg_num, {})['retries'] = self.segments_retries.get(seg_num,{}).get('retries',0) + 1
+                        self.segments_retries.setdefault(seg_num, {})['last_retry'] = time.time()
+                        self.segments_retries.setdefault(seg_num, {}).setdefault('ideal_retry_time', random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200)))
+
+                        if self.segments_retries.get(seg_num, {}).get('retries',0) >= self.fragment_retries:
+                            self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
                                 
                     future_to_seg.pop(future,None)
 
@@ -2299,7 +2857,12 @@ class StreamRecovery(DownloadStream):
                         self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
                     
                         self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
-                                            
+
+                if uncommitted_inserts >= max(self.batch_size, len(done)):
+                    self.logger.debug("Writing segments to file...")
+                    self.commit_batch(self.conn)
+                    uncommitted_inserts = 0
+                    self.conn.execute('BEGIN TRANSACTION')                             
                     
                 if len(self.segments_retries) <= 0:
                     self.logger.info("All segment downloads complete, ending...")
@@ -2318,24 +2881,24 @@ class StreamRecovery(DownloadStream):
                     time.sleep(60)
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
-                            self.update_latest_segment(url=self.stream_url.segment(self.latest_sequence+1))
+                            self.update_latest_segment(url=self.stream_url.segment(self.latest_sequence+1), client=client)
                         else:
-                            self.update_latest_segment(url=url)
+                            self.update_latest_segment(url=url, client=client)
                 
                 elif self.is_403:
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
-                            self.update_latest_segment(url=self.stream_url.segment(self.latest_sequence+1))
+                            self.update_latest_segment(url=self.stream_url.segment(self.latest_sequence+1), client=client)
                         else:
-                            self.update_latest_segment(url=url)
+                            self.update_latest_segment(url=url, client=client)
                     
-                segments_to_download = set()
+                
                 potential_segments_to_download = set(self.segments_retries.keys()) - self.already_downloaded
                 
-                sorted_retries = -1
                 if self.sequential:
                     sorted_retries = dict(sorted(self.segments_retries.items(), key=lambda item: (item[1]['retries'], item[0])))
                 else:
+                    """
                     current_time = time.time()
                     priority_items = {
                         key: value for key, value in self.segments_retries.items()
@@ -2348,17 +2911,39 @@ class StreamRecovery(DownloadStream):
                     priority_items_sorted = dict(sorted(priority_items.items(), key=lambda item: item[1]['retries']))
                     non_priority_items_sorted = dict(sorted(non_priority_items.items(), key=lambda item: item[1]['retries']))
                     sorted_retries = priority_items_sorted | non_priority_items_sorted
-                    
-                    
-                if sorted_retries != -1:
+                    """
+                    current_time = time.time()
+                    priority_items = {}
+                    non_priority_items = {}
+
+                    for key, value in self.segments_retries.items():
+                        # .get() allows us to provide safe defaults if keys are missing
+                        last_retry = value.get('last_retry', 0)
+                        ideal_time = value.get('ideal_retry_time', 0)
+                        retries = value.get('retries', 0)
+
+                        # Check priority condition
+                        if (current_time - last_retry) > ideal_time and retries > 0:
+                            priority_items[key] = value
+                        else:
+                            non_priority_items[key] = value
+
+                    # Sorting logic remains consistent
+                    priority_items_sorted = dict(sorted(priority_items.items(), key=lambda item: item[1].get('retries', 0)))
+                    non_priority_items_sorted = dict(sorted(non_priority_items.items(), key=lambda item: item[1].get('retries', 0)))
+
+                    sorted_retries = priority_items_sorted | non_priority_items_sorted
+                
+                if sorted_retries:
                     potential_segments_to_download = sorted_retries.keys()
                     
+                """
                 if not not_done or len(not_done) < self.max_workers:
                     new_download = set()
                     number_to_add = self.max_workers - len(not_done)
 
                     for seg_num in potential_segments_to_download:
-                        if seg_num not in submitted_segments and self.segments_retries[seg_num]['retries'] <= self.fragment_retries and time.time() - self.segments_retries[seg_num]['last_retry'] > self.segment_retry_time:                            
+                        if seg_num not in submitted_segments :                            
                             if seg_num in self.already_downloaded:
                                 self.segments_retries.pop(seg_num,None)
                                 continue
@@ -2370,11 +2955,34 @@ class StreamRecovery(DownloadStream):
                         if len(new_download) >= number_to_add:                            
                             break
                     segments_to_download = new_download
-                    
+                
                 for seg_num in segments_to_download:
                     if seg_num not in submitted_segments:
                         # Round-robin through available stream URLs
                         future_to_seg[executor.submit(self.download_segment, self.stream_urls[i % len(self.stream_urls)].segment(seg_num), seg_num)] = seg_num
+                        submitted_segments.add(seg_num)
+                        i += 1
+                """
+
+                if len(not_done) <= 0 and len(done) > 0:
+                    thread_windows_size = 3*thread_windows_size
+                else:
+                    thread_windows_size = max(thread_windows_size//2, 2*self.max_workers)
+
+                # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
+                for seg_num in potential_segments_to_download:
+                    # Have up to 2x max workers of threads submitted
+                    if len(future_to_seg) > max(10,2*self.max_workers, thread_windows_size):
+                        break
+                    if seg_num not in submitted_segments and self.segments_retries.get(seg_num, {}).get('retries', 0) <= self.fragment_retries and time.time() - self.segments_retries.get(seg_num, {}).get('retries', 0) > self.segment_retry_time:
+                        # Check if segment already exist within database (used to not create more connections). Needs fixing upstream
+                        if self.segment_exists(seg_num):
+                            self.already_downloaded.add(seg_num)
+                            self.segments_retries.pop(seg_num,None)
+                            continue
+                        future_to_seg.update({
+                            executor.submit(self.download_segment, self.stream_urls[i % len(self.stream_urls)].segment(seg_num), seg_num, client, True): seg_num
+                        })
                         submitted_segments.add(seg_num)
                         i += 1
                 
@@ -2404,7 +3012,7 @@ class StreamRecovery(DownloadStream):
             self.expires = max(expires)
 
 
-    def update_latest_segment(self, url=None):
+    def update_latest_segment(self, url=None, client=None):
         from datetime import datetime
         # Overrides base method to handle multiple, expiring URLs
         self.check_kill()
@@ -2422,7 +3030,7 @@ class StreamRecovery(DownloadStream):
         if url is None:
             url = random.choice(self.stream_urls)
         
-        stream_url_info = self.get_Headers(url)
+        stream_url_info = self.get_Headers(url, client)
         if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
             new_latest = int(stream_url_info.get("X-Head-Seqnum"))
             if new_latest > self.latest_sequence and self.latest_sequence > -1:
@@ -2438,9 +3046,11 @@ class StreamRecovery(DownloadStream):
         
         if self.livestream_coordinator:
             self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
-    
-    def get_Headers(self, url):
+    """
+    def get_Headers(self, url, client=None):
         # Overrides base method to add 401 handling
+        if client is None:
+            client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
         try:
             response = requests.get(url, timeout=30, proxies=self.proxies)
             if response.status_code == 200 or response.status_code == 204:
@@ -2455,14 +3065,15 @@ class StreamRecovery(DownloadStream):
                 self.logger.debug(json.dumps(dict(response.headers), indent=4))
             return response.headers
             
-        except requests.exceptions.Timeout as e:
+        except httpx.TimeoutException as e:
             self.logger.debug("Timed out updating fragments: {0}".format(e))
             return None
         
         except Exception as e:
             self.logger.exception("\033[31m{0}\033[0m".format(e))
             return None
-
+            """
+    """
     def download_segment(self, segment_url, segment_order):
         # Overrides base method to add User-Agent rotation
         # and more detailed exception handling for recovery
@@ -2528,6 +3139,7 @@ class StreamRecovery(DownloadStream):
         except Exception as e:
             self.logger.exception("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
             return -1, None, segment_order, None, None
+        """
             
     def save_stats(self):
         # Stats files
