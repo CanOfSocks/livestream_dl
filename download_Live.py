@@ -72,14 +72,14 @@ class LiveStreamDownloader:
         self.lock: threading.Lock = threading.Lock()
 
     # Create runner function for each download format
-    def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0):
+    def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0, **kwargs):
         download_params = locals().copy()
         download_params.update({"download_function": self.download_stream})
         file = None
         filetype = None
         with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                                         yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
-                                        download_params=download_params, livestream_coordinator=self) as downloader:       
+                                        download_params=download_params, livestream_coordinator=self, **kwargs) as downloader:       
             self.stats["status"] = "Recording"       
             downloader.live_dl()
             file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
@@ -100,7 +100,7 @@ class LiveStreamDownloader:
         return file, filetype
 
     # Create runner function for each download format
-    def download_stream_direct(self, info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0):
+    def download_stream_direct(self, info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0, **kwargs):
         download_params = locals().copy()
         download_params.update({"download_function": self.download_stream_direct})
         file = None
@@ -108,7 +108,7 @@ class LiveStreamDownloader:
 
         with DownloadStreamDirect(info_dict, resolution=resolution, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                                             yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
-                                            download_params=download_params, livestream_coordinator=self) as downloader:
+                                            download_params=download_params, livestream_coordinator=self, **kwargs) as downloader:
             self.stats["status"] = "Recording"
             file_name = downloader.live_dl()
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
@@ -120,13 +120,13 @@ class LiveStreamDownloader:
         })
         return file, filetype
 
-    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0, stream_urls: list = [], no_merge=False):
+    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0, stream_urls: list = [], no_merge=False, **kwargs):
 
         file = None
         filetype = None
 
         with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                            proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self, stream_urls=stream_urls) as downloader:
+                            proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self, stream_urls=stream_urls, **kwargs) as downloader:
             self.stats["status"] = "Recording"
             result = downloader.live_dl()
             #downloader.save_stats()    
@@ -194,11 +194,14 @@ class LiveStreamDownloader:
             yt_dlp_options=options.get('ytdlp_options', None),
             proxies=options.get("proxy", None),
             yt_dlp_sort=options.get('custom_sort', None),
-
         )
 
         if extra_kwargs:
             kwargs.update(extra_kwargs)
+
+        # Add any extra values not yet existing
+        for key, value in options.items():
+            kwargs.setdefault(key, value)
 
         self.logger.debug("Starting executor with: {0}".format(json.dumps(kwargs)))
 
@@ -957,7 +960,7 @@ class FileInfo(Path):
         }
 
 class DownloadStream:
-    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader = None):        
+    def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader = None, **kwargs):        
         self.livestream_coordinator = livestream_coordinator
         if self.livestream_coordinator:
             self.logger = self.livestream_coordinator.logger
@@ -989,6 +992,8 @@ class DownloadStream:
         
         self.info_dict = info_dict
         self.stream_urls = []
+
+        self.wait_limit = kwargs.get("wait_limit", 0)
 
         self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
 
@@ -1211,15 +1216,15 @@ class DownloadStream:
                 """
                 # If update has no segments and no segments are currently running, wait                              
                 if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
-                    wait += 1
+                    
                     self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
-                    if wait > 20:
+                    if wait > self.wait_limit and wait > self.wait_limit:
                         self.logger.debug("Wait time for new fragment exceeded, ending download...")
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
-                    elif wait > 10:
+                    elif wait % 10 == 0 and wait > 0:
                         if self.is_private:
                             self.logger.debug("Video is private and no more segments are available. Ending...")
                             break
@@ -1232,6 +1237,7 @@ class DownloadStream:
                                 break
                     time.sleep(10)
                     self.update_latest_segment(client=client)
+                    wait += 1
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
@@ -2238,7 +2244,7 @@ class DownloadStream:
                         finally:
                             self.livestream_coordinator.lock.release()
                     else:
-                        return False
+                        return None
                 else:
                     info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=(self.include_m3u8 or self.force_m3u8))
                 
@@ -2303,7 +2309,7 @@ class DownloadStream:
 class DownloadStreamDirect(DownloadStream):
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5,
                 folder=None, file_name=None, cookies=None, yt_dlp_options=None, proxies=None,
-                yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader=None):
+                yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader=None, **kwargs):
         params = download_params or locals().copy()
         # Initialize base class, but use in-memory DB (unused)
         super().__init__(
@@ -2323,7 +2329,8 @@ class DownloadStreamDirect(DownloadStream):
             include_m3u8=include_m3u8,
             force_m3u8=force_m3u8,
             download_params=params,
-            livestream_coordinator=livestream_coordinator,
+            livestream_coordinator=livestream_coordinator, 
+            **kwargs
         )
         # Close the unused in-memory DB connection
         if self.conn:
@@ -2491,29 +2498,29 @@ class DownloadStreamDirect(DownloadStream):
                     segments_to_download.append(optimistic_seg)
                                     
                 # If update has no segments and no segments are currently running, wait                              
-                if not segments_to_download and not future_to_seg:                 
-                    wait += 1
+                if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
+                    
                     self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
-                    if wait > 20:
+                    if wait > self.wait_limit and wait > self.wait_limit:
                         self.logger.debug("Wait time for new fragment exceeded, ending download...")
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
-                    elif wait > 10:
+                    elif wait % 10 == 0 and wait > 0:
                         if self.is_private:
                             self.logger.debug("Video is private and no more segments are available. Ending...")
                             break
                         else:
-                            refresh = self.refresh_url(follow_manifest=False)
+                            refresh = self.refresh_url()
                             if refresh is False:
                                 break       
                             elif refresh is True:
-                                self.logger.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
+                                self.logger.info("Video finished downloading via new manifest")
                                 break
                     time.sleep(10)
-                    # Check for header updates
                     self.update_latest_segment(client=client)
+                    wait += 1
                     continue
                 
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
@@ -2606,7 +2613,7 @@ class StreamRecovery(DownloadStream):
             return self.num_retries  # Return the number of 403 responses
     """    
 
-    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None, livestream_coordinator: LiveStreamDownloader=None):        
+    def __init__(self, info_dict={}, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery=False, segment_retry_time=30, stream_urls=[], live_status="is_live", proxies=None, yt_dlp_sort=None, livestream_coordinator: LiveStreamDownloader=None, **kwargs):        
         from datetime import datetime
         self.expires = time.time()
         # Call the base class __init__.
