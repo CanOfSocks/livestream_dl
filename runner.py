@@ -170,6 +170,22 @@ def monitor_channel(options={}):
         logging.debug("Sleeping for {0:.2f}s for next stream check".format(time_to_next))
         sleep(time_to_next)
         last_check=time()
+
+import argparse
+
+def range_or_int(string) -> tuple[int, int]:
+    try:
+        if ":" in string:
+            # Split by colon and convert both parts to integers
+            parts = string.split(":")
+            if len(parts) != 2:
+                raise ValueError
+            return (int(parts[0]), int(parts[1]))
+        else:
+            # Return a single-item list or just the int depending on your needs
+            return (int(string), int(string))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{string}' must be an integer or 'min:max'")
     
 if __name__ == "__main__":
     # Create the parser
@@ -233,7 +249,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--direct-to-ts', action='store_true', help="Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options")
     
-    parser.add_argument("--wait-for-video", type=int, nargs="*", help="(min, max) Minimum and maximum interval to wait for a video")
+    parser.add_argument("--wait-for-video", type=range_or_int, default=None, help="Wait time (int) or Minimum and maximum (min:max) interval to wait for a video")
     
     parser.add_argument('--json-file', type=str, default=None, help="Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs")
     
@@ -295,10 +311,7 @@ if __name__ == "__main__":
 
     if options.get('resolution', None) is None and (options.get('video_format', None) is None or options.get('audio_format', None) is None):
         options['resolution'] = str(input("Please enter resolution: ")).strip()
-               
-    if options.get('wait_for_video', None) is not None:        
-        options['wait_for_video'] = tuple(options.get('wait_for_video')[:2])
-        
+                      
     if options.get('proxy', None) is not None:
         options['proxy'] = process_proxies(options.get('proxy', None))
         
