@@ -2356,6 +2356,7 @@ class DownloadStreamDirect(DownloadStream):
                 yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader=None, **kwargs):
         params = download_params or locals().copy()
         # Initialize base class, but use in-memory DB (unused)
+        kwargs.pop("database_in_memory", None)
         super().__init__(
             info_dict=info_dict,
             resolution=resolution,
