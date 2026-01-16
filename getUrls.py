@@ -49,7 +49,7 @@ class VideoDownloadError(yt_dlp.utils.DownloadError):
 class LivestreamError(TypeError):
     pass
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False, logger=logging.getLogger()):
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False, logger=logging.getLogger(), clean_info_dict: bool=False):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
     yt_dlpLogger = MyLogger(logger=logger)
@@ -98,7 +98,13 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info_dict = ydl.extract_info(url, download=False)
-            info_dict = ydl.sanitize_info(info_dict)
+            info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
+
+            for stream_format in info_dict.get('formats', []):
+                try:
+                    stream_format.pop('fragments', None)
+                except:
+                    pass
             # Check if the video is private
             if not (info_dict.get('live_status') == 'is_live' or info_dict.get('live_status') == 'post_live'):
                 #print("Video has been processed, please use yt-dlp directly")

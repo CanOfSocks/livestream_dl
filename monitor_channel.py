@@ -17,7 +17,8 @@ def withinFuture(releaseTime=None, lookahead=24):
     else:
         return False
 
-def get_upcoming_or_live_videos(channel_id, tab=None, options={}):
+def get_upcoming_or_live_videos(channel_id, tab=None, options={}, logger: logging = None):
+    logger = logger or logging.getLogger()
     #channel_id = str(channel_id)
     ydl_opts = {
         'quiet': True,
@@ -30,7 +31,7 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options={}):
         'playlist_items': '1-{0}'.format(options.get("playlist_items", 50)),
         #'verbose': True
         #'match_filter': filters
-        "logger": YTDLPLogger(),
+        "logger": YTDLPLogger(logger=logger),
     }
     try:
         with YoutubeDL(ydl_opts) as ydl:
@@ -40,8 +41,9 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options={}):
                 elif channel_id.startswith("UC") or channel_id.startswith("UU"):
                     url = "https://www.youtube.com/playlist?list={0}".format("UUMO" + channel_id[2:])
                 else:
-                    url = "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
                     ydl_opts.update({'playlist_items': '1:10'})
+                    url = "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
+                    
             elif tab == "streams":
                 if channel_id.startswith("UU"):
                     url = "https://www.youtube.com/playlist?list={0}".format(channel_id)
@@ -50,11 +52,13 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options={}):
                 elif channel_id.startswith("UUMO"):
                     url = "https://www.youtube.com/playlist?list={0}".format("UU" + channel_id[4:])
                 else:
-                    url = "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
                     ydl_opts.update({'playlist_items': '1:10'})
+                    url = "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
+                    
             else:
-                url = "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
                 ydl_opts.update({'playlist_items': '1:10'})
+                url = "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
+                
             info = ydl.extract_info(url, download=False)
             #logging.debug(json.dumps(info))
             upcoming_or_live_videos = []
@@ -62,12 +66,12 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options={}):
                 if (video.get('live_status') == 'is_live' or video.get('live_status') == 'post_live' 
                     or (video.get('live_status') == 'is_upcoming' and withinFuture(video.get('release_timestamp', None), **({"lookahead": options["monitor_lookahead"]} if "monitor_lookahead" in options else {})))):
 
-                    logging.debug("({1}) live_status = {0}".format(video.get('live_status'),video.get('id')))
-                    logging.debug(json.dumps(video))
+                    logger.debug("({1}) live_status = {0}".format(video.get('live_status'),video.get('id')))
+                    logger.debug(json.dumps(video))
                     upcoming_or_live_videos.append(video.get('id'))
 
 
             return list(set(upcoming_or_live_videos))
     except Exception as e:
-        logging.exception("An unexpected error occurred when trying to fetch videos")
+        logger.exception("An unexpected error occurred when trying to fetch videos")
         raise

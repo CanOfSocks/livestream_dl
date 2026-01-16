@@ -17,13 +17,13 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 try:
     import getUrls
     import YoutubeURL
-    from headers import user_agents
+    #from headers import user_agents
 except ModuleNotFoundError as e:
     from . import getUrls
     from . import YoutubeURL
-    from .headers import user_agents
+    #from .headers import user_agents
 
-
+from typing import Union, Optional
 import os  
 
 from urllib.parse import urlparse, parse_qs
@@ -33,7 +33,7 @@ import shutil
 import logging
 import logging.handlers
 
-import re
+#import re
 
 import threading
 
@@ -237,7 +237,7 @@ class LiveStreamDownloader:
             os.makedirs(download_folder, exist_ok=True)
             
 
-        with concurrent.futures.ThreadPoolExecutor() as executor: 
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor: 
             done = not_done = set() 
             try: 
                 
@@ -247,8 +247,13 @@ class LiveStreamDownloader:
                 
                 live_chat_thread = None            
                 if options.get('live_chat', False) is True:
-                    live_chat_thread = threading.Thread(target=self.download_live_chat, args=(info_dict,options), daemon=True)
-                    live_chat_thread.start()
+                    # Trim live chat info json to minimums for live chat
+                    live_chat_info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"_type","id","title","extractor","extractor_key","webpage_url","subtitles"})
+                    live_chat_info_dict["formats"] = [info_dict.get("formats", [])[0]]
+
+                    # Start thread
+                    live_chat_thread = executor.submit(self.download_live_chat, info_dict=live_chat_info_dict, options=options)
+                    futures.add(live_chat_thread)
                     #download_live_chat(info_dict=info_dict, options=options)
                     #chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
                     #futures.add(chat_thread)
@@ -258,6 +263,8 @@ class LiveStreamDownloader:
                     raise ValueError("Resolution is not valid or does not exist in stream")
                 # For use of specificed format. Expects two values, but can work with more
                 # Video + Audio
+
+                
                 if resolution.lower() != "audio_only":
                     
                     #Video
@@ -277,7 +284,7 @@ class LiveStreamDownloader:
                 while True:
                     if self.kill_all.is_set() or self.kill_this.is_set():
                         raise KeyboardInterrupt("Thread kill event is set, ending...")
-                    done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.ALL_COMPLETED)
+                    done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
                     # Continuously check for completion or interruption
                     for future in done:
                         
@@ -292,12 +299,20 @@ class LiveStreamDownloader:
                         
                         if type == 'auxiliary':
                             self.file_names.update(result)
+
+                            # Remove parts that would not be needed by stream downloaders
+                            self.remove_format_segment_playlist_from_info_dict(info_dict=info_dict)
+                            info_dict.pop("thumbnails", None)
+                            # Remove no longer required parts for the rest of the downloader
+                            info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"id", "ext", "upload_date", "original_url", "description", "fulltitle", "channel"})
+                            
+
                         elif str(type).lower() == 'video':
                             #self.file_names['video'] = result
                             pass
                         elif str(type).lower() == 'audio':
                             #self.file_names['audio'] = result  
-                            pass  
+                            pass
                         else:
                             self.file_names[str(type)] = result
                         
@@ -309,10 +324,7 @@ class LiveStreamDownloader:
                     #    time.sleep(0.9)
                     self.print_stats(options=options)
                 
-                if live_chat_thread is not None:
-                    self.logger.info("Waiting for live chat to end")
-                    chat_timeout = time.time()
-                    live_chat_thread.join()
+                
                 
             except KeyboardInterrupt as e:
                 self.kill_this.set()
@@ -467,6 +479,7 @@ class LiveStreamDownloader:
             def error(self, msg):
                 self.logger.error("(yt-dlp chat): {0}".format(msg))
 
+        
         ydl_opts = {
             'skip_download': True,               # Skip downloading video/audio
             'logger': YTDLP_Chat_logger(logger=self.logger),
@@ -917,11 +930,28 @@ class LiveStreamDownloader:
         new_url = parsed._replace(query=new_query)
         return str(urlunparse(new_url))  
     
+    def trim_info_json(self, info_dict: dict, keys_to_keep: set):
+        return {k: info_dict[k] for k in info_dict.keys() & keys_to_keep}
+
+    def remove_format_segment_playlist_from_info_dict(self, info_dict: dict):
+        for stream_format in info_dict.get('formats', []):
+            try:
+                stream_format.pop('fragments', None)
+            except:
+                pass
+
     def refresh_info_json(self, update_threshold: int, id, cookies=None, additional_options=None, include_dash=False, include_m3u8=False):
         # Check if time difference is greater than the threshold. If doesn't exist, subtraction of zero will always be true
         if time.time() - self.refresh_json.get("refresh_time", 0.0) > update_threshold:
-            self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8)
-            self.refresh_json["refresh_time"] = time.time()
+            self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True)
+
+            # Remove unnecessary items for info.json used purely for url refresh
+            self.trim_info_json(info_dict=self.refresh_json, keys_to_keep={"id", "formats", "_type","title","extractor","extractor_key","webpage_url", "live_status" })
+            self.remove_format_segment_playlist_from_info_dict(self.refresh_json)
+
+            # Add refresh time for reference
+            self.refresh_json["refresh_time"] = time.time()                   
+
             return self.refresh_json, self.live_status
         else:
             return self.refresh_json, self.live_status
@@ -3158,6 +3188,8 @@ class StreamRecovery(DownloadStream):
             json.dump(self.user_agent_full_403s, outfile, indent=4)
 
 
+
+
 def setup_logging(
     log_level="INFO",
     console=True,
@@ -3165,8 +3197,9 @@ def setup_logging(
     force=False,
     file_options: dict = None,
     logger: logging.Logger | None = None,
-    logger_name: str | None = None
-) -> logging.Logger:
+    logger_name: str | None = None,
+    video_id: str | None = None  # 1. New parameter for the unique ID
+) -> Union[logging.Logger, logging.LoggerAdapter]: # Updated return type
     """
     Configure logging.
 
@@ -3177,90 +3210,81 @@ def setup_logging(
     :param file_options: dict for file handler options (e.g. rotation: maxBytes, when, interval, backupCount)
     :param logger: optionally pass an existing logger object
     :param logger_name: if provided, get/create a named logger; otherwise root logger
+    :param logger_name: Add video ID to logger
     :return: the configured logger
     """
+    
     file_options = file_options or {}
 
+    # Standard Windows console fix
     def disable_quick_edit():
         import ctypes
         kernel32 = ctypes.windll.kernel32
-        hStdin = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        hStdin = kernel32.GetStdHandle(-10)
         mode = ctypes.c_ulong()
         kernel32.GetConsoleMode(hStdin, ctypes.byref(mode))
-        mode.value &= ~0x40  # Remove ENABLE_QUICK_EDIT_MODE
+        mode.value &= ~0x40
         kernel32.SetConsoleMode(hStdin, mode)
 
-    # On Windows, disable quick edit so console input isn't paused by click:
     if os.name == "nt":
         disable_quick_edit()
 
-    # Get the logger: named if logger_name, else root
+    # Get the base logger
     if logger is None:
         logger = logging.getLogger(logger_name)
-        #if logger_name:
-        #    logger = logging.getLogger(logger_name)
-        #else:
-        #    logger = logging.getLogger()  # root logger
 
-    # If force, clear handlers; else, if it already has handlers, do nothing
+    # 2. Updated Logic: We only skip configuration if handlers exist.
+    # We do NOT return yet because we might still need to wrap it in an Adapter.
     if force:
-        # remove all handlers safely
         for h in list(logger.handlers):
             logger.removeHandler(h)
-    else:
-        # If logger already configured, skip
-        if logger.handlers:
-            return logger
+    
+    # Only configure handlers if the logger is "fresh"
+    if not logger.handlers:
+        level = getattr(logging, log_level.upper(), logging.INFO)
+        logger.setLevel(level)
 
-    # Convert level string to logging level
-    level = getattr(logging, log_level.upper(), logging.INFO)
-    logger.setLevel(level)
-
-    # Build formatter, with logger_name if given
-    if logger_name:
-        fmt_str = f'[%(levelname)s] [{logger_name}] %(asctime)s - %(message)s'
-    else:
-        fmt_str = '[%(levelname)s] %(asctime)s - %(message)s'
-    formatter = logging.Formatter(fmt_str, datefmt='%Y-%m-%d %H:%M:%S')
-
-    # Optionally disable propagation so logs don't bubble up in unwanted ways
-    # If this is a named logger (i.e. not root), you may want to stop propagation
-    if logger_name:
-        logger.propagate = False
-
-    # Console handler
-    if console:
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-
-    # File handler
-    if file:
-        # Decide type of file handler
-        if file_options.get("maxBytes"):
-            handler = logging.handlers.RotatingFileHandler(
-                file,
-                mode='a',
-                maxBytes=file_options.get("maxBytes", 10 * 1024 * 1024),
-                backupCount=file_options.get("backupCount", 5),
-                encoding='utf-8'
-            )
-        elif file_options.get("when"):
-            handler = logging.handlers.TimedRotatingFileHandler(
-                file,
-                when=file_options.get("when", "midnight"),
-                interval=file_options.get("interval", 1),
-                backupCount=file_options.get("backupCount", 7),
-                encoding='utf-8'
-            )
+        # 3. Use the video_id placeholder in the format string if an ID is intended
+        if video_id:
+            # %(video_id)s comes from the Adapter's 'extra' dict
+            fmt_str = f'[%(levelname)s] [%(video_id)s] %(asctime)s - %(message)s'
+        elif logger_name:
+            fmt_str = f'[%(levelname)s] [{logger_name}] %(asctime)s - %(message)s'
         else:
-            handler = logging.FileHandler(file, mode='a', encoding='utf-8')
+            fmt_str = '[%(levelname)s] %(asctime)s - %(message)s'
+            
+        formatter = logging.Formatter(fmt_str, datefmt='%Y-%m-%d %H:%M:%S')
 
-        handler.setLevel(level)
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+        if logger_name:
+            logger.propagate = False
 
+        if console:
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(formatter)
+            logger.addHandler(console_handler)
+
+        if file:
+            if file_options.get("maxBytes"):
+                handler = logging.handlers.RotatingFileHandler(
+                    file, maxBytes=file_options.get("maxBytes"), 
+                    backupCount=file_options.get("backupCount", 5), encoding='utf-8'
+                )
+            elif file_options.get("when"):
+                handler = logging.handlers.TimedRotatingFileHandler(
+                    file, when=file_options.get("when"), 
+                    interval=file_options.get("interval", 1), 
+                    backupCount=file_options.get("backupCount", 7), encoding='utf-8'
+                )
+            else:
+                handler = logging.FileHandler(file, mode='a', encoding='utf-8')
+            
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+
+    # 4. Final step: If a video_id was passed, wrap the logger in an Adapter
+    if video_id:
+        return logging.LoggerAdapter(logger, {"video_id": video_id})
+    
     return logger
 
 

@@ -107,7 +107,7 @@ def parse_string_or_tuple(value):
 
 
 def main(id, resolution='best', options={}, info_dict=None, thread_kill: threading.Event=kill_all):
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name=id)
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id)
     
     # Convert additional options to dictionary, if it exists
     if options.get('ytdlp_options', None) is not None:        
@@ -122,14 +122,13 @@ def main(id, resolution='best', options={}, info_dict=None, thread_kill: threadi
     elif info_dict:
         pass
     else:        
-        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)), logger=logger)
+        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)), logger=logger, clean_info_dict=options.get('clean_info_json', False))
     downloader = download_Live.LiveStreamDownloader(kill_all=kill_all, logger=logger)
     downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
 
 def monitor_channel(options={}):
-    import logging
     import copy
-    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None))
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Monitor")
     import monitor_channel
     from typing import Dict
     threads: Dict[str, threading.Thread] = {}
@@ -139,14 +138,14 @@ def monitor_channel(options={}):
     if not options.get("wait_for_video", None):
         options["wait_for_video"] = (60,)
     wait = max(options.get("wait_for_video"))
-    logging.debug("Starting runner for channel: '{0}' on tab: '{1}'".format(channel_id, tab))
+    logger.debug("Starting runner for channel: '{0}' on tab: '{1}'".format(channel_id, tab))
     while True:
         for id, thread in list(threads.items()):
             if not thread.is_alive():
                 threads.pop(id)
-        logging.debug("Searching for streams for channel {0}".format(channel_id))
+        logger.debug("Searching for streams for channel {0}".format(channel_id))
         try:
-            videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options)
+            videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options, logger=logger)
             for video_id in videos_to_get:
                 if threads.get(video_id, None) is not None:
                     continue
@@ -164,14 +163,12 @@ def monitor_channel(options={}):
                 t.start()
                 threads[video_id] = t  # store the thread in a dictionary
         except Exception as e:
-            logging.exception("An error occurred fetching upcoming streams")
+            logger.exception("An error occurred fetching upcoming streams")
         time_to_next = wait-(time()-last_check)
-        logging.debug("Active threads: {0}".format(list(threads.keys())))
-        logging.debug("Sleeping for {0:.2f}s for next stream check".format(time_to_next))
+        logger.debug("Active threads: {0}".format(list(threads.keys())))
+        logger.debug("Sleeping for {0:.2f}s for next stream check".format(time_to_next))
         sleep(time_to_next)
         last_check=time()
-
-import argparse
 
 def range_or_int(string) -> tuple[int, int]:
     try:
@@ -256,6 +253,8 @@ if __name__ == "__main__":
     parser.add_argument('--remove-ip-from-json', action='store_true', help="Replaces IP entries in info.json with 0.0.0.0")
     
     parser.add_argument('--clean-urls', action='store_true', help="Removes stream URLs from info.json that contain potentially identifiable information. These URLs are usually useless once they have expired")
+
+    parser.add_argument('--clean-info-json', action='store_true', help="Enables yt-dlp's 'clean-info-json' option")
     
     parser.add_argument("--log-level", type=str, default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
