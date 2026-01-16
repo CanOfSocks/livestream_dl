@@ -248,15 +248,18 @@ class LiveStreamDownloader:
                 live_chat_thread = None            
                 if options.get('live_chat', False) is True:
                     # Trim live chat info json to minimums for live chat
-                    live_chat_info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"_type","id","title","extractor","extractor_key","webpage_url","subtitles"})
-                    live_chat_info_dict["formats"] = [info_dict.get("formats", [])[0]]
+                    #live_chat_info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"_type","id","title","extractor","extractor_key","webpage_url","subtitles"})
+                    #live_chat_info_dict["formats"] = [info_dict.get("formats", [])[0]]
 
                     # Start thread
-                    live_chat_thread = executor.submit(self.download_live_chat, info_dict=live_chat_info_dict, options=options)
-                    futures.add(live_chat_thread)
+                    #live_chat_thread = executor.submit(self.download_live_chat, info_dict=info_dict, options=options)
+                    #futures.add(live_chat_thread)
                     #download_live_chat(info_dict=info_dict, options=options)
                     #chat_thread = executor.submit(download_live_chat, info_dict=info_dict, options=options)
                     #futures.add(chat_thread)
+
+                    live_chat_thread = threading.Thread(target=self.download_live_chat, args=(info_dict,options), daemon=True)
+                    live_chat_thread.start()
                 
                 format_check = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None), include_dash=(options.get("dash", False) and not options.get('recovery', False)), include_m3u8=options.get("m3u8", False), force_m3u8=options.get("force_m3u8", False))
                 if not format_check:
@@ -304,7 +307,7 @@ class LiveStreamDownloader:
                             self.remove_format_segment_playlist_from_info_dict(info_dict=info_dict)
                             info_dict.pop("thumbnails", None)
                             # Remove no longer required parts for the rest of the downloader
-                            info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"id", "ext", "upload_date", "original_url", "description", "fulltitle", "channel"})
+                            #info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"id", "ext", "upload_date", "original_url", "description", "fulltitle", "channel"})
                             
 
                         elif str(type).lower() == 'video':
@@ -312,6 +315,8 @@ class LiveStreamDownloader:
                             pass
                         elif str(type).lower() == 'audio':
                             #self.file_names['audio'] = result  
+                            pass
+                        elif str(type).lower() == 'live_chat':
                             pass
                         else:
                             self.file_names[str(type)] = result
@@ -946,8 +951,11 @@ class LiveStreamDownloader:
             self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True)
 
             # Remove unnecessary items for info.json used purely for url refresh
-            self.trim_info_json(info_dict=self.refresh_json, keys_to_keep={"id", "formats", "_type","title","extractor","extractor_key","webpage_url", "live_status" })
             self.remove_format_segment_playlist_from_info_dict(self.refresh_json)
+
+            self.refresh_json.pop("thumbnails", None)
+            self.refresh_json.pop("tags", None)
+            self.refresh_json.pop("description", None)
 
             # Add refresh time for reference
             self.refresh_json["refresh_time"] = time.time()                   
