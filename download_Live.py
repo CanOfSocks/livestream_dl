@@ -544,6 +544,10 @@ class LiveStreamDownloader:
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         result = ydl.process_ie_result(info_dict)
+                        if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
+                            livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None)
+                        
+                        
                         #result = ydl.download_with_info_file(info_dict)
                         #result = ydl._writesubtitles(info_dict, )
                 except Exception as e:
@@ -556,6 +560,8 @@ class LiveStreamDownloader:
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.process_ie_result(info_dict)
+                    if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
+                        livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None)
                     #result = ydl.download_with_info_file(info_dict)
                     #result = ydl._writesubtitles()
             except Exception as e:
