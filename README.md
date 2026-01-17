@@ -43,9 +43,10 @@ Both alternatives are disabled by default and must be enabled
 To use, execute `runner.py` with python with any additional options.
 ```
 usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--ext EXT] [--temp-folder TEMP_FOLDER] [--write-thumbnail]
-                 [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--force-recover-merge] [--recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE] [--database-in-memory] [--direct-to-ts]
-                 [--wait-for-video [WAIT_FOR_VIDEO ...]] [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS]       
-                 [--dash] [--m3u8] [--force-m3u8] [--proxy [PROXY]] [--ipv4 | --ipv6] [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line] [--monitor-channel] [--members-only] [--upcoming-lookahead UPCOMING_LOOKAHEAD] [--playlist-items PLAYLIST_ITEMS]
+                 [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--force-recover-merge] [--recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE] [--wait-limit WAIT_LIMIT]
+                 [--database-in-memory] [--direct-to-ts] [--wait-for-video WAIT_FOR_VIDEO] [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--clean-info-json] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command]      
+                 [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--dash] [--m3u8] [--force-m3u8] [--proxy [PROXY]] [--ipv4 | --ipv6] [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line] [--monitor-channel] [--members-only] [--upcoming-lookahead UPCOMING_LOOKAHEAD]
+                 [--playlist-items PLAYLIST_ITEMS]
                  [ID]
 
 Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)
@@ -85,15 +86,19 @@ options:
                         Forces merging to final file even if all segements could not be recovered
   --recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE
                         Maximum number of fragments that fail to download (exceed the retry limit) and not throw an error. May cause unexpected issues when merging to .ts file and remuxing. Default: 0
+  --wait-limit WAIT_LIMIT
+                        Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or    
+                        'post_live' status. Default: 0
   --database-in-memory  Keep stream segments database in memory. Requires a lot of RAM (Not recommended)
   --direct-to-ts        Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options
-  --wait-for-video [WAIT_FOR_VIDEO ...]
-                        (min, max) Minimum and maximum interval to wait for a video
+  --wait-for-video WAIT_FOR_VIDEO
+                        Wait time (int) or Minimum and maximum (min:max) interval to wait for a video
   --json-file JSON_FILE
                         Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs
   --remove-ip-from-json
                         Replaces IP entries in info.json with 0.0.0.0
   --clean-urls          Removes stream URLs from info.json that contain potentially identifiable information. These URLs are usually useless once they have expired
+  --clean-info-json     Enables yt-dlp's 'clean-info-json' option
   --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Set the logging level. Default is INFO.
   --no-console          Do not log messages to the console.
