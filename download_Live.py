@@ -268,7 +268,7 @@ class LiveStreamDownloader:
                 # Video + Audio
 
                 
-                if resolution.lower() != "audio_only":
+                if not resolution.lower() in ("audio_only", "ba"):
                     
                     #Video
                     self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False)
@@ -544,8 +544,11 @@ class LiveStreamDownloader:
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         result = ydl.process_ie_result(info_dict)
-                        if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
-                            livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None)
+                        try:
+                            if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
+                                livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None)
+                        except:
+                            self.logger.exception("Unable to find live chat path")
                         
                         
                         #result = ydl.download_with_info_file(info_dict)
@@ -560,8 +563,13 @@ class LiveStreamDownloader:
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.process_ie_result(info_dict)
-                    if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
-                        livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None)
+                    try:
+                        if result.get('requested_subtitles', {}):
+                            self.logger.warning(json.dumps(result.get('requested_subtitles')))
+                        if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
+                            livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None)
+                    except:
+                        self.logger.exception("Unable to find live chat path")
                     #result = ydl.download_with_info_file(info_dict)
                     #result = ydl._writesubtitles()
             except Exception as e:
@@ -752,7 +760,7 @@ class LiveStreamDownloader:
                     mime_type, _ = guess(file_names.get('thumbnail'))
 
                     # If not jpeg or png, convert to png
-                    if not str(mime_type) in ["image/jpeg", "image/png"]:
+                    if not str(mime_type) in ("image/jpeg", "image/png"):
                         self.logger.info("{0} is not a JPG or PNG file, converting to png".format(file_names.get('thumbnail').name))
                         png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
 
@@ -768,7 +776,7 @@ class LiveStreamDownloader:
                             
                         except subprocess.CalledProcessError as e:
                             self.logger.error(e.stderr)
-                            self.logger.fatal(e)
+                            self.logger.critical(e)
                 
                     thumbnail = index    
                     if not ext.lower() == ".mkv": # Don't add input file for mkv, use attach later
@@ -823,7 +831,7 @@ class LiveStreamDownloader:
                 self.logger.debug("FFmpeg STDERR: {0}".format(result.stderr))
             except subprocess.CalledProcessError as e:
                 self.logger.error(e.stderr)
-                self.logger.fatal(e)
+                self.logger.critical(e)
                 raise e
             #print(result.stdout)
             #print(result.stderr)
@@ -2035,7 +2043,7 @@ class DownloadStream:
         return False
 
     def create_connection(self, file):
-        conn = sqlite3.connect(file)
+        conn = sqlite3.connect(file, timeout=30)
 
         # Database connection optimization (when not in memory)
         if not self.database_in_memory:
@@ -2861,7 +2869,7 @@ class StreamRecovery(DownloadStream):
                 self.check_Expiry()
 
                 if (not self.stream_urls) or (self.expires and time.time() > self.expires):
-                    self.logger.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
+                    self.logger.critical("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
                     self.commit_batch()
@@ -2925,7 +2933,7 @@ class StreamRecovery(DownloadStream):
                     break
                 
                 elif self.is_403 and self.expires is not None and time.time() > self.expires:
-                    self.logger.fatal("URL(s) have expired and failures being detected, ending...")
+                    self.logger.critical("URL(s) have expired and failures being detected, ending...")
                     break               
                 
                 elif self.is_401:
@@ -3073,7 +3081,7 @@ class StreamRecovery(DownloadStream):
         self.check_Expiry()  
 
         if (not self.stream_urls) or (self.expires and time.time() > self.expires):
-            self.logger.fatal("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
+            self.logger.critical("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(self.expires).strftime('%Y-%m-%d %H:%M:%S')
             self.commit_batch(self.conn)
