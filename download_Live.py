@@ -728,7 +728,7 @@ class LiveStreamDownloader:
                 audio = index
                 index += 1
                 if video is None and ext is None:
-                    ext = '.ogg'
+                    ext = '.mka'
 
             # Determine output path
             if options.get('filename') is not None:
