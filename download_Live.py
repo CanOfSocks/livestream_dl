@@ -77,6 +77,7 @@ class LiveStreamDownloader:
         download_params.update({"download_function": self.download_stream})
         file = None
         filetype = None
+        
         with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                                         yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
                                         download_params=download_params, livestream_coordinator=self, **kwargs) as downloader:       
@@ -91,7 +92,7 @@ class LiveStreamDownloader:
                 self.file_names['databases'].append(database_file)
 
             file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
-            filetype = downloader.type
+            filetype = downloader.type        
 
         self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
             str(filetype).lower(): file
@@ -979,29 +980,38 @@ class LiveStreamDownloader:
             return self.refresh_json, self.live_status
         
 class FileInfo(Path):
-    _file_type = None  # Class attribute for storing the file type    
+    _file_type = None
     _format = None
 
-    def __new__(cls, *args, file_type=None, format=None, **kwargs):
-        # Call the parent's constructor
+    def __new__(cls, *args, **kwargs):
+        # 1. Pop custom arguments so they don't go to Path.__new__
+        file_type = kwargs.pop("file_type", None)
+        format = kwargs.pop("format", None)
+        
+        # 2. Create the instance using Path's machinery
         instance = super().__new__(cls, *args, **kwargs)
-        # Set the file_type attribute if provided
+        
+        # 3. Store the values on the instance
         instance._file_type = file_type
         instance._format = format
         return instance
 
+    def __init__(self, *args, **kwargs):
+        # 4. Overriding __init__ is CRITICAL.
+        # We must NOT pass file_type or format to super().__init__
+        kwargs.pop("file_type", None)
+        kwargs.pop("format", None)
+        super().__init__(*args, **kwargs)
+
     @property
     def file_type(self):
-        # Getter for file_type
         return self._file_type
 
     @file_type.setter
     def file_type(self, value):
-        # Setter for file_type
         self._file_type = value
 
     def __repr__(self):
-        # Custom string representation
         return f"{super().__repr__()} (file_type={self._file_type})"
     
     def to_dict(self):
@@ -1047,7 +1057,14 @@ class DownloadStream:
 
         self.wait_limit = kwargs.get("wait_limit", 0)
 
-        self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
+        self.stream_type = None
+
+        if resolution == "audio_only":
+            self.stream_type = "audio"
+        else:
+            self.stream_type = "video"
+
+        self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type) 
 
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
@@ -1933,7 +1950,7 @@ class DownloadStream:
         try:
             resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
             self.logger.debug("Searching for new manifest of same format {0}".format(resolution))
-            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type)
             if temp_stream_url is not None:
                 #resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
                 
@@ -1972,9 +1989,9 @@ class DownloadStream:
             self.logger.warning("Unable to find stream of same format ({0}) for {1}".format(resolution, self.id))
             
         try:
-            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
+            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type) is not None:
                 self.logger.debug("Searching for new manifest of same resolution {0}".format(resolution))
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type)
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     self.logger.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
@@ -2007,9 +2024,9 @@ class DownloadStream:
             self.logger.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
 
         try:
-            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) is not None:
+            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type) is not None:
                 self.logger.debug("Searching for new best stream")
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type)
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
@@ -2308,7 +2325,7 @@ class DownloadStream:
                 #resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
                 resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
                 #stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8) 
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type) 
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -2702,13 +2719,18 @@ class StreamRecovery(DownloadStream):
                     break            
             self.stream_urls = stream_urls          
         else:
+            if resolution == "audio_only":
+                self.stream_type = "audio"
+            else:
+                self.stream_type = "video"
             self.stream_urls = YoutubeURL.Formats().getFormatURL(
                 info_json=info_dict, 
                 resolution=resolution,  
                 sort=self.yt_dlp_sort, 
                 get_all=True, 
                 include_dash=False,
-                include_m3u8=False
+                include_m3u8=False, 
+                stream_type=self.stream_type
             )
 
         if not self.stream_urls:

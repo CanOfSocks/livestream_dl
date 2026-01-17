@@ -4,6 +4,7 @@ from random import shuffle
 
 from yt_dlp import YoutubeDL
 
+from typing import Literal, Optional
 
 __all__ = ["YoutubeURL", "Formats"]
 
@@ -87,9 +88,13 @@ class YoutubeURL:
     base: str
     format_id:str
 
-    def __init__(self, url: str, protocol: str="unknown", format_id: str = None, logger: logging = logging.getLogger()):
+    def __init__(self, url: str, protocol: str="unknown", format_id: str = None, logger: logging = logging.getLogger(), vcodec=None, acodec=None):
         self.logger = logger
         self.protocol = protocol
+
+        self.vcodec = None if str(vcodec).lower() == 'none' else vcodec
+        self.acodec = None if str(acodec).lower() == 'none' else acodec
+
         # If not a dash URL, convert to "parameter" style instead of "restful" style
         if self.protocol == "http_dash_segments":
             self.base = url
@@ -212,7 +217,7 @@ class Formats:
         self.logger = logger
         
 
-    def getFormatURL(self, info_json, resolution, sort=None, get_all=False, raw=False, include_dash=True, include_m3u8=False, force_m3u8=False, logger: logging = logging.getLogger()) -> YoutubeURL: 
+    def getFormatURL(self, info_json, resolution, sort=None, get_all=False, raw=False, include_dash=True, include_m3u8=False, force_m3u8=False, logger: logging = logging.getLogger(), stream_type: Optional[Literal["video", "audio"]] = None) -> YoutubeURL: 
         self.logger = logger    
         resolution = str(resolution).strip()
         
@@ -241,6 +246,7 @@ class Formats:
         
         #if original_res != "audio_only":
         #    resolution = "({0})[vcodec!=none]".format(resolution)
+        #print(resolution)
         
         ydl_opts = {
             'quiet': True,
@@ -262,29 +268,43 @@ class Formats:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.process_ie_result(info_json)
             format = info.get('requested_downloads', info.get('requested_formats', info.get('url',[{}])))
-
-            #Handling for known issues with m3u8
-            if (not format[0].get('url', None)) and info.get('url', None):                
-                format[0]['url'] = info.get('url')
-                format[0]['protocol'] = info.get('protocol')
-                self.logger.debug("Updated format[0] url to: {0}".format(info.get('url', None)))
-
             import json
+            #print(json.dumps(format))
+
+            format = format[0]
+
+            if format.get('requested_formats', None):
+                if stream_type == "video":
+                    format = next((d for d in format.get('requested_formats') if d.get('vcodec') != 'none'), {})
+                elif stream_type == "audio":
+                    format = next((d for d in format.get('requested_formats') if d.get('acodec') != 'none'), {})
+                else:
+                    format = next((d for d in format.get('requested_formats') if (d.get('vcodec') != 'none' or d.get('acodec') != 'none')), {})
+
+                if not format:
+                    raise ValueError("No stream matches resolution/format input with a video or audio stream")
+            #Handling for known issues with m3u8
+            if (not format.get('url', None)) and info.get('url', None):                
+                format['url'] = info.get('url')
+                format['protocol'] = info.get('protocol')
+                self.logger.debug("Updated format url to: {0}".format(info.get('url', None)))
+
+            
             self.logger.debug("Formats: {0}".format(json.dumps(format,indent=4)))
-            if format[0].get('protocol', "") == "http_dash_segments":
+            if format.get('protocol', "") == "http_dash_segments":
                 #format_url = format[0].get('fragment_base_url')
-                format_obj = YoutubeURL(format[0].get('fragment_base_url'), format[0].get('protocol'), format[0].get('format_id'), logger=self.logger)
+                format_obj = YoutubeURL(format.get('fragment_base_url'), format.get('protocol'), format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                 #format_url = str(format_obj)
-            elif format[0].get('protocol', "") == "m3u8_native":      
+            elif format.get('protocol', "") == "m3u8_native":      
                 #format_url = video_base_url(self.getM3u8Url(format[0].get('url')))  
-                format_obj = YoutubeURL(self.getM3u8Url(format[0].get('url')), format[0].get('protocol'), format[0].get('format_id'), logger=self.logger)
+                format_obj = YoutubeURL(self.getM3u8Url(format.get('url')), format.get('protocol'), format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                 #format_url = str(format_obj)
-                if not format[0].get('format_id', None):
-                    format[0]['format_id'] = str(format_obj.itag).strip() 
+                if not format.get('format_id', None):
+                    format['format_id'] = str(format_obj.itag).strip() 
                 if (not self.protocol) and format_url:
                     self.protocol = format_obj.protocol
             else:
-                format_obj = YoutubeURL(format[0].get('url'), format[0].get('protocol'), format[0].get('format_id'), logger=self.logger)
+                format_obj = YoutubeURL(format.get('url'), format.get('protocol'), format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                 #format_url = video_base_url(format[0].get('url'))
                 #format_url = str(format_obj)
             format_id = format_obj.format_id
@@ -367,7 +387,7 @@ class Formats:
             if current_protocol == 'http_dash_segments':
                 url = ytdlp_format.get('fragment_base_url')
                 if not url: continue
-                yt_url = YoutubeURL(url=url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None))
+                yt_url = YoutubeURL(url=url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None), vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                 itag = yt_url.itag
                 if format_id == itag: 
                     urls.append(yt_url) # Append the matching URL
@@ -380,7 +400,7 @@ class Formats:
                 try:
                     # Fetch all stream URLs from the playlist
                     for stream_url in self.getM3u8Url(m3u8_playlist_url, first_only=False):
-                        yt_url = YoutubeURL(url=stream_url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None))
+                        yt_url = YoutubeURL(url=stream_url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None), vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                         itag = yt_url.itag
                         if format_id == itag: 
                             # Append the matching URL (using your original video_base_url call)
@@ -392,7 +412,7 @@ class Formats:
                 url = ytdlp_format.get('url')
                 if not url: 
                     continue
-                yt_url = YoutubeURL(url=url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None))
+                yt_url = YoutubeURL(url=url, protocol=current_protocol, format_id=ytdlp_format.get('format_id', None), vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                 itag = yt_url.itag 
                 if format_id == itag:
                     # Append the matching URL (using your original video_base_url call)
