@@ -1206,7 +1206,7 @@ class DownloadStream:
         # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-            httpx.Client(timeout=30, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
+            httpx.Client(timeout=10, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
             submitted_segments = set()
             future_to_seg = {}
             
@@ -1460,7 +1460,7 @@ class DownloadStream:
 
         for attempt in range(total_retries + 1):
             if client is None or client.is_closed:
-                client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
+                client = httpx.Client(timeout=10, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
             try:
                 self.check_kill() 
                 response = client.get(segment_url)
@@ -1569,7 +1569,7 @@ class DownloadStream:
     
     def get_Headers(self, url, client: httpx.Client=None):
         if client is None or client.is_closed:
-            client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
+            client = httpx.Client(timeout=10, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
         try:
             # Send a GET request to a URL
             #response = requests.get(url, timeout=30, proxies=self.proxies)
@@ -2122,7 +2122,7 @@ class DownloadStreamDirect(DownloadStream):
         wait = 0
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"{self.id}-{self.format}") as executor,
-            httpx.Client(timeout=30, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
+            httpx.Client(timeout=10, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
             
             # Trackers for optimistic segment downloads 
             optimistic_fails_max = 10
@@ -2212,14 +2212,13 @@ class DownloadStreamDirect(DownloadStream):
                             # Optimization: Use f.tell() instead of os.path.getsize()
                             # f.tell() returns the current file position, which is the new
                             # file size after writing and truncating. This is much faster.
-                            self.state['file_size'] = f.tell()    
-
-                            if self.livestream_coordinator:
-                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state.get('last_written', 0)
-                                self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state.get('file_size', 0)                       
+                            self.state['file_size'] = f.tell()                         
                             
                             self.logger.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
                     self._save_state()
+                    if self.livestream_coordinator:
+                        self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state.get('last_written', 0)
+                        self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state.get('file_size', 0) 
                     
                 elif segment_retries.get(self.state.get('last_written', 0) + 1, 0) > self.fragment_retries:
                     self.logger.warning("({1}) Segment {0} has exceeded maximum segment retries, advancing count to save data...".format(self.state.get('last_written', 0), self.format))
@@ -2229,7 +2228,7 @@ class DownloadStreamDirect(DownloadStream):
                 downloaded_segments = dict((k, v) for k, v in downloaded_segments.items() if k >= self.state.get('last_written',0))
 
                 # Determine segments to download. Sort into a list as direct to ts relies on segments to be written in order
-                segments_to_download = sorted(set(range(self.state['last_written'] + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries))
+                segments_to_download = sorted(set(range(self.state.get('last_written',-1) + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries))
 
                 optimistic_seg = max(self.latest_sequence, self.state.get('last_written',0)) + 1  
                                         
@@ -2558,7 +2557,7 @@ class StreamRecovery(DownloadStream):
         last_print = time.time()
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-              httpx.Client(timeout=30, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
+              httpx.Client(timeout=10, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
             submitted_segments = set()
             future_to_seg = {}
             
@@ -2818,7 +2817,7 @@ class StreamRecovery(DownloadStream):
     def get_Headers(self, url, client=None):
         # Overrides base method to add 401 handling
         if client is None:
-            client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
+            client = httpx.Client(timeout=10, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
         try:
             response = requests.get(url, timeout=30, proxies=self.proxies)
             if response.status_code == 200 or response.status_code == 204:
