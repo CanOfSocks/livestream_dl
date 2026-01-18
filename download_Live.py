@@ -237,7 +237,7 @@ class LiveStreamDownloader:
         if download_folder:    
             os.makedirs(download_folder, exist_ok=True)
             
-
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor: 
             done = not_done = set() 
             try: 
@@ -246,7 +246,7 @@ class LiveStreamDownloader:
                 auxiliary_thread = executor.submit(self.download_auxiliary_files, info_dict=info_dict, options=options)
                 futures.add(auxiliary_thread)
                 
-                live_chat_thread = None            
+                live_chat_thread = None
                 if options.get('live_chat', False) is True:
                     # Trim live chat info json to minimums for live chat
                     #live_chat_info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"_type","id","title","extractor","extractor_key","webpage_url","subtitles"})
@@ -329,8 +329,13 @@ class LiveStreamDownloader:
                     #else:
                     #    time.sleep(0.9)
                     self.print_stats(options=options)
-                
-                
+
+                if live_chat_thread and live_chat_thread.is_alive():
+                    self.logger.info("Media downloads finished, waiting for live chat to end...")
+                    if options.get('stop_chat_when_done', None):
+                        self.chat_timeout = time.time()
+                    while live_chat_thread.is_alive() and not (self.kill_all.is_set() or self.kill_this.is_set()):
+                        time.sleep(0.1)
                 
             except KeyboardInterrupt as e:
                 self.kill_this.set()
@@ -343,7 +348,7 @@ class LiveStreamDownloader:
                 executor.shutdown(wait=False,cancel_futures=True)
                 self.logger.debug("Shutdown all threads")
                 self.stats["status"] = "Cancelled"
-                raise
+                raise        
                 
         self.stats["status"] = "Muxing"
         self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options)
@@ -457,7 +462,7 @@ class LiveStreamDownloader:
         self.logger.info("Finished moving files from temporary directory to output destination")
 
     def download_live_chat(self, info_dict, options):
-        import zipfile
+        
         
         if options.get('filename') is not None:
             filename = options.get('filename')
@@ -469,27 +474,29 @@ class LiveStreamDownloader:
         else:
             base_output = filename
 
-        class YTDLP_Chat_logger():
-            def __init__(self, logger):
-                self.logger = logger
+        class YTDLP_Chat_logger(YoutubeURL.YTDLPLogger):        
+            def __init__(self, logger: logging = logging.getLogger()):
+                super().__init__(logger=logger)
 
+            def prefix(self, msg: str):
+                if msg.startswith("[live-chat] "):
+                    return msg
+                else:
+                    return "[live-chat] {0}".format(msg)
             def debug(self, msg):
-                self.logger.debug("(yt-dlp chat): {0}".format(msg))
-
+                super().debug(self.prefix(msg))
             def info(self, msg):
-                self.logger.info("(yt-dlp chat): {0}".format(msg))
-
+                super().info(self.prefix(msg))
             def warning(self, msg):
-                self.logger.warning("(yt-dlp chat): {0}".format(msg))
-
+                super().warning(self.prefix(msg))
             def error(self, msg):
-                self.logger.error("(yt-dlp chat): {0}".format(msg))
+                super().error(self.prefix(msg))
 
         
         ydl_opts = {
             'skip_download': True,               # Skip downloading video/audio
             'logger': YTDLP_Chat_logger(logger=self.logger),
-            'quiet': True,
+            #'quiet': True,
             'cookiefile': options.get('cookies', None),
             'retries': 25,
             'concurrent_fragment_downloads': 3,
@@ -497,19 +504,19 @@ class LiveStreamDownloader:
             'writesubtitles': True,              # Extract subtitles (live chat)
             'subtitlesformat': 'json',           # Set format to JSON
             'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
-            'concurrent_fragment_downloads': 2,
             'outtmpl': base_output          # Save to a JSON file        
         }
         self.logger.debug(options.get('ytdlp_options', {}))
         ydl_opts.update(options.get('ytdlp_options', {}))
         
         livechat_filename = base_output + ".live_chat.json"
-        zip_filename = base_output + ".live_chat.zip"
+        
         
         self.logger.info("Downloading live chat to: {0}".format(livechat_filename))
         # Run yt-dlp with the specified options
         # Don't except whole process on live chat fail
-        
+        class ChatDownloaderParsingError(ValueError):
+            pass
         try:
             import chat_downloader
             from chat_downloader import ChatDownloader
@@ -540,6 +547,9 @@ class LiveStreamDownloader:
             # Temporary fallback due to know issue of chat-downloader not working after youtube changes
             except chat_downloader.errors.ParsingError as e:
                 self.logger.exception("Unable to parse live chat using chat-downloader, using yt-dlp")
+                raise ChatDownloaderParsingError(e)
+                """
+                
                 if options.get('proxy', None) is not None:
                     ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
                 try:
@@ -556,21 +566,25 @@ class LiveStreamDownloader:
                         #result = ydl._writesubtitles(info_dict, )
                 except Exception as e:
                     self.logger.exception("\033[31m{0}\033[0m".format(e))
+                """
             
-        except ImportError as e:
-            self.logger.warning("Unable to import chat-downloader, using yt-dlp")
+        except (ImportError,ChatDownloaderParsingError) as e:
+            if isinstance(e, ImportError):
+                self.logger.warning("Unable to import chat-downloader, using yt-dlp")
+
             if options.get('proxy', None) is not None:
                 ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.process_ie_result(info_dict)
                     try:
-                        if result.get('requested_subtitles', {}):
-                            self.logger.warning(json.dumps(result.get('requested_subtitles')))
+                        
+                        #if result.get('requested_subtitles', {}):
+                        #    self.logger.warning(json.dumps(result.get('requested_subtitles')))
                         if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
-                            livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None)
-                    except:
-                        self.logger.exception("Unable to find live chat path")
+                            livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath')
+                    except Exception as e:
+                        self.logger.warning("Unable to find live chat path, remaining with existing path")
                     #result = ydl.download_with_info_file(info_dict)
                     #result = ydl._writesubtitles()
             except Exception as e:
@@ -592,6 +606,8 @@ class LiveStreamDownloader:
 
         
         try:
+            import zipfile
+            zip_filename = base_output + ".live_chat.zip"
             with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
                 zipf.write(livechat_filename, arcname=os.path.basename(livechat_filename))
             os.remove(livechat_filename)
@@ -1057,14 +1073,14 @@ class DownloadStream:
 
         self.wait_limit = kwargs.get("wait_limit", 0)
 
-        self.stream_type = None
+        self.type = None
 
         if resolution == "audio_only":
-            self.stream_type = "audio"
+            self.type = "audio"
         else:
-            self.stream_type = "video"
+            self.type = "video"
 
-        self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type) 
+        self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) 
 
         if self.stream_url is None:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
@@ -1117,7 +1133,7 @@ class DownloadStream:
         self.recovery_thread_multiplier = recovery_thread_multiplier
         
         self.cookies = cookies
-        self.type = None
+        #self.type = None
         self.ext = None     
 
         self.following_manifest_thread = None
@@ -1413,7 +1429,7 @@ class DownloadStream:
     
 
     def download_segment(self, segment_url, segment_order, client: httpx.Client=None, immediate_403s=False):
-        if client is None:
+        if client is None or client.is_closed:
             client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
         total_retries = self.fragment_retries
         backoff_factor = 1
@@ -1462,392 +1478,7 @@ class DownloadStream:
                 sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
                 time.sleep(sleep_time)
 
-    # ---------------------------------------------------------
-    # 1. The Sync Bridge 
-    # ---------------------------------------------------------
-    '''
-    def live_dl(self):
-        """
-        Synchronous wrapper that launches the async event loop.
-        """
-        try:
-            return asyncio.run(self._live_dl_async())
-        except KeyboardInterrupt:
-            self.logger.info("Download interrupted by user.")
-            return False
-
-    # ---------------------------------------------------------
-    # 2. The Main Async Logic
-    # ---------------------------------------------------------
-    async def _live_dl_async(self):
-        self.logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
-        
-        # --- Initialization ---
-        self.already_downloaded = self.segment_exists_batch()
-        self.conn.execute('BEGIN TRANSACTION')
-        
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]['status'] = "recording"
-
-        # --- Tracking Variables ---
-        optimistic_fails_max = 10
-        optimistic_fails = 0
-        latest_downloaded_segment = -1
-        wait = 0
-        uncommitted_inserts = 0
-        
-        # Priority Queue: Stores (priority, seg_num). 0=High, 1=Low
-        pending_segments_pq = []
-        submitted_segments = set() # Track what is in Queue OR Currently Running
-        
-        # Async Task Management
-        # Maps {Task object: segment_number}
-        active_tasks = {} 
-        
-        # Initial Population
-        initial_segments = set(range(0, self.latest_sequence + 1)) - self.already_downloaded
-        for seg in initial_segments:
-            heapq.heappush(pending_segments_pq, (1, seg))
-            submitted_segments.add(seg)
-
-
-        # Extract the proxy string from the requests-style dict
-        httpx_proxy = None
-        if isinstance(self.proxies, dict):
-            # Get the URL, but ensure we don't pass the dictionary itself
-            httpx_proxy = self.proxies.get("https") or self.proxies.get("http")
-        else:
-            httpx_proxy = self.proxies
-
-        # Important: Remove the 'h' from socks5h if it exists for httpx compatibility
-        if httpx_proxy and httpx_proxy.startswith("socks5h"):
-            httpx_proxy = httpx_proxy.replace("socks5h", "socks5", 1)
-
-        current_level = self.logger.getEffectiveLevel()            
-
-        # Set log level of httpx to one level above other loggers
-        if current_level == logging.NOTSET:
-            target_level = logging.WARNING # Default fallback
-        else:
-            target_level = min(current_level + 10, logging.ERROR)
-
-        logging.getLogger("httpx").setLevel(target_level)
-        logging.getLogger("httpcore").setLevel(target_level)
-
-        # Connection Limits
-        # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
-        limits = httpx.Limits(max_keepalive_connections=self.max_workers, max_connections=self.max_workers, keepalive_expiry=15)
-        async with httpx.AsyncClient(proxy=self.proxies, limits=limits, timeout=30.0, http1=True, http2=self.http2_available()) as client:
-            segment_retries = {}
-            while True:
-                # --- A. External Checks (Sync) ---
-                self.check_kill(tasks=active_tasks.keys()) # Note: check_kill might need to be adapted if it raises exceptions
-                if self.refresh_Check() is True:
-                    break
-                
-                if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type) is None:
-                    self.livestream_coordinator.stats[self.type] = {}
-
-                # --- B. Optimistic Segment Logic ---
-                optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1
-                
-                # Check if we should add optimistic segment
-                if (self.max_workers > 1 and
-                    optimistic_fails < optimistic_fails_max and 
-                    optimistic_seg not in submitted_segments and 
-                    optimistic_seg not in self.already_downloaded):
-                    
-                    # If idle, small wait to allow segment to appear on server
-                    if not pending_segments_pq and not active_tasks:
-                         await asyncio.sleep(max(getattr(self, 'estimated_segment_duration', 2), 2) + 0.1)
-
-                    self.logger.debug(f"\033[93mQueuing optimistic segment {optimistic_seg} (Priority 0) (Fails {optimistic_fails})\033[0m")
-                    heapq.heappush(pending_segments_pq, (0, optimistic_seg))
-                    submitted_segments.add(optimistic_seg)
-                    wait = 0
-
-                # --- C. Submit Tasks from Queue ---
-                # Fill up the active slots with highest priority items
-                while len(active_tasks) < max(10, self.max_workers*2) and pending_segments_pq:
-                    priority, seg_num = heapq.heappop(pending_segments_pq)
-                    
-                    # Double check existence (race condition safety)
-                    if seg_num in self.already_downloaded:
-                        continue
-
-                    # Create and track the async task
-                    task = asyncio.create_task(
-                        self._download_segment_httpx(client, self.stream_url.segment(seg_num), seg_num)
-                    )
-                    active_tasks[task] = seg_num
-                # Ensure done is defined and reset
-                done = set()
-                # --- D. Wait for Results ---
-                if active_tasks:
-                    # Wait for the FIRST task to complete to maximize throughput
-                    done, pending = await asyncio.wait(
-                        active_tasks.keys(), 
-                        return_when=asyncio.FIRST_COMPLETED,
-                        timeout=1.0
-                    )
-                    """
-                else:
-                    # IDLE STATE: No tasks running, queue empty.
-                    wait += 1
-                    self.logger.debug(f"No active downloads. Waiting... ({wait})")
-                    
-                    if wait > 20:
-                        self.logger.debug("Wait time exceeded, ending download...")
-                        break
-                    elif wait > 10:
-                        # --- Refresh / Private Logic ---
-                        if self.is_private:
-                             self.logger.debug("Video private, ending...")
-                             break
-                        
-                        refresh = self.refresh_url() # This is sync!
-                        if refresh is True:
-                            self.logger.info("Video finished via new manifest")
-                            break
-                        elif refresh is False:
-                            break
-
-                    await asyncio.sleep(2) # Non-blocking sleep
-                    self.update_latest_segment() # Sync call to update self.latest_sequence
-                    done = set() # Empty set for next loop
-                    """
-
-                # --- E. Process Completed Results ---
-                for task in done:
-                    seg_num = active_tasks.pop(task)
-                    
-                    try:
-                        # Retrieve result from the task
-                        head_seg_num, segment_data, _, status, headers = task.result()
-                    except Exception as e:
-                        self.logger.error(f"Task exception for {seg_num}: {e}")
-                        head_seg_num, segment_data, _, status, headers = -1, None, seg_num, None, None
-
-                    if seg_num >= optimistic_seg and (status is None or status != 200):
-                        optimistic_fails += 1
-                        self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
-                        
-                    elif seg_num >= optimistic_seg and status == 200:
-                        optimistic_fails = 0
-
-                    if head_seg_num > self.latest_sequence:
-                        self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
-                        self.latest_sequence = head_seg_num
-                        if self.livestream_coordinator:
-                            self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
-                        
-                    if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
-                    
-                    # -- Success --
-                    if status == 200 or (status == 204 and segment_data is not None and seg_num < optimistic_seg):
-                        
-                        if seg_num >= latest_downloaded_segment:
-                            latest_downloaded_segment = seg_num
-                            
-
-                        if segment_data:
-                            # DB Insert (Synchronous - OK because it's fast)
-                            self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                            uncommitted_inserts += 1
-                            self.already_downloaded.add(seg_num)                         
-
-                        if self.livestream_coordinator:
-                            self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
-
-                        segment_retries.pop(seg_num, None)
-
-                    # -- Failure --
-                    else:
-                        if seg_num >= optimistic_seg:
-                            optimistic_fails += 1
-                        
-                        segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                        self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
-                        # Simple retry logic: if it failed, remove from submitted so it can be picked up again
-                        # (You can implement complex retry counters here if needed)
-                    submitted_segments.discard(seg_num)
-
-                # --- F. DB Commit Batching ---
-                if uncommitted_inserts >= self.batch_size or (uncommitted_inserts > 0 and not active_tasks):
-                    self.commit_batch(self.conn) # Sync call
-                    uncommitted_inserts = 0
-                    self.conn.execute('BEGIN TRANSACTION')
-
-                # Add segments
-                new_segments = set(range(0, self.latest_sequence + 1)) - self.already_downloaded - submitted_segments - set(v > self.fragment_retries for v in segment_retries.values())
-                for seg in new_segments:
-                    heapq.heappush(pending_segments_pq, (1, seg))
-                    submitted_segments.add(seg)
-
-                # Check current state variables
-                len_segments_to_download = len(pending_segments_pq)
-                len_future_to_seg = len(active_tasks)
-
-                # 1. IDLE / NO FRAGMENTS AVAILABLE
-                if len_segments_to_download <= 0 and len_future_to_seg <= 0:
-                    wait += 1
-                    self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
-
-                    if wait > 20:
-                        self.logger.debug("Wait time for new fragment exceeded, ending download...")
-                        break
-                    
-                    elif wait > 10:
-                        if self.is_private:
-                            self.logger.debug("Video is private and no more segments are available. Ending...")
-                            break
-                        elif self.live_status in ["was_live", "post_live"]:
-                            self.logger.info("Livestream has finished downloading")
-                            break
-                        else:
-                            refresh = self.refresh_url()
-                            if refresh is False:
-                                break
-                            elif refresh is True:
-                                self.logger.info("Video finished downloading via new manifest")
-                                break
-                    
-                    # Async Sleep replacement for time.sleep(10)
-                    await asyncio.sleep(10)
-                    self.update_latest_segment()
-                    
-                    # Re-populate queue after update
-                    new_segments = set(range(0, self.latest_sequence + 1)) - self.already_downloaded - submitted_segments
-                    for seg in new_segments:
-                        heapq.heappush(pending_segments_pq, (1, seg))
-                        submitted_segments.add(seg)
-                    
-                    continue
-
-                # 2. PRIVATE & ACTIVE THREADS (Wait for drain)
-                elif len_segments_to_download > 0 and self.is_private and len_future_to_seg > 0:
-                    self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
-                    await asyncio.sleep(5)
-                    continue
-
-                # 3. PRIVATE & QUEUED SEGMENTS (Stream Recovery)
-                elif len_segments_to_download > 0 and self.is_private:
-                    if self.stream_url.protocol == "https":
-                        self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
-                        
-                        # Commit and Close DB before long wait
-                        self.commit_batch(self.conn)
-                        self.close_connection()
-
-                        # 5 Minute Countdown
-                        for i in range(5, 0, -1):
-                            self.logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
-                            await asyncio.sleep(60) # Async sleep ensures we handle signals if needed
-
-                        self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
-                        
-                        # --- Run Recovery Synchronously ---
-                        # This blocks the loop, which is fine as we are leaving the loop anyway or resetting
-                        try:
-                            if self.livestream_coordinator:
-                                self.livestream_coordinator.recover_stream(
-                                    info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, 
-                                    max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))), self.recovery_thread_multiplier), 
-                                    file_name=self.file_base_name, cookies=self.cookies, retries=self.fragment_retries, 
-                                    stream_urls=self.stream_urls, proxies=self.proxies, no_merge=True
-                                )
-                            else:
-                                with StreamRecovery(
-                                    info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, 
-                                    max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))), self.recovery_thread_multiplier), 
-                                    file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, 
-                                    stream_urls=self.stream_urls, proxies=self.proxies
-                                ) as downloader:
-                                    downloader.live_dl()
-                                    downloader.close_connection()
-                        except Exception as e:
-                            self.logger.exception("An error occurred while trying to recover the stream")
-
-                        # Recovery done, re-open DB and return True (matches original logic)
-                        await asyncio.sleep(1)
-                        self.conn = self.create_connection(self.temp_db_file)
-                        return True
-
-                    else:
-                        self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
-                        break
-                
-                # 4. GIVE UP (All remaining segments have exceeded retry limit)
-                elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
-                    self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
-                    refresh = self.refresh_url()
-                    if self.refresh_url() is True:
-                        self.logger.info("Video finished downloading via new manifest")
-                        break
-                    elif self.is_private or refresh is False:
-                        self.logger.warning("Failed to refresh URL or stream is private, ending...")
-                        break
-                    elif self.live_status in ["was_live", "post_live"]:
-                        self.logger.info("Livestream has finished downloading")
-                    else:
-                        segment_retries = {}
-
-                # 5. RESET WAIT (If we have active tasks or segments and aren't private)
-                else:
-                    wait = 0
-
-        # --- Cleanup ---
-        self.commit_batch(self.conn)
-        if self.following_manifest_thread:
-            self.following_manifest_thread.join()
-        return True
-
-    # ---------------------------------------------------------
-    # 3. The Helper (Async Logic)
-    # ---------------------------------------------------------
-    async def _download_segment_httpx(self, client, segment_url, segment_order):
-        total_retries = self.fragment_retries
-        backoff_factor = 1
-        backoff_max = 4
-        status_forcelist = {204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504}
-
-        for attempt in range(total_retries + 1):
-            try:
-                self.check_kill() 
-                response = await client.get(segment_url)
-                status = response.status_code
-                headers = response.headers
-                head_seq = int(headers.get("X-Head-Seqnum", -1))
-
-                if status == 403:
-                    self.is_403 = True
-
-                if status in status_forcelist and attempt < total_retries:
-                     # Raise to trigger the except block below for backoff
-                    raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
-
-                if status == 200:
-                    self.is_403 = False
-                    return head_seq, response.content, int(segment_order), status, headers
-                elif status == 204:
-                    return head_seq, bytes(), int(segment_order), status, headers
-                else:
-                    return head_seq, None, int(segment_order), status, headers
-
-            except (httpx.RequestError, httpx.HTTPStatusError) as e:
-                if attempt >= total_retries:
-                    return -1, None, segment_order, getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None, None
-                
-                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
-                await asyncio.sleep(sleep_time) # Yields control!
-            except Exception as e:
-                self.logger.exception(f"Unknown error: {e}")
-                if attempt >= total_retries:                    
-                    return -1, None, segment_order, None, None
-                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
-                await asyncio.sleep(sleep_time) # Yields control!
-    '''        
+    
     def process_proxies_for_httpx(self, proxy_string):
         if not proxy_string:
             return None
@@ -1907,6 +1538,7 @@ class DownloadStream:
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
+            self.type = self.type.lower()
 
         if self.livestream_coordinator:
             self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
@@ -1950,7 +1582,7 @@ class DownloadStream:
         try:
             resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
             self.logger.debug("Searching for new manifest of same format {0}".format(resolution))
-            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type)
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
             if temp_stream_url is not None:
                 #resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
                 
@@ -1989,9 +1621,9 @@ class DownloadStream:
             self.logger.warning("Unable to find stream of same format ({0}) for {1}".format(resolution, self.id))
             
         try:
-            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type) is not None:
+            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) is not None:
                 self.logger.debug("Searching for new manifest of same resolution {0}".format(resolution))
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type)
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     self.logger.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
@@ -2024,9 +1656,9 @@ class DownloadStream:
             self.logger.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
 
         try:
-            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type) is not None:
+            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) is not None:
                 self.logger.debug("Searching for new best stream")
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type)
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
@@ -2325,7 +1957,7 @@ class DownloadStream:
                 #resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
                 resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
                 #stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.stream_type) 
+                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) 
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -2541,11 +2173,12 @@ class DownloadStreamDirect(DownloadStream):
                             # f.tell() returns the current file position, which is the new
                             # file size after writing and truncating. This is much faster.
                             self.state['file_size'] = f.tell()                           
-                            if self.livestream_coordinator:
-                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state['last_written']
-                                self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size']
+                            
                             self.logger.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
                     self._save_state()
+                    if self.livestream_coordinator:
+                        self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state['last_written']
+                        self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size']
                 elif segment_retries.get(self.state['last_written'] + 1, 0) > self.fragment_retries:
                     self.logger.warning("Segment {0} has exceeded maximum segment retries, advancing count to save data...".format(self.state.get('last_written', 0)))
                     self.state['last_written'] = self.state.get('last_written', 0) + 1
@@ -2720,9 +2353,9 @@ class StreamRecovery(DownloadStream):
             self.stream_urls = stream_urls          
         else:
             if resolution == "audio_only":
-                self.stream_type = "audio"
+                self.type = "audio"
             else:
-                self.stream_type = "video"
+                self.type = "video"
             self.stream_urls = YoutubeURL.Formats().getFormatURL(
                 info_json=info_dict, 
                 resolution=resolution,  
@@ -2730,7 +2363,7 @@ class StreamRecovery(DownloadStream):
                 get_all=True, 
                 include_dash=False,
                 include_m3u8=False, 
-                stream_type=self.stream_type
+                stream_type=self.type
             )
 
         if not self.stream_urls:

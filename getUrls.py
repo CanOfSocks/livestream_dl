@@ -8,7 +8,11 @@ class MyLogger:
         self.logger=logger
 
     def debug(self, msg):
-        self.logger.debug(msg)
+        if not msg.startswith("[wait] Remaining time until next attempt:"):
+            if msg.startswith('[debug] '):
+                self.logger.debug(msg)
+            else:
+                self.info(msg)
 
     def info(self, msg):
         self.logger.info(msg)
@@ -69,7 +73,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
     }
 
     if isinstance(wait, tuple):
-        if len(wait) <= 0:
+        if not (0 <= len(wait) <= 2) :
             raise ValueError("Wait tuple must contain 1 or 2 values")
         elif len(wait) < 2:
             ydl_opts['wait_for_video'] = (wait[0], wait[0])
@@ -85,7 +89,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
         ydl_opts.update(additional_options)
         
     if proxy is not None:
-        print(proxy)
+        #print(proxy)
         ydl_opts['proxy'] = next(iter(proxy.values()), None)
 
     ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": ["incomplete","duplicate"]})

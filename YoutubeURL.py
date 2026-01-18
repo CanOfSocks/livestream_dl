@@ -14,7 +14,11 @@ class YTDLPLogger:
     def __init__(self, logger: logging = logging.getLogger()):
         self.logger = logger
     def debug(self, msg):
-        self.logger.debug(msg)
+        if not msg.startswith("[wait] Remaining time until next attempt:"):
+            if msg.startswith('[debug] ') or msg.startswith('[download] ') or msg.startswith('[live-chat] [download] '): # Additional handlers for live-chat
+                self.logger.debug(msg)
+            else:
+                self.info(msg)        
     def info(self, msg):
         self.logger.info(msg)
     def warning(self, msg):
@@ -253,7 +257,8 @@ class Formats:
             'skip_download': True,
             'no_warnings': True,
             "format": resolution,
-            "logger": YTDLPLogger(logger=self.logger)
+            "logger": YTDLPLogger(logger=self.logger),
+
         }
         
         if sort:
