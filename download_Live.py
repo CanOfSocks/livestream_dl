@@ -73,67 +73,18 @@ class LiveStreamDownloader:
 
     # Create runner function for each download format
     def download_stream(self, info_dict, resolution, batch_size=5, max_workers=1, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0, **kwargs):
-        download_params = locals().copy()
-        download_params.update({"download_function": self.download_stream})
-        file = None
-        filetype = None
-        
-        with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                                        yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
-                                        download_params=download_params, livestream_coordinator=self, **kwargs) as downloader:       
-            self.stats["status"] = "Recording"       
-            downloader.live_dl()
-            file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
-            if not keep_database:
-                self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
-                downloader.delete_temp_database()
-            elif downloader.temp_db_file != ':memory:':
-                database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
-                self.file_names['databases'].append(database_file)
-
-            file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
-            filetype = downloader.type        
-
-        self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
-            str(filetype).lower(): file
-        })
-        
-        return file, filetype
-
-    # Create runner function for each download format
-    def download_stream_direct(self, info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0, **kwargs):
-        download_params = locals().copy()
-        download_params.update({"download_function": self.download_stream_direct})
-        file = None
-        filetype = None
-
-        with DownloadStreamDirect(info_dict, resolution=resolution, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+        try:
+            download_params = locals().copy()
+            download_params.update({"download_function": self.download_stream})
+            file = None
+            filetype = None
+            
+            with DownloadStream(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
                                             yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
-                                            download_params=download_params, livestream_coordinator=self, **kwargs) as downloader:
-            self.stats["status"] = "Recording"
-            file_name = downloader.live_dl()
-            file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
-            filetype = downloader.type
-            downloader.delete_state_file()
-
-        self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
-            str(filetype).lower(): file
-        })
-        return file, filetype
-
-    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0, stream_urls: list = [], no_merge=False, **kwargs):
-
-        file = None
-        filetype = None
-
-        with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
-                            proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self, stream_urls=stream_urls, **kwargs) as downloader:
-            self.stats["status"] = "Recording"
-            result = downloader.live_dl()
-            #downloader.save_stats()    
-            if (force_merge or result <= 0 or result <= recovery_failure_tolerance) and (not no_merge):
-                if result > 0:
-                    self.logger.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
+                                            download_params=download_params, livestream_coordinator=self, **kwargs) as downloader:       
+                self.stats["status"] = "Recording"       
+                downloader.live_dl()
+                print("Done")
                 file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
                 if not keep_database:
                     self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
@@ -141,15 +92,76 @@ class LiveStreamDownloader:
                 elif downloader.temp_db_file != ':memory:':
                     database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
                     self.file_names['databases'].append(database_file)
-            else:
-                raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
-            file = FileInfo(file_name, file_type=downloader.type, format=downloader.format) 
-            filetype = downloader.type  
+
+                file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
+                filetype = downloader.type        
+
+            self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
+                str(filetype).lower(): file
+            })
             
-        self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
-            str(filetype).lower(): file
-        })
-        return file, filetype
+            return file, filetype
+        except Exception as e:
+            self.logger.exception("Unexpected error occurred while downloading stream")
+            raise
+
+    # Create runner function for each download format
+    def download_stream_direct(self, info_dict, resolution, batch_size, max_workers, folder=None, file_name=None, keep_state=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, manifest=0, **kwargs):
+        try:
+            download_params = locals().copy()
+            download_params.update({"download_function": self.download_stream_direct})
+            file = None
+            filetype = None
+
+            with DownloadStreamDirect(info_dict, resolution=resolution, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                                yt_dlp_options=yt_dlp_options, proxies=proxies, yt_dlp_sort=yt_dlp_sort, include_dash=include_dash, include_m3u8=include_m3u8, force_m3u8=force_m3u8, 
+                                                download_params=download_params, livestream_coordinator=self, **kwargs) as downloader:
+                self.stats["status"] = "Recording"
+                file_name = downloader.live_dl()
+                file = FileInfo(file_name, file_type=downloader.type, format=downloader.format)
+                filetype = downloader.type
+                downloader.delete_state_file()
+
+            self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
+                str(filetype).lower(): file
+            })
+            return file, filetype
+        except Exception as e:
+            self.logger.exception("Unexpected error occurred while downloading stream")
+            raise
+
+    def recover_stream(self, info_dict, resolution, batch_size=5, max_workers=5, folder=None, file_name=None, keep_database=False, cookies=None, retries=5, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, force_merge=False, recovery_failure_tolerance=0, manifest=0, stream_urls: list = [], no_merge=False, **kwargs):
+        try:
+            file = None
+            filetype = None
+
+            with StreamRecovery(info_dict, resolution=resolution, batch_size=batch_size, max_workers=max_workers, folder=folder, file_name=file_name, cookies=cookies, fragment_retries=retries, 
+                                proxies=proxies, yt_dlp_sort=yt_dlp_sort, livestream_coordinator=self, stream_urls=stream_urls, **kwargs) as downloader:
+                self.stats["status"] = "Recording"
+                result = downloader.live_dl()
+                #downloader.save_stats()    
+                if (force_merge or result <= 0 or result <= recovery_failure_tolerance) and (not no_merge):
+                    if result > 0:
+                        self.logger.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
+                    file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
+                    if not keep_database:
+                        self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
+                        downloader.delete_temp_database()
+                    elif downloader.temp_db_file != ':memory:':
+                        database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
+                        self.file_names['databases'].append(database_file)
+                else:
+                    raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
+                file = FileInfo(file_name, file_type=downloader.type, format=downloader.format) 
+                filetype = downloader.type  
+                
+            self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
+                str(filetype).lower(): file
+            })
+            return file, filetype
+        except Exception as e:
+            self.logger.exception("Unexpected error occurred while downloading stream")
+            raise
 
     def submit_download(self, executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False):
         extra_kwargs = {}
@@ -1194,7 +1206,7 @@ class DownloadStream:
         # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-            httpx.Client(timeout=30, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
+            httpx.Client(timeout=30, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
             submitted_segments = set()
             future_to_seg = {}
             
@@ -1221,54 +1233,63 @@ class DownloadStream:
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
                 for future in done:
-                    head_seg_num, segment_data, seg_num, status, headers = future.result()
-                    
-                    self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
-                            seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
-                        ))
-
-                    if seg_num >= optimistic_seg and (status is None or status != 200):
-                        optimistic_fails += 1
-                        self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
+                    seg_num = None
+                    try:
+                        head_seg_num, segment_data, seg_num, status, headers = future.result()
                         
-                    elif seg_num >= optimistic_seg and status == 200:
-                        optimistic_fails = 0
-                        if seg_num >= latest_downloaded_segment:
-                            latest_downloaded_segment = seg_num
-                    
-                    if head_seg_num > self.latest_sequence:
-                        self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
-                        self.latest_sequence = head_seg_num
-                        if self.livestream_coordinator:
-                            self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
-                        
-                    if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
-                    
-                    #if headers and headers.get('X-Bandwidth-Est', None):
-                    #    stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
+                        self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                                seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
+                            ))
 
-                    if segment_data is not None:
-                        # Insert segment data in the main thread (database interaction)
-                        self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                        uncommitted_inserts += 1                       
+                        if seg_num >= optimistic_seg and (status is None or status != 200):
+                            optimistic_fails += 1
+                            self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
                             
-                        if self.livestream_coordinator:
-                            self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
-                        segment_retries.pop(seg_num, None)
-
-                        if status == 200 and seg_num > latest_downloaded_segment:
-                            latest_downloaded_segment = seg_num
-                    elif status is None or status != 200:
-                        segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                        self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+                        elif seg_num >= optimistic_seg and status == 200:
+                            optimistic_fails = 0
+                            if seg_num >= latest_downloaded_segment:
+                                latest_downloaded_segment = seg_num
                         
-                    
+                        if head_seg_num > self.latest_sequence:
+                            self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                            self.latest_sequence = head_seg_num
+                            if self.livestream_coordinator:
+                                self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
+                            
+                        if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
+                            self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
+                        
+                        #if headers and headers.get('X-Bandwidth-Est', None):
+                        #    stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
+
+                        if segment_data is not None:
+                            # Insert segment data in the main thread (database interaction)
+                            self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
+                            uncommitted_inserts += 1                       
+                                
+                            if self.livestream_coordinator:
+                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
+                            segment_retries.pop(seg_num, None)
+
+                            if status == 200 and seg_num > latest_downloaded_segment:
+                                latest_downloaded_segment = seg_num
+                        elif status is None or status != 200:
+                            segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
+                            self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+                        
+                    except Exception as e:
+                        self.logger.exception("An unknown error occurred")
+                        seg_num = seg_num or future_to_seg.get(future,None)
+                        if seg_num is not None:
+                            segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
                     # Remove from submitted segments in case it neeeds to be regrabbed
-                    submitted_segments.discard(seg_num)
+
+                    future_segnum = future_to_seg.pop(future,None)
+
+                    submitted_segments.discard(seg_num if seg_num is not None else future_segnum)
 
                     # Remove completed thread to free RAM
-                    future_to_seg.pop(future,None)
+                    
 
                 # If finished threads exceeds batch size, commit the whole batch of threads at once. 
                 # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
@@ -1429,14 +1450,17 @@ class DownloadStream:
     
 
     def download_segment(self, segment_url, segment_order, client: httpx.Client=None, immediate_403s=False):
-        if client is None or client.is_closed:
-            client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
+        
         total_retries = self.fragment_retries
         backoff_factor = 1
         backoff_max = 4
         status_forcelist = {204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504}
 
+        
+
         for attempt in range(total_retries + 1):
+            if client is None or client.is_closed:
+                client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
             try:
                 self.check_kill() 
                 response = client.get(segment_url)
@@ -1544,7 +1568,7 @@ class DownloadStream:
             self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
     
     def get_Headers(self, url, client: httpx.Client=None):
-        if client is None:
+        if client is None or client.is_closed:
             client = httpx.Client(timeout=30, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
         try:
             # Send a GET request to a URL
@@ -2116,40 +2140,56 @@ class DownloadStreamDirect(DownloadStream):
                 done, _ = concurrent.futures.wait(future_to_seg, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
 
                 for future in done:
-                    head_seg_num, segment_data, seg_num, status, headers = future.result()
-                    submitted_segments.discard(seg_num)
-                    future_to_seg.pop(future, None)
-                    self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
-                            seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
-                        ))
+                    seg_num = None
+                    try:
+                        head_seg_num, segment_data, seg_num, status, headers = future.result()
+                        #print("Finished: {0}".format(seg_num))
+                        #submitted_segments.discard(seg_num)
+                        #future_to_seg.pop(future, None)
+                        self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                                seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
+                            ))
 
-                    if seg_num >= optimistic_seg and (status is None or status != 200):
-                        optimistic_fails += 1
-                        self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
+                        if seg_num >= optimistic_seg and (status is None or status != 200):
+                            optimistic_fails += 1
+                            self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
+                            
+                        elif seg_num >= optimistic_seg and status == 200:
+                            optimistic_fails = 0
                         
-                    elif seg_num >= optimistic_seg and status == 200:
-                        optimistic_fails = 0
-                    
-                    if head_seg_num > self.latest_sequence:
-                        self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
-                        self.latest_sequence = head_seg_num
-                        if self.livestream_coordinator:
-                            self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
-                        
-                    if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
+                        if head_seg_num > self.latest_sequence:
+                            self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
+                            self.latest_sequence = head_seg_num
+                            if self.livestream_coordinator:
+                                self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
+                            
+                        if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
+                            self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
 
-                    if segment_data is not None:
-                        downloaded_segments[seg_num] = segment_data
-                        segment_retries.pop(seg_num, None)
-                    elif status is None or status != 200:
-                        segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                        self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+                        if segment_data is not None:
+                            downloaded_segments[seg_num] = segment_data
+                            
+                            segment_retries.pop(seg_num, None)
+                        elif status is None or status != 200:
+                            segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
+                            #print("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+                            self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+
+                    except Exception as e:
+                        self.logger.exception("An unknown error occurred")
+                        seg_num = seg_num or future_to_seg.get(future,None)
+                        if seg_num is not None:
+                            segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
+                    # Remove from submitted segments in case it neeeds to be regrabbed
+
+                    future_segnum = future_to_seg.pop(future,None)
+
+                    submitted_segments.discard(seg_num if seg_num is not None else future_segnum)
 
                 # Write contiguous downloaded segments
                 # Check if there is at least one segment to write
                 
-
+                #print("[{2}] Last written: {0} - Downloaded: {0} - Next ready: {3}".format(self.state['last_written'], downloaded_segments.keys(), self.format, downloaded_segments.get(self.state['last_written'] + 1, None) is not None))
                 if downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
                     # If segments exist, open the file *once*
                     mode = 'wb' if self.state['file_size'] == 0 else 'r+b'
@@ -2172,15 +2212,17 @@ class DownloadStreamDirect(DownloadStream):
                             # Optimization: Use f.tell() instead of os.path.getsize()
                             # f.tell() returns the current file position, which is the new
                             # file size after writing and truncating. This is much faster.
-                            self.state['file_size'] = f.tell()                           
+                            self.state['file_size'] = f.tell()    
+
+                            if self.livestream_coordinator:
+                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state.get('last_written', 0)
+                                self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state.get('file_size', 0)                       
                             
                             self.logger.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
                     self._save_state()
-                    if self.livestream_coordinator:
-                        self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state['last_written']
-                        self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size']
-                elif segment_retries.get(self.state['last_written'] + 1, 0) > self.fragment_retries:
-                    self.logger.warning("Segment {0} has exceeded maximum segment retries, advancing count to save data...".format(self.state.get('last_written', 0)))
+                    
+                elif segment_retries.get(self.state.get('last_written', 0) + 1, 0) > self.fragment_retries:
+                    self.logger.warning("({1}) Segment {0} has exceeded maximum segment retries, advancing count to save data...".format(self.state.get('last_written', 0), self.format))
                     self.state['last_written'] = self.state.get('last_written', 0) + 1
 
                 # Remove any potential stray segments 
@@ -2249,11 +2291,22 @@ class DownloadStreamDirect(DownloadStream):
                     wait = 0
 
                 for seg_num in segments_to_download:
+                    # Have up to 2x max workers of threads submitted
+                    if len(future_to_seg) > max(10,2*self.max_workers):
+                        break
+                    if seg_num not in submitted_segments and seg_num > self.state.get('last_written', 0):
+                        future_to_seg.update({
+                            executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num, client): seg_num
+                        })
+                        submitted_segments.add(seg_num)
+                """
+                for seg_num in segments_to_download:
                     if len(future_to_seg) > 2 * self.max_workers:
                         break
                     if seg_num not in submitted_segments:
                         future_to_seg[executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num, client)] = seg_num
                         submitted_segments.add(seg_num)
+                """
                     
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "merged"
