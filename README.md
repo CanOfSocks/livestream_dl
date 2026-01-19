@@ -35,6 +35,7 @@ This tool focuses on using `yt-dlp` for stream information extraction, ensuring 
     pip install -r requirements.txt
     ```
 3.  Ensure `ffmpeg` is in your system PATH.
+4.  Ensure `deno` is in your system PATH.
 
 ---
 
