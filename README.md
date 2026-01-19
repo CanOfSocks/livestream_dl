@@ -3,7 +3,7 @@
 
 A robust YouTube livestream downloader that combines the reliability of [yt-dlp](https://github.com/yt-dlp/yt-dlp) with the fragment-based downloading principles of [ytarchive](https://github.com/Kethsar/ytarchive).
 
-This tool focuses on using `yt-dlp` for frequent updates to stream information extraction, ensuring compatibility with YouTube's changing infrastructure. It is designed to handle live recording with the ability to recover streams if they become unavailable (e.g., go private) during the download process.
+This tool focuses on using `yt-dlp` for stream information extraction, ensuring compatibility with YouTube's changing infrastructure. It is designed to handle live recording with the ability to recover streams if they become unavailable (e.g., go private) during the download process.
 
 ## Key Features
 
