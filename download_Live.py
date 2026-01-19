@@ -84,7 +84,6 @@ class LiveStreamDownloader:
                                             download_params=download_params, livestream_coordinator=self, **kwargs) as downloader:       
                 self.stats["status"] = "Recording"       
                 downloader.live_dl()
-                print("Done")
                 file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
                 if not keep_database:
                     self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
@@ -862,11 +861,7 @@ class LiveStreamDownloader:
                 self.logger.error(e.stderr)
                 self.logger.critical(e)
                 raise e
-            #print(result.stdout)
-            #print(result.stderr)
-            
-            
-            
+           
             file_names["streams"][manifest]['merged'] = FileInfo(base_output, file_type='merged')
             self.logger.info("Successfully merged files into: {0}".format(file_names["streams"][manifest].get('merged').absolute()))
             
