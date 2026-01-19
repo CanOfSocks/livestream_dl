@@ -156,7 +156,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--recovery` | `False` | Puts the downloader directly into stream recovery mode. |
 | `--force-recover-merge` | `False` | Forces merging to the final file even if not all segments were successfully recovered. |
 | `--recovery-failure-tolerance` | `0` | Max number of fragments allowed to fail during recovery without throwing a final error. |
-| `--wait-limit` | `0` | Max wait intervals (~10s each) for new segments. If `0`, waits until status changes to 'post_live'. |
+| `--wait-limit` | `0` | Max wait intervals (~10s each) for new segments. If `0`, waits until status changes to `post_live` or `was_live`. |
 
 ### Network & Logging
 
@@ -171,7 +171,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--stats-as-json` | `False` | Prints download statistics as a JSON string (bypasses log level). |
 | `--new-line` | `False` | Ensures console messages always print to a new line (useful for some terminals). |
 
-### Automation & Monitoring
+### Channel Monitoring
 
 | Option | Default | Description |
 | --- | --- | --- |
