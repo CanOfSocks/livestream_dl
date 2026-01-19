@@ -20,8 +20,33 @@ import platform
 original_sigint = signal.getsignal(signal.SIGINT)
 
 def handle_shutdown(signum, frame):
-    kill_all.set()
-    sleep(0.5)
+    import logging
+    import yt_dlp
+    from pathlib import Path
+
+    logger = logging.LoggerAdapter(logging.getLogger("Live-DL Downloader"), {"video_id": ""})
+    logger.debug("in handle_shutdown")
+    logger.debug(f"interrupted into from {frame and frame.f_code.co_name} in {frame and frame.f_code.co_filename}")
+
+    # Check if this sigint was prompted for by yt-dlp's code by walking through a few stack frames.
+    # Currently, it prompts for Ctrl-C and sleeps in _wait_for_video called indirectly by extract_info.
+    # The check could be simpler if checking for _wait_for_video, but that name starts with an underscore.
+    # This alternative check makes assumptions about the internals of yt_dlp also.
+    # It might be best if this signal handling could be removed entirely in favor of python exceptions.
+    fr = frame
+    while fr and Path(fr.f_code.co_filename).name == "YoutubeDL.py":
+        if fr.f_code.co_name == 'extract_info':
+            # yt-dlp prompted for and presumably handled this sigint; ignore it here
+            logger.debug("ignoring ctrl-c in livestream_dl code")
+            break
+        fr = fr.f_back
+        if fr:
+            logger.debug(f"which was called by {fr.f_code.co_name} in {fr.f_code.co_filename}")
+    else:
+        # This sigint means it is time to wrap things up
+        logger.debug("setting kill_all threading.Event; download will die if it has started")
+        kill_all.set()
+        sleep(0.5)
     if callable(original_sigint):
         original_sigint(signum, frame)
 
