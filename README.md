@@ -50,7 +50,7 @@ To enable adaptive stream URLs that allow for private stream recovery, the `yt-d
 2.  Open `yt_dlp/extractor/youtube/_video.py`.
 3.  Comment out or remove the following lines (approx line 3078):
     ```python
-    if fmt.get('targetDurationSec'):
+    if fmt_stream.get('targetDurationSec'):
         continue
     ```
 
@@ -76,7 +76,7 @@ python runner.py [OPTIONS] [VIDEO_URL_OR_ID]
 **Basic download:**
 
 ```bash
-python runner.py runner.py --threads 4 --dash --m3u8 --write-thumbnail --embed-thumbnail --wait-for-video "60:600" --clean-info-json --remove-ip-from-json --live-chat --resolution "best" --write-info-json --log-level "INFO" -- "[VIDEO_ID]"
+python runner.py --threads 4 --dash --m3u8 --write-thumbnail --embed-thumbnail --wait-for-video "60:600" --clean-info-json --remove-ip-from-json --live-chat --resolution "best" --write-info-json --log-level "INFO" -- "[VIDEO_ID]"
 
 ```
 
