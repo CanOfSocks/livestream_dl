@@ -966,7 +966,10 @@ class LiveStreamDownloader:
             blanking_space = ""
             if self._stats_prev_line_len > len(stats_line):
                 blanking_space = " " * (self._stats_prev_line_len - len(stats_line))
+            if self._stats_prev_line_len == 0:
+                print()
             print("\r" + stats_line + blanking_space, end="")
+            self._stats_prev_line_len = len(stats_line)
 
     def add_url_param(self, url: str, key, value) -> str:
         parsed = urlparse(url)
