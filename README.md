@@ -1,52 +1,204 @@
+
 # livestream_dl
-Garbage youtube livestream downloader combining the principles of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchive-raw-go](https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go"). This focuses on using yt-dlp for more frequent updates for stream information extraction to handle changes YouTube implements.
-This project aims to combine the features of live recording and stream recovery when a stream becomes unavailable. 
 
-***Stream recovery is currently in a semi-broken state. Don't rely on it working for now.***
+A robust YouTube livestream downloader that combines the reliability of `yt-dlp` with the fragment-based downloading principles of [ytarchive](https://github.com/Kethsar/ytarchive).
 
-# Requirements
-- [python](https://www.python.org/) 3.12+ (currently developed on 3.13)
-- [ffmpeg](https://ffmpeg.org/)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) via pip (or another method where yt-dlp can be imported to a python script)
-- Packages within [requirements.txt](https://github.com/CanOfSocks/livestream_dl/blob/main/requirements.txt)
+This tool focuses on using `yt-dlp` for frequent updates to stream information extraction, ensuring compatibility with YouTube's changing infrastructure. It is designed to handle live recording with the ability to recover streams if they become unavailable (e.g., go private) during the download process.
+
+## Key Features
+
+* **Robust Downloading:** Uses `yt-dlp` for extraction, minimizing breakage from YouTube updates.
+* **Stream Recovery:** capable of recovering streams that go private during recording (requires specific configuration).
+* **Dual Write Modes:** Supports both direct `.ts` file writing (low disk IO) and SQLite-backed downloading (safer for unstable connections).
+* **Live Chat:** Integrated support for downloading live chat (via `yt-dlp` or `chat-downloader`) and bundling it into a ZIP file.
+* **Channel Monitoring:** Automated monitoring of channels for upcoming or live streams.
+* **Protocol Fallbacks:** Optional support for DASH and HLS (m3u8) protocols to avoid modifying `yt-dlp` source code.
+
+---
+
+## Requirements
+
+* [Python](https://www.python.org/) 3.12+ (Developed on 3.13)
+* [FFmpeg](https://ffmpeg.org/) (Required for merging video/audio)
+* [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Must be installed via pip)
+* [deno](https://deno.com/) Required for yt-dlp
+* Dependencies listed in `requirements.txt`
 
 ### Optional
-- [chat-downloader](https://github.com/xenova/chat-downloader) - Live chat downloader that has the ability to resume if interrupted at cost of different format
+* [chat-downloader](https://github.com/xenova/chat-downloader) - For robust chat downloading with resume capabilities.
 
-## Modification of yt-dlp
-To enable adaptive stream URLs that allow for private stream recovery, the yt-dlp youtube extractor must be modified.
-***Stream recovery is currently in a semi-broken state. Don't rely on it working for now.***
+## Installation
 
-For the downloader to work, the [YouTube extractor from yt-dlp (`_video.py`)](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_video.py#L3078-L3079) must be modified to save formats that would usually be discarded. You can find the install location of the package with `pip show yt-dlp`.
+1.  Clone the repository.
+2.  Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  Ensure `ffmpeg` is in your system PATH.
 
-To do this comment/remove the [following lines](https://github.com/yt-dlp/yt-dlp/blob/b4488a9e128bf826c3ffbf2d2809ce3141016adb/yt_dlp/extractor/youtube/_video.py#L3078-L3079):
-```python
-            if fmt.get('targetDurationSec'):
-                continue
-```
+---
 
-As of November 2025, the following sed command works on Linux, ***be aware the location of the file may change and future versions of yt-dlp may change the extractor logic***:
+## Important: Modification of yt-dlp
+**Note:** This step is required **only** if you want to use the default adaptive stream URLs which support private stream recovery. If you prefer not to modify files, you can use the `--dash` or `--m3u8` flags (see Options below), though these have limitations regarding recovery.
+
+To enable adaptive stream URLs that allow for private stream recovery, the `yt-dlp` youtube extractor must be modified to save formats that are usually discarded.
+
+1.  Find the location of `yt-dlp`:
+    ```bash
+    pip show yt-dlp
+    ```
+2.  Open `yt_dlp/extractor/youtube/_video.py`.
+3.  Comment out or remove the following lines (approx line 3078):
+    ```python
+    if fmt.get('targetDurationSec'):
+        continue
+    ```
+
+**Linux `sed` command (As of Nov 2025):**
 ```bash
 sed -i "/if[[:space:]]\+fmt_stream\.get('targetDurationSec'):/,/^[[:space:]]*continue/s/^[[:space:]]*/&#/" "$(pip show yt-dlp | awk '/Location/ {print $2}')/yt_dlp/extractor/youtube/_video.py"
 
 ```
 
-### Fallback download protocols
-Alternative stream protocols have been added to allow for downloading of livestreams *without* modifying the yt-dlp installation. These are the "dash" and "hls" (m3u8) protocols.
+---
 
-Both alternatives are disabled by default and must be enabled
-- dash - `--dash` - Very similar to the adaptive URLs used by default, but do not allow for stream recovery at all
-- hls - `--m3u8`/`--force-m3u8` - Limited format options, but provides combined video and audio streams. This may be useful to half the number of requests made (although bandwidth use would be similar). m3u8 streams can be forces with `--force-m3u8` which will disable other protocols
+## Usage
 
+Execute `runner.py` with Python.
 
-# Usage
-To use, execute `runner.py` with python with any additional options.
+```bash
+python runner.py [OPTIONS] [VIDEO_URL_OR_ID]
+
 ```
-usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--ext EXT] [--temp-folder TEMP_FOLDER] [--write-thumbnail]
-                 [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--force-recover-merge] [--recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE] [--wait-limit WAIT_LIMIT]
-                 [--database-in-memory] [--direct-to-ts] [--wait-for-video WAIT_FOR_VIDEO] [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--clean-info-json] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command]      
-                 [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--dash] [--m3u8] [--force-m3u8] [--proxy [PROXY]] [--ipv4 | --ipv6] [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line] [--monitor-channel] [--members-only] [--upcoming-lookahead UPCOMING_LOOKAHEAD]
-                 [--playlist-items PLAYLIST_ITEMS]
+
+### Examples
+
+**Basic download:**
+
+```bash
+python runner.py runner.py --threads 4 --dash --m3u8 --write-thumbnail --embed-thumbnail --wait-for-video "60:600" --clean-info-json --remove-ip-from-json --live-chat --resolution "best" --write-info-json --log-level "INFO" -- "[VIDEO_ID]"
+
+```
+
+**Download with live chat and embed thumbnail:**
+
+```bash
+python runner.py --live-chat --threads 4 --embed-thumbnail VIDEO_ID
+
+```
+
+**Monitor a channel for streams:**
+
+```bash
+python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60 CHANNEL_ID
+
+```
+
+---
+
+## Command Line Options
+
+### General Configuration
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `ID` | `None` | The video URL or ID (Positional argument). |
+| `--help`, `-h` | N/A | Show the help message and exit. |
+| `--cookies` | `None` | Path to a Netscape-formatted cookies file (required for age-gated or members-only content). |
+| `--temp-folder` | `None` | Path for temporary files (database, segments). Supports `yt-dlp` output formatting. |
+| `--output` | `%(fulltitle)s (%(id)s)` | Path/filename for output files. Supports `yt-dlp` output formatting. |
+| `--ext` | `None` | Force the extension of the final video file (e.g., `.mp4`, `.mkv`). |
+| `--json-file` | `None` | Path to an existing `yt-dlp` info.json file. Overrides `ID` and skips retrieving URLs from the web. |
+| `--write-ffmpeg-command` | `False` | Writes the final FFmpeg command used to merge the file to a `.txt` file for debugging or manual merging. |
+
+### Download & Formatting
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--resolution` | `best` | Desired resolution. Can be `best`, `audio_only`, or a custom [yt-dlp format filter](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection). 
+* Audio is always set to "ba" (best audio) regardless of filters.
+* "best" is converted to "bv".
+* If unspecified, a prompt will appear.|
+| `--custom-sort` | `None` | Custom sorting algorithm for formats based on [yt-dlp sorting syntax](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats). |
+| `--threads` | `1` | Number of download threads *per format*. Total threads = this value × 2 (for video+audio). |
+| `--batch-size` | `5` | Number of segments downloaded before the temporary database is committed to disk (reduces disk IO). |
+| `--segment-retries` | `10` | Number of times to retry downloading a specific segment before failing. |
+| `--dash` | `False` | Use DASH URLs as fallback. Does **not** require `yt-dlp` modification but prevents stream recovery if DASH URLs are used. |
+| `--m3u8` | `False` | Use HLS (m3u8) URLs as fallback. Combined audio/video streams (halves requests). Does **not** require `yt-dlp` modification but prevents recovery if m3u8 URLs are used. |
+| `--force-m3u8` | `False` | Forces the use of m3u8 stream URLs. |
+| `--wait-for-video` | `None` | Wait time (int) or range (`min:max`) to wait for a video to start or become available. Refer to [yt-dlp's documentation](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#general-options) |
+| `--ytdlp-options` | `None` | JSON string of additional `yt-dlp` options (overwrites conflicts). E.g `'{"extractor_args":{"youtubepot-bgutilhttp":{"base_url":["http://bgutil-provider:4416"]}}}'` to use Potoken retrieval. Refer to full options for more examples. |
+
+### Processing & Output
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--no-merge` | `False` | Do not merge video and audio using FFmpeg after download. |
+| `--merge` | `False` | Force merging video using FFmpeg (overrides `--no-merge`). |
+| `--write-thumbnail` | `False` | Save the video thumbnail to a separate file. |
+| `--embed-thumbnail` | `False` | Embed the thumbnail into the final video file (ignored if `--no-merge` is active). |
+| `--write-info-json` | `False` | Write the video metadata to an `info.json` file. |
+| `--write-description` | `False` | Write the video description to a separate text file. |
+| `--keep-temp-files` | `False` | Keep all temporary files (database and TS files) after finishing. |
+| `--keep-ts-files` | `False` | Keep the intermediate TS files but delete the database. |
+| `--live-chat` | `False` | Download live chat (requires `yt-dlp` or `chat-downloader`). |
+| `--stop-chat-when-done` | `300` | Max seconds to wait for chat download to finish after stream ends. |
+
+### Database & Storage Modes
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--database-in-memory` | `False` | Keep the segment database in RAM. High memory usage; not recommended for long streams. |
+| `--direct-to-ts` | `False` | Write directly to a `.ts` file instead of using a SQLite database. See "Downloader methods" below. |
+| `--keep-database-file` | `False` | Keep the database file after completion. If using `--direct-to-ts`, keeps the state file. |
+
+### Recovery & Resilience
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--recovery` | `False` | Puts the downloader directly into stream recovery mode. |
+| `--force-recover-merge` | `False` | Forces merging to the final file even if not all segments were successfully recovered. |
+| `--recovery-failure-tolerance` | `0` | Max number of fragments allowed to fail during recovery without throwing a final error. |
+| `--wait-limit` | `0` | Max wait intervals (~10s each) for new segments. If `0`, waits until status changes to 'post_live'. |
+
+### Network & Logging
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--proxy` | `None` | Proxy URL (string) or JSON string for multiple methods. First proxy used for `yt-dlp`/chat. |
+| `--ipv4` | `False` | Force IPv4 only. |
+| `--ipv6` | `False` | Force IPv6 only. |
+| `--log-level` | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `--no-console` | `False` | Disable printing log messages to the console. |
+| `--log-file` | `None` | Path to a file where log messages will be saved. |
+| `--stats-as-json` | `False` | Prints download statistics as a JSON string (bypasses log level). |
+| `--new-line` | `False` | Ensures console messages always print to a new line (useful for some terminals). |
+
+### Automation & Monitoring
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--monitor-channel` | `False` | Enables channel monitoring mode. Use the Channel ID in the `ID` argument. |
+| `--members-only` | `False` | Monitor the 'Members Only' playlist instead of public streams. Requires cookies. |
+| `--upcoming-lookahead` | `24` | Maximum time (in hours) to look ahead for upcoming videos to schedule. |
+| `--playlist-items` | `50` | Maximum number of playlist items to check when monitoring. |
+
+### Metadata Privacy
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--remove-ip-from-json` | `False` | Replaces IP addresses in `info.json` with `0.0.0.0`. |
+| `--clean-urls` | `False` | Removes potentially identifiable stream URLs from `info.json`. |
+| `--clean-info-json` | `False` | Enables `yt-dlp`'s internal `clean-info-json` option. |
+
+### Full options
+
+```
+
+usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--ext EXT] [--temp-folder TEMP_FOLDER] [--write-thumbnail] [--embed-thumbnail]      
+                 [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--force-recover-merge] [--recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE] [--wait-limit WAIT_LIMIT] [--database-in-memory] [--direct-to-ts]
+                 [--wait-for-video WAIT_FOR_VIDEO] [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--clean-info-json] [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE] [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--dash]
+                 [--m3u8] [--force-m3u8] [--proxy [PROXY]] [--ipv4 | --ipv6] [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line] [--monitor-channel] [--members-only] [--upcoming-lookahead UPCOMING_LOOKAHEAD] [--playlist-items PLAYLIST_ITEMS]
                  [ID]
 
 Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)
@@ -57,8 +209,8 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --resolution RESOLUTION
-                        Desired resolution. Can be best, audio_only or a custom filter based off yt-dlp's format filtering: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#filtering-formats. Audio will always be set as "ba" (best audio) regardless of filters set. "best" will be
-                        converted to "bv" A prompt will be displayed if no value is entered
+                        Desired resolution. Can be best, audio_only or a custom filter based off yt-dlp's format filtering: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#filtering-formats. Audio will always be set as "ba" (best audio) regardless of filters set. "best" will be converted to "bv" A prompt     
+                        will be displayed if no value is entered
   --custom-sort CUSTOM_SORT
                         Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats
   --threads THREADS     Number of download threads per format. This will be 2x for an video and audio download. Default: 1
@@ -87,8 +239,8 @@ options:
   --recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE
                         Maximum number of fragments that fail to download (exceed the retry limit) and not throw an error. May cause unexpected issues when merging to .ts file and remuxing. Default: 0
   --wait-limit WAIT_LIMIT
-                        Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or    
-                        'post_live' status. Default: 0
+                        Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or 'post_live' status.       
+                        Default: 0
   --database-in-memory  Keep stream segments database in memory. Requires a lot of RAM (Not recommended)
   --direct-to-ts        Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options
   --wait-for-video WAIT_FOR_VIDEO
@@ -107,14 +259,13 @@ options:
                         Writes FFmpeg command to a txt file
   --stats-as-json       Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level
   --ytdlp-options YTDLP_OPTIONS
-                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client":
-                        ["web_creator"]}, "youtubepot-bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin
+                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client": ["web_creator"]}, "youtubepot-     
+                        bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin
   --dash                Gets any available DASH urls as a fallback to adaptive URLs. Dash URLs do not require yt-dlp modification to be used, but can't be used for stream recovery and can cause large info.json files when a stream is in the 'post_live' status
-  --m3u8                Gets any available m3u8 urls as a fallback to adaptive URLs. m3u8 URLs do not require yt-dlp modification to be used, but can't be used for stream recovery. m3u8 URLs provide both video and audio in each fragment and could allow for the amount of segment download    
-                        requests to be halved
+  --m3u8                Gets any available m3u8 urls as a fallback to adaptive URLs. m3u8 URLs do not require yt-dlp modification to be used, but can't be used for stream recovery. m3u8 URLs provide both video and audio in each fragment and could allow for the amount of segment download requests to be halved     
   --force-m3u8          Forces use of m3u8 stream URLs
-  --proxy [PROXY]       (Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy       
-                        specified will be used for yt-dlp and live chat functions.
+  --proxy [PROXY]       (Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy specified will be used for   
+                        yt-dlp and live chat functions.
   --ipv4                Force IPv4 only
   --ipv6                Force IPv6 only
   --stop-chat-when-done STOP_CHAT_WHEN_DONE
@@ -128,39 +279,34 @@ options:
                         Maximum number of playlist items to check. Default: 50
 ```
 
-# Downloader methods
+---
+
+## Downloader methods
+
 There are two download methods available for livestream downloading, using a SQLite database and writing directly to a ts file. For stream recovery, only the SQLite option is available. Merging to a video or audio file (.mp4, .mkv, .ogg etc) will require an extra write of information. The default method is the SQLite method.
 
-## Direct writing to a .ts file
+### Direct writing to a .ts file
+
 Writing directly to a ts file helps reduce the number of writes to a disk during the recording as it is only necessary to write to the final ts file. This may reduce disk wear over a long period of time of downloading many streams.
-As segments are downloaded, the sequence number of the segment is used to decide which segment will be appended to the ts file next. If the "next" segment is not available to be written to the disk, other segments will be stored in RAM until the respective previous segment has been written to the disk. This performs in a similar way to [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive").
+As segments are downloaded, the sequence number of the segment is used to decide which segment will be appended to the ts file next. If the "next" segment is not available to be written to the disk, other segments will be stored in RAM until the respective previous segment has been written to the disk. This performs in a similar way to [ytarchive](https://github.com/Kethsar/ytarchive).
 To reduce file opening and closing actions on the file system, if multiple sequential segments can be written at once, they will be written into the file at once.
 A state file is saved each time segments are written to the disk, saving the latest segment and size of the file, so the downloader doesn't need to re-download segments should the downloading session stop for any reason.
 Segment downloads are not guaranteed to finish in a sequential order if more than 1 thread is used. If a segment is particularly slow at downloading, this may increase ram usage significantly while subsequent segments are saved in RAM.
 
 For regular livestream recording that doesn't experience frequent segment download errors, using the direct writing method will work well.
 
-## SQLite
+### SQLite
+
 The SQLite downloader method is used to improve handling of non-sequential successful segment downloads. This works by creating and using a basic table of the segment number as an ID and a blob to store the segment data. Once all segments are downloaded, a query is executed to sort all of the downloaded segments into the correct order and saved to a .ts file. This helps significantly to manage downloaded segments when failures occur often, such as unavailable stream recovery. By writing to the database and a final .ts file, this will require 2 full writes of the downloaded data, which may increase wear on flash-based systems. For most users, this increased wear will not be significant in the long-term.
-This improves over saving individual segment files like [ytarchive-raw-go](https://github.com/Kethsar/ytarchive](https://github.com/HoloArchivists/ytarchive-raw-go) "HoloArchivists/ytarchive-raw-go") as all the downloaded segments are encapsilated into a single file, making it easier for the file system to handle.
+This improves over saving individual segment files like [ytarchive-raw-go](https://www.google.com/search?q=https://github.com/Kethsar/ytarchive%5D(https://github.com/HoloArchivists/ytarchive-raw-go)) as all the downloaded segments are encapsilated into a single file, making it easier for the file system to handle.
 In the SQLite method, the existence of a downloaded segment is checked before it is downloaded. This allows failed segments to be "looped back to" later without causing other slowdowns, and ensures some information is saved for a segment (even if it is empty, as is the case sometimes).
 
+---
 
-# Known Issues
-## Concurrent futures
-The downloader functions use the [concurrent.futures](https://docs.python.org/3/library/concurrent.futures.html) module to make managing the thread pool and handling thread results easier. This module allows for easy submission of new threads and controlling how many active threads are active at once. However, once threads have been submitted and/or started, it becomes difficult to control the execution of threads until they have finished. While efforts have been made to make stopping threads easier, the nature of concurrent futures may cause delays in the graceful stopping of the downloader (such as a keyboard interrupt), especially if a thread has gotten stuck at some point.
+## Known Issues
 
-# Issues and contibuting
-If you encounter replicatable issues with the downloader, please submit an issue.
+* **Concurrent Futures:** The downloader uses `concurrent.futures` for thread management. While robust, stopping the downloader gracefully (e.g., via Keyboard Interrupt) can sometimes be delayed if a thread is stuck on a request.
+* **Stream Recovery:** This feature is currently in a "semi-broken" state and may not work reliably for all stream types.
+* **Chat Downloader:** The `chat-downloader` dependency occasionally breaks due to YouTube updates; the tool may fall back to `yt-dlp` for chat extraction which has different output formatting.
 
-If you would like to contribute, please submit a pull request.
 
-# To-Do
-While some components have been marked as added, testing of full functionalility may be required
-- [ ] Feature parity with all relevant options of [ytarchive](https://github.com/Kethsar/ytarchive "Kethsar/ytarchive") and [ytarchive-raw-go](https://github.com/HoloArchivists/ytarchive-raw-go "HoloArchivists/ytarchive-raw-go")
-- [x] Implement proper log levels instead of printing all information to console
-- [x] Fall to stream recovery if stream goes private during recording
-- [ ] Overhaul file tracking and management to be more robust
-- [x] Improve ffmpeg command execution
-- [ ] Implement proxy/IP pool options - This will need to be implmented with contributions as I have no way of testing these
-- [x] Explore alternatives to yt-dlp's live chat downloader
