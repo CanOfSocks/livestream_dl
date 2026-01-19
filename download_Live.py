@@ -66,6 +66,7 @@ class LiveStreamDownloader:
             "streams": {}
         }
         self.stats = {}
+        self._stats_prev_line_len = 0
 
         self.refresh_json = {}
         self.live_status = ""
@@ -935,35 +936,38 @@ class LiveStreamDownloader:
         if options.get('stats_as_json', False):
             print(json.dumps(self.stats), end="\r")
             return
-        
+
         # If not info log level or below, don't print stats
         if not options.get("log_level", None) in ["DEBUG", "INFO"]:
             return
-        
+
         if not (self.stats.get('video', None) or self.stats.get('audio', None)):
             return
-        
-        print("{0}:".format(self.stats.get('id')), end=" ")
-        
+
+        stats_line = "{0}: ".format(self.stats.get('id'))
+
         if self.stats.get('video'):
-            print("Video: {0}/{1} segments".format(self.stats.get('video', {}).get('downloaded_segments', 0), self.stats.get('video', {}).get('latest_sequence', 0)), end="")
+            stats_line += "Video: {0}/{1} segments".format(self.stats.get('video', {}).get('downloaded_segments', 0), self.stats.get('video', {}).get('latest_sequence', 0))
             if self.stats.get('video', {}).get('status', None):
-                print(" ({0})".format(self.stats.get('video', {}).get('status', "").capitalize()), end="")
-            print(", ", end="")
+                stats_line += " ({0})".format(self.stats.get('video', {}).get('status', "").capitalize())
+            stats_line += ", "
         if self.stats.get('audio'):
-            print("Audio: {0}/{1} segments".format(self.stats.get('audio', {}).get('downloaded_segments', 0), self.stats.get('audio', {}).get('latest_sequence', 0)), end="")
+            stats_line += "Audio: {0}/{1} segments".format(self.stats.get('audio', {}).get('downloaded_segments', 0), self.stats.get('audio', {}).get('latest_sequence', 0))
             if self.stats.get('video', {}).get('status', None):
-                print(" ({0})".format(self.stats.get('audio', {}).get('status', "").capitalize()), end="")
-            print(", ", end="")
+                stats_line += " ({0})".format(self.stats.get('audio', {}).get('status', "").capitalize())
+            stats_line += ", "
         if self.stats.get('video', {}).get('current_filesize', None) or self.stats.get('audio', {}).get('current_filesize', None):
             current_size = self.stats.get('video', {}).get('current_filesize', 0) + self.stats.get('audio', {}).get('current_filesize', 0)
             current_size_string = self.convert_bytes(current_size)
-            print("~{0} downloaded".format(current_size_string), end=" ")
+            stats_line += "~{0} downloaded".format(current_size_string)
         if options.get("new_line", False):
-            print()
+            print(stats_line)
         else:
-            print("\r",end="")
-        
+            blanking_space = ""
+            if self._stats_prev_line_len > len(stats_line):
+                blanking_space = " " * (self._stats_prev_line_len - len(stats_line))
+            print("\r" + stats_line + blanking_space, end="")
+
     def add_url_param(self, url: str, key, value) -> str:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
@@ -2963,7 +2967,7 @@ def setup_logging(
     if force:
         for h in list(logger.handlers):
             logger.removeHandler(h)
-    
+
     # Only configure handlers if the logger is "fresh"
     if not logger.handlers:
         level = getattr(logging, log_level.upper(), logging.INFO)
@@ -2977,15 +2981,18 @@ def setup_logging(
             fmt_str = f'[%(levelname)s] [{logger_name}] %(asctime)s - %(message)s'
         else:
             fmt_str = '[%(levelname)s] %(asctime)s - %(message)s'
-            
-        formatter = logging.Formatter(fmt_str, datefmt='%Y-%m-%d %H:%M:%S')
+
+        console_formatter = logging.Formatter("\n"+fmt_str, datefmt='%Y-%m-%d %H:%M:%S')
+        file_formatter = logging.Formatter(fmt_str, datefmt='%Y-%m-%d %H:%M:%S')
 
         if logger_name:
             logger.propagate = False
 
         if console:
             console_handler = logging.StreamHandler()
-            console_handler.setFormatter(formatter)
+            console_handler.setFormatter(console_formatter)
+            # Move the newline to the front of records so that console logging plays nice with print_stats
+            console_handler.terminator = ''
             logger.addHandler(console_handler)
 
         if file:
@@ -3002,14 +3009,12 @@ def setup_logging(
                 )
             else:
                 handler = logging.FileHandler(file, mode='a', encoding='utf-8')
-            
-            handler.setFormatter(formatter)
+
+            handler.setFormatter(file_formatter)
             logger.addHandler(handler)
 
     # 4. Final step: If a video_id was passed, wrap the logger in an Adapter
     if video_id:
         return logging.LoggerAdapter(logger, {"video_id": video_id})
-    
+
     return logger
-
-
