@@ -938,36 +938,47 @@ class LiveStreamDownloader:
 
     def print_stats(self, options):
         if options.get('stats_as_json', False):
-            print(json.dumps(self.stats), end="\r")
+            # \033[K clears the line after printing the JSON
+            print(f"\r{json.dumps(self.stats)}\033[K", end="", flush=True)
             return
-        
-        # If not info log level or below, don't print stats
-        if not options.get("log_level", None) in ["DEBUG", "INFO"]:
+
+        if options.get("log_level") not in ["DEBUG", "INFO"]:
             return
-        
-        if not (self.stats.get('video', None) or self.stats.get('audio', None)):
+
+        if not (self.stats.get('video') or self.stats.get('audio')):
             return
-        
-        print("{0}:".format(self.stats.get('id')), end=" ")
-        
+
+        # Build the output parts in a list
+        parts = [f"{self.stats.get('id')}:"]
+
         if self.stats.get('video'):
-            print("Video: {0}/{1} segments".format(self.stats.get('video', {}).get('downloaded_segments', 0), self.stats.get('video', {}).get('latest_sequence', 0)), end="")
-            if self.stats.get('video', {}).get('status', None):
-                print(" ({0})".format(self.stats.get('video', {}).get('status', "").capitalize()), end="")
-            print(", ", end="")
+            v = self.stats.get('video', {})
+            v_str = f"Video: {v.get('downloaded_segments', 0)}/{v.get('latest_sequence', 0)}"
+            if v.get('status'):
+                v_str += f" ({v.get('status').capitalize()})"
+            parts.append(v_str)
+
         if self.stats.get('audio'):
-            print("Audio: {0}/{1} segments".format(self.stats.get('audio', {}).get('downloaded_segments', 0), self.stats.get('audio', {}).get('latest_sequence', 0)), end="")
-            if self.stats.get('video', {}).get('status', None):
-                print(" ({0})".format(self.stats.get('audio', {}).get('status', "").capitalize()), end="")
-            print(", ", end="")
-        if self.stats.get('video', {}).get('current_filesize', None) or self.stats.get('audio', {}).get('current_filesize', None):
-            current_size = self.stats.get('video', {}).get('current_filesize', 0) + self.stats.get('audio', {}).get('current_filesize', 0)
-            current_size_string = self.convert_bytes(current_size)
-            print("~{0} downloaded".format(current_size_string), end=" ")
+            a = self.stats.get('audio', {})
+            a_str = f"Audio: {a.get('downloaded_segments', 0)}/{a.get('latest_sequence', 0)}"
+            # Note: Fixed a likely typo in your original code where you checked 
+            # video status while printing audio stats
+            if a.get('status'):
+                a_str += f" ({a.get('status').capitalize()})"
+            parts.append(a_str)
+
+        if self.stats.get('video', {}).get('current_filesize') or self.stats.get('audio', {}).get('current_filesize'):
+            size = self.stats.get('video', {}).get('current_filesize', 0) + self.stats.get('audio', {}).get('current_filesize', 0)
+            parts.append(f"~{self.convert_bytes(size)} downloaded")
+
+        # Join everything with commas or spaces
+        full_line = " ".join(parts)
+
         if options.get("new_line", False):
-            print()
+            print(full_line)
         else:
-            print("\r",end="")
+            # \r moves to start, \033[K clears anything left over from the previous longer line
+            print(f"\r{full_line}\033[K", end="", flush=True)
         
     def add_url_param(self, url: str, key, value) -> str:
         parsed = urlparse(url)
