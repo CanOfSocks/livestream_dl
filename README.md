@@ -166,7 +166,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--proxy` | `None` | Proxy URL (string) or JSON string for multiple methods. First proxy used for `yt-dlp`/chat. |
 | `--ipv4` | `False` | Force IPv4 only. |
 | `--ipv6` | `False` | Force IPv6 only. |
-| `--log-level` | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `--log-level` | `INFO` | Logging level: `DEBUG`, `VERBOSE`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. `Verbose` logging is a custom level that includes the `INFO` logs of `yt-dlp`. |
 | `--no-console` | `False` | Disable printing log messages to the console. |
 | `--log-file` | `None` | Path to a file where log messages will be saved. |
 | `--stats-as-json` | `False` | Prints download statistics as a JSON string (bypasses log level). |

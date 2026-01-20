@@ -262,7 +262,7 @@ if __name__ == "__main__":
     
     parser.add_argument("--log-level", type=str, default="INFO",
                         choices=["DEBUG", "VERBOSE", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                        help="Set the logging level. Default is INFO.")
+                        help="Set the logging level. Default is INFO. Verbose logging is a custom level that includes the INFO logs of yt-dlp.")
     
     parser.add_argument("--no-console", action="store_false", help="Do not log messages to the console.")
     
