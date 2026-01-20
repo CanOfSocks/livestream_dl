@@ -2,7 +2,7 @@
 import yt_dlp
 import logging
 import json
-from setup_logger import setup_logging
+from setup_logger import VERBOSE_LEVEL_NUM
 
 class MyLogger:
     def __init__(self, logger: logging = logging.getLogger()):
@@ -16,7 +16,8 @@ class MyLogger:
                 self.info(msg)
 
     def info(self, msg):
-        self.logger.info(msg)
+        # Safe save to Verbose log level
+        self.logger.log(VERBOSE_LEVEL_NUM, msg)
 
     def warning(self, msg):
         msg_str = str(msg)

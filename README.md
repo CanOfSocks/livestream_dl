@@ -107,7 +107,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--help`, `-h` | N/A | Show the help message and exit. |
 | `--cookies` | `None` | Path to a Netscape-formatted cookies file (required for age-gated or members-only content). |
 | `--temp-folder` | `None` | Path for temporary files (database, segments). Supports `yt-dlp` output formatting. |
-| `--output` | `%(fulltitle)s (%(id)s)` | Path/filename for output files. Supports `yt-dlp` output formatting. |
+| `--output` | `%(fulltitle)s (%(id)s)` | Path/filename for output files. Supports [yt-dlp output formatting](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#output-template). A good example is: `"[%(release_date,upload_date)s] %(fulltitle).120B [%(channel)s] (%(id)s)"` |
 | `--ext` | `None` | Force the extension of the final video file (e.g., `.mp4`, `.mkv`). |
 | `--json-file` | `None` | Path to an existing `yt-dlp` info.json file. Overrides `ID` and skips retrieving URLs from the web. |
 | `--write-ffmpeg-command` | `False` | Writes the final FFmpeg command used to merge the file to a `.txt` file for debugging or manual merging. |

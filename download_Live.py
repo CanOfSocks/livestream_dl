@@ -692,6 +692,26 @@ class LiveStreamDownloader:
         
         created_files = {}
 
+        logger = self.logger
+
+        class YTDLP_Auxiliary_logger(YoutubeURL.YTDLPLogger):        
+            def __init__(self, logger: logging = logging.getLogger()):
+                super().__init__(logger=logger)
+
+            def prefix(self, msg: str):
+                if msg.startswith("[live-chat] "):
+                    return msg
+                else:
+                    return "[live-chat] {0}".format(msg)
+            def debug(self, msg):
+                super().debug(self.prefix(msg))
+            def info(self, msg):
+                super().info(self.prefix(msg))
+            def warning(self, msg):
+                super().warning(self.prefix(msg))
+            def error(self, msg):
+                super().error(self.prefix(msg))
+
         ydl_opts = {
             'skip_download': True,
             'quiet': True,
@@ -701,7 +721,7 @@ class LiveStreamDownloader:
             'writethumbnail': (options.get('write_thumbnail', False) or options.get("embed_thumbnail", False)),
             'outtmpl': base_output,
             'retries': 10,
-            
+            'logger': YoutubeURL.YTDLPLogger(logger=logger),
         }
         if options.get('proxy', None) is not None:
             ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
@@ -942,7 +962,7 @@ class LiveStreamDownloader:
             print(f"\r{json.dumps(self.stats)}\033[K", end="", flush=True)
             return
 
-        if options.get("log_level") not in ["DEBUG", "INFO"]:
+        if self.logger.getEffectiveLevel() > logging.INFO:
             return
 
         if not (self.stats.get('video') or self.stats.get('audio')):

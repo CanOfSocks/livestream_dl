@@ -261,7 +261,7 @@ if __name__ == "__main__":
     parser.add_argument('--clean-info-json', action='store_true', help="Enables yt-dlp's 'clean-info-json' option")
     
     parser.add_argument("--log-level", type=str, default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                        choices=["DEBUG", "VERBOSE", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level. Default is INFO.")
     
     parser.add_argument("--no-console", action="store_false", help="Do not log messages to the console.")

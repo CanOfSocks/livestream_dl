@@ -10,6 +10,11 @@ import os
 import logging
 from typing import Union
 
+# Verbose setup
+VERBOSE_LEVEL_NUM = 15
+VERBOSE_LEVEL_NAME = "VERBOSE"
+ENV_DISABLE_FLAG = "DISABLE_LIVESTREAM_DL_VERBOSE_LOGGING"
+
 def setup_logging(
     log_level="INFO",
     console=True,
@@ -110,3 +115,40 @@ def setup_logging(
     
     return logger
 
+
+def _install_verbose():
+    """
+    Registers the VERBOSE level. 
+    Ensures idempotency (only runs once) and respects environment variables.
+    """
+    
+    # Check environment variable
+    if os.getenv(ENV_DISABLE_FLAG, "false").lower() == "true":
+        return
+
+    # 2. Safety Check: Only add if it doesn't already exist
+    if hasattr(logging, VERBOSE_LEVEL_NAME):
+        return
+
+    # Add the name to the logging system
+    logging.addLevelName(VERBOSE_LEVEL_NUM, VERBOSE_LEVEL_NAME)
+    
+    # Add a constant to the logging module (e.g., logging.VERBOSE)
+    setattr(logging, VERBOSE_LEVEL_NAME, VERBOSE_LEVEL_NUM)
+
+    # 3. Define the Logger method: logger.verbose(...)
+    def verbose_method(self, message, *args, **kws):
+        if self.isEnabledFor(VERBOSE_LEVEL_NUM):
+            self._log(VERBOSE_LEVEL_NUM, message, args, **kws)
+
+    # 4. Define the Global function: logging.verbose(...)
+    def verbose_global(message, *args, **kws):
+        """Log a message with severity 'VERBOSE' on the root logger."""
+        logging.log(VERBOSE_LEVEL_NUM, message, *args, **kws)
+
+    # 5. Apply the patches
+    logging.Logger.verbose = verbose_method
+    logging.verbose = verbose_global
+
+# Execute on import
+_install_verbose()
