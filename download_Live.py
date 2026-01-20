@@ -23,15 +23,14 @@ except ModuleNotFoundError as e:
     from . import YoutubeURL
     #from .headers import user_agents
 
-from typing import Union, Optional
-import os  
+import os
 
 from urllib.parse import urlparse, parse_qs
 
 import shutil
 
 import logging
-import logging.handlers
+
 
 #import re
 
@@ -39,12 +38,15 @@ import threading
 
 import httpx
 
+import setup_logger
 
+# Backward compatibility
+setup_logging = setup_logger.setup_logging
 
 
 class LiveStreamDownloader:
 
-    def __init__(self, kill_all: threading.Event=threading.Event(), cleanup = threading.Event(), logger: logging = None, kill_this: threading.Event = None):
+    def __init__(self, kill_all: threading.Event=threading.Event(), cleanup = threading.Event(), logger: logging = None, kill_this: threading.Event = None,):
         if logger:
             self.logger = logger
         else:
@@ -52,7 +54,6 @@ class LiveStreamDownloader:
             self.logger = logging.getLogger(self.__class__.__name__) 
             # Ensure it processes messages (important if you don't call setup_logging immediately)
         self.logger.propagate = False 
-
         self.kill_this = kill_this or threading.Event()
 
         # Global state converted to instance attributes
@@ -231,7 +232,10 @@ class LiveStreamDownloader:
         if thread_event is not None:        
             self.kill_all = thread_event
             
-        setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name=str(self.__class__.__name__))
+        #setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name=str(self.__class__.__name__))
+        
+        #setup_logging(log_level=options.get('ytdlp_log_level') or self.logger.getEffectiveLevel(), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=info_dict.get("id", "ID N/A"), metadata={"log_type", "default"})
+        
         self.stats['id'] = info_dict.get('id', None)
         self.stats["status"] = "Starting"
         self.logger.debug(json.dumps(options, indent=4))
@@ -502,11 +506,12 @@ class LiveStreamDownloader:
                 super().warning(self.prefix(msg))
             def error(self, msg):
                 super().error(self.prefix(msg))
-
+        
+        logger = self.logger
         
         ydl_opts = {
             'skip_download': True,               # Skip downloading video/audio
-            'logger': YTDLP_Chat_logger(logger=self.logger),
+            'logger': YTDLP_Chat_logger(logger=logger),
             #'quiet': True,
             'cookiefile': options.get('cookies', None),
             'retries': 25,
@@ -2915,101 +2920,6 @@ class StreamRecovery(DownloadStream):
 
 
 
-def setup_logging(
-    log_level="INFO",
-    console=True,
-    file: str | None = None,
-    force=False,
-    file_options: dict = None,
-    logger: logging.Logger | None = None,
-    logger_name: str | None = None,
-    video_id: str | None = None  # 1. New parameter for the unique ID
-) -> Union[logging.Logger, logging.LoggerAdapter]: # Updated return type
-    """
-    Configure logging.
 
-    :param log_level: logging level name ("DEBUG", "INFO", etc.)
-    :param console: whether to log to console (StreamHandler)
-    :param file: path to log file; if provided, file logging is enabled
-    :param force: if True, remove existing handlers on the logger
-    :param file_options: dict for file handler options (e.g. rotation: maxBytes, when, interval, backupCount)
-    :param logger: optionally pass an existing logger object
-    :param logger_name: if provided, get/create a named logger; otherwise root logger
-    :param logger_name: Add video ID to logger
-    :return: the configured logger
-    """
-    
-    file_options = file_options or {}
-
-    # Standard Windows console fix
-    def disable_quick_edit():
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        hStdin = kernel32.GetStdHandle(-10)
-        mode = ctypes.c_ulong()
-        kernel32.GetConsoleMode(hStdin, ctypes.byref(mode))
-        mode.value &= ~0x40
-        kernel32.SetConsoleMode(hStdin, mode)
-
-    if os.name == "nt":
-        disable_quick_edit()
-
-    # Get the base logger
-    if logger is None:
-        logger = logging.getLogger(logger_name)
-
-    # 2. Updated Logic: We only skip configuration if handlers exist.
-    # We do NOT return yet because we might still need to wrap it in an Adapter.
-    if force:
-        for h in list(logger.handlers):
-            logger.removeHandler(h)
-    
-    # Only configure handlers if the logger is "fresh"
-    if not logger.handlers:
-        level = getattr(logging, log_level.upper(), logging.INFO)
-        logger.setLevel(level)
-
-        # 3. Use the video_id placeholder in the format string if an ID is intended
-        if video_id:
-            # %(video_id)s comes from the Adapter's 'extra' dict
-            fmt_str = f'[%(levelname)s] [%(video_id)s] %(asctime)s - %(message)s'
-        elif logger_name:
-            fmt_str = f'[%(levelname)s] [{logger_name}] %(asctime)s - %(message)s'
-        else:
-            fmt_str = '[%(levelname)s] %(asctime)s - %(message)s'
-            
-        formatter = logging.Formatter(fmt_str, datefmt='%Y-%m-%d %H:%M:%S')
-
-        if logger_name:
-            logger.propagate = False
-
-        if console:
-            console_handler = logging.StreamHandler()
-            console_handler.setFormatter(formatter)
-            logger.addHandler(console_handler)
-
-        if file:
-            if file_options.get("maxBytes"):
-                handler = logging.handlers.RotatingFileHandler(
-                    file, maxBytes=file_options.get("maxBytes"), 
-                    backupCount=file_options.get("backupCount", 5), encoding='utf-8'
-                )
-            elif file_options.get("when"):
-                handler = logging.handlers.TimedRotatingFileHandler(
-                    file, when=file_options.get("when"), 
-                    interval=file_options.get("interval", 1), 
-                    backupCount=file_options.get("backupCount", 7), encoding='utf-8'
-                )
-            else:
-                handler = logging.FileHandler(file, mode='a', encoding='utf-8')
-            
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-
-    # 4. Final step: If a video_id was passed, wrap the logger in an Adapter
-    if video_id:
-        return logging.LoggerAdapter(logger, {"video_id": video_id})
-    
-    return logger
 
 

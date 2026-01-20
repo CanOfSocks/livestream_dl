@@ -108,6 +108,9 @@ def parse_string_or_tuple(value):
 
 def main(id, resolution='best', options={}, info_dict=None, thread_kill: threading.Event=kill_all):
     logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id)
+
+    # Initialise yt-dlp logger
+    #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
     
     # Convert additional options to dictionary, if it exists
     if options.get('ytdlp_options', None) is not None:        
@@ -129,6 +132,7 @@ def main(id, resolution='best', options={}, info_dict=None, thread_kill: threadi
 def monitor_channel(options={}):
     import copy
     logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Monitor")
+    #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
     import monitor_channel
     from typing import Dict
     threads: Dict[str, threading.Thread] = {}
@@ -269,6 +273,8 @@ if __name__ == "__main__":
     parser.add_argument('--stats-as-json', action='store_true', help="Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level")
     
     parser.add_argument('--ytdlp-options', type=str, default=None, help="""Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client": ["web_creator"]}, "youtubepot-bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin""")
+
+    parser.add_argument('--ytdlp-log-level', type=str, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], default=None, help="### NOT IMPLEMENTED ### Optional alternative log level for yt-dlp module tasks (such as video extraction or format selection). Uses main logger if not set")
 
     parser.add_argument('--dash', action='store_true', help="Gets any available DASH urls as a fallback to adaptive URLs. Dash URLs do not require yt-dlp modification to be used, but can't be used for stream recovery and can cause large info.json files when a stream is in the 'post_live' status")
 

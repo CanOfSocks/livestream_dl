@@ -2,6 +2,7 @@
 import yt_dlp
 import logging
 import json
+from setup_logger import setup_logging
 
 class MyLogger:
     def __init__(self, logger: logging = logging.getLogger()):
@@ -56,6 +57,7 @@ class LivestreamError(TypeError):
 def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False, logger=logging.getLogger(), clean_info_dict: bool=False):
     #url = "https://www.youtube.com/watch?v={0}".format(id)
     url = str(id)
+
     yt_dlpLogger = MyLogger(logger=logger)
     
     ydl_opts = {
