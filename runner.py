@@ -140,8 +140,8 @@ def monitor_channel(options={}):
     channel_id = options.get("ID")
     tab = "membership" if options.get("members_only", False) else "streams"
     if not options.get("wait_for_video", None):
-        options["wait_for_video"] = (60,)
-    wait = max(options.get("wait_for_video"))
+        options["wait_for_video"] = (60, None)
+    wait = max((num for num in options.get("wait_for_video", []) if isinstance(num, (int, float))), default=60)
     logger.debug("Starting runner for channel: '{0}' on tab: '{1}'".format(channel_id, tab))
     while True:
         for id, thread in list(threads.items()):
