@@ -3,6 +3,7 @@ import yt_dlp
 import logging
 import json
 from setup_logger import VERBOSE_LEVEL_NUM
+import argparse
 
 class MyLogger:
     def __init__(self, logger: logging = logging.getLogger()):
@@ -76,17 +77,18 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
     }
 
     if isinstance(wait, tuple):
-        if not (0 <= len(wait) <= 2) :
+        if not (0 < len(wait) <= 2) :
             raise ValueError("Wait tuple must contain 1 or 2 values")
         elif len(wait) < 2:
-            ydl_opts['wait_for_video'] = (wait[0], wait[0])
+            ydl_opts['wait_for_video'] = (wait[0])
         else:
             ydl_opts['wait_for_video'] = (wait[0], wait[1])
     elif isinstance(wait, int):
-        ydl_opts['wait_for_video'] = (wait, wait)
+        ydl_opts['wait_for_video'] = (wait, None)
     elif wait is True:
         ydl_opts['wait_for_video'] = (5,300)
-    
+    elif isinstance(wait, str):
+        ydl_opts['wait_for_video'] = parse_wait(wait)
         
     if additional_options:
         ydl_opts.update(additional_options)
@@ -134,3 +136,17 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
         
     logging.debug("Info.json: {0}".format(json.dumps(info_dict)))
     return info_dict, info_dict.get('live_status')
+
+def parse_wait(string) -> tuple[int, int]:
+    try:
+        if ":" in string:
+            # Split by colon and convert both parts to integers
+            parts = string.split(":")
+            if len(parts) != 2:
+                raise ValueError
+            return (int(parts[0]), int(parts[1]))
+        else:
+            # Return a single-item list or just the int depending on your needs
+            return (int(string), None)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{string}' must be an integer or 'min:max'")

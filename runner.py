@@ -174,19 +174,7 @@ def monitor_channel(options={}):
         sleep(time_to_next)
         last_check=time()
 
-def range_or_int(string) -> tuple[int, int]:
-    try:
-        if ":" in string:
-            # Split by colon and convert both parts to integers
-            parts = string.split(":")
-            if len(parts) != 2:
-                raise ValueError
-            return (int(parts[0]), int(parts[1]))
-        else:
-            # Return a single-item list or just the int depending on your needs
-            return (int(string), int(string))
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"'{string}' must be an integer or 'min:max'")
+
     
 if __name__ == "__main__":
     # Create the parser
@@ -250,7 +238,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--direct-to-ts', action='store_true', help="Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options")
     
-    parser.add_argument("--wait-for-video", type=range_or_int, default=None, help="Wait time (int) or Minimum and maximum (min:max) interval to wait for a video")
+    parser.add_argument("--wait-for-video", type=getUrls.parse_wait, default=None, help="Wait time (int) or Minimum and maximum (min:max) interval to wait for a video")
     
     parser.add_argument('--json-file', type=str, default=None, help="Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs")
     
