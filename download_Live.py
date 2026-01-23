@@ -17,10 +17,12 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 try:
     import getUrls
     import YoutubeURL
+    import setup_logger
     #from headers import user_agents
 except ModuleNotFoundError as e:
     from . import getUrls
     from . import YoutubeURL
+    from . import setup_logger
     #from .headers import user_agents
 
 import os
@@ -38,7 +40,7 @@ import threading
 
 import httpx
 
-import setup_logger
+#import setup_logger
 
 # Backward compatibility
 setup_logging = setup_logger.setup_logging
