@@ -10,7 +10,13 @@ __all__ = ["YoutubeURL", "Formats"]
 
 import logging
 
-from setup_logger import VERBOSE_LEVEL_NUM
+
+try:
+    # Try absolute import (standard execution)
+    from setup_logger import VERBOSE_LEVEL_NUM
+except ModuleNotFoundError:
+    # Fallback to relative import (when part of a package)
+    from .setup_logger import VERBOSE_LEVEL_NUM
 
 class YTDLPLogger:
     def __init__(self, logger: logging = logging.getLogger()):
