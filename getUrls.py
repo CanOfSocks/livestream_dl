@@ -2,7 +2,13 @@
 import yt_dlp
 import logging
 import json
-from setup_logger import VERBOSE_LEVEL_NUM
+try:
+    # Try absolute import (standard execution)
+    from setup_logger import VERBOSE_LEVEL_NUM
+except ModuleNotFoundError:
+    # Fallback to relative import (when part of a package)
+    from .setup_logger import VERBOSE_LEVEL_NUM
+
 import argparse
 
 class MyLogger:
