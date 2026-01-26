@@ -20,7 +20,8 @@ import platform
 original_sigint = signal.getsignal(signal.SIGINT)
 
 def handle_shutdown(signum, frame):
-    kill_all.set()
+    if not getUrls.extraction_event.is_set():
+        kill_all.set()
     sleep(0.5)
     if callable(original_sigint):
         original_sigint(signum, frame)

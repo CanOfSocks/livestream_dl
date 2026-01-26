@@ -755,6 +755,7 @@ class LiveStreamDownloader:
         
             
     def create_mp4(self, file_names, info_dict, options):
+        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Files: {0}\n".format(json.dumps(self.file_names)))
         import subprocess
         import mimetypes
         #self.logger.debug("Files: {0}".format(json.dumps(file_names)))

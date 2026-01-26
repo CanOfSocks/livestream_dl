@@ -11,6 +11,10 @@ except ModuleNotFoundError:
 
 import argparse
 
+import threading
+
+extraction_event = threading.Event()
+
 class MyLogger:
     def __init__(self, logger: logging = logging.getLogger()):
         self.logger=logger
@@ -112,7 +116,9 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
     info_dict = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
+            extraction_event.set()
             info_dict = ydl.extract_info(url, download=False)
+            extraction_event.clear()
             info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
 
             for stream_format in info_dict.get('formats', []):
@@ -139,6 +145,8 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                 raise LivestreamError("Livestream has ended")
             else:
                 raise e
+        finally:
+            extraction_event.clear()
         
     logging.debug("Info.json: {0}".format(json.dumps(info_dict)))
     return info_dict, info_dict.get('live_status')
