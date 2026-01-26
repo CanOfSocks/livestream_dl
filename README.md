@@ -176,8 +176,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--monitor-channel` | `False` | Enables channel monitoring mode. Use the Channel ID in the `ID` argument. This can be found from the "Copy Channel ID" button:    <img width="300" alt="image" src="https://github.com/user-attachments/assets/9b4f3b2b-5947-45ff-8ca7-49126442fb41" />
-<img width=300 alt="image" src="https://github.com/user-attachments/assets/64801bfe-3e59-4570-8953-b4c7742e1f6c" />
+| `--monitor-channel` | `False` | Enables channel monitoring mode. Use the Channel ID in the `ID` argument. This can be found from the "Copy Channel ID" button:    <img width="300" alt="image" src="https://github.com/user-attachments/assets/9b4f3b2b-5947-45ff-8ca7-49126442fb41" /> <img width=300 alt="image" src="https://github.com/user-attachments/assets/64801bfe-3e59-4570-8953-b4c7742e1f6c" />
  |
 | `--members-only` | `False` | Monitor the 'Members Only' playlist instead of public streams. Requires cookies. |
 | `--upcoming-lookahead` | `24` | Maximum time (in hours) to look ahead for upcoming videos to schedule. |
