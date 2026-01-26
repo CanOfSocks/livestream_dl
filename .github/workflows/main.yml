@@ -1,0 +1,56 @@
+name: Build & Release Windows EXE
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name (e.g. v1.2.3)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -U --pre "yt-dlp[default]"
+          pip install pyinstaller
+
+      - name: Apply yt-dlp patches
+        run: |
+          $path = python -c "import yt_dlp; import os; print(os.path.dirname(yt_dlp.__file__))"
+          $toModifyFile = "$path\extractor\youtube\_video.py"
+
+          if (Test-Path $toModifyFile) {
+            $content = Get-Content $toModifyFile -Raw
+            #this is replace is entirely generated. 
+            $content = $content -replace "(\s+)if fmt_stream\.get\('targetDurationSec'\):\s*\n(\s+)continue", "`$1#if fmt_stream.get('targetDurationSec'):`n`$2#continue"
+            Set-Content $toModifyFile $content
+            Write-Host "Patches applied successfully"
+          } else {
+            Write-Error "Could not find yt-dlp video file at $toModifyFile"
+          }
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile runner.py
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ github.run_number }}"
+          files: dist/runner.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
