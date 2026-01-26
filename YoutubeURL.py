@@ -315,7 +315,7 @@ class Formats:
                 #format_url = str(format_obj)
                 if not format.get('format_id', None):
                     format['format_id'] = str(format_obj.itag).strip() 
-                if (not self.protocol) and format_url:
+                if (not self.protocol) and format_obj:
                     self.protocol = format_obj.protocol
             else:
                 format_obj = YoutubeURL(format.get('url'), format.get('protocol'), format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
