@@ -10,7 +10,9 @@ on:
         description: "Tag name (e.g. v1.2.3)"
         required: false
         default: ""
-
+permissions:
+  contents: write
+  
 jobs:
   build:
     runs-on: windows-latest
@@ -21,6 +23,10 @@ jobs:
 
       - name: Set up Python
         uses: actions/setup-python@v5
+
+      - name: Get current date
+        id: date
+        run: echo "DATE=$(Get-Date -Format 'yyyy.MM.dd')" >> $env:GITHUB_ENV
 
       - name: Install dependencies
         run: |
@@ -50,7 +56,17 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v${{ github.run_number }}"
+          tag_name: "v${{ env.DATE }}-${{ github.run_number }}"
+          name: "Alpha Release - ${{ env.DATE }}"
+          body: |
+            ### ⚠️ Alpha State
+            This release is currently in an **alpha state**.
+            
+            **Dependencies Required:**
+            * **FFmpeg**: Must be installed and added to your system PATH.
+            * **Deno**: Must be installed and added to your system PATH.
+          draft: false
+          prerelease: true
           files: dist/runner.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
