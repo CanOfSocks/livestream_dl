@@ -1146,7 +1146,7 @@ class DownloadStream:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
         
         self.format = self.stream_url.format_id
-        print(self.stream_url)
+        #print(self.stream_url)
         self.stream_urls.append(self.stream_url)
         # Extract and parse the query parameters into a dictionary
         #parsed_url = urlparse(self.stream_url)        
@@ -1791,7 +1791,7 @@ class DownloadStream:
             conn.execute('PRAGMA journal_mode = WAL;')
             conn.execute('PRAGMA synchronous = NORMAL;')
             conn.execute('PRAGMA page_size = 32768;')
-            #conn.execute('PRAGMA cache_size = -64000;')
+            conn.execute('PRAGMA cache_size = -64000;')
             # Optionally commit immediately to persist the PRAGMA settings
             conn.commit()
 
