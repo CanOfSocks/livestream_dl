@@ -2342,7 +2342,7 @@ class DownloadStreamDirect(DownloadStream):
                 downloaded_segments = dict((k, v) for k, v in downloaded_segments.items() if k >= self.state.get('last_written',0))
 
                 # Determine segments to download. Sort into a list as direct to ts relies on segments to be written in order
-                segments_to_download = sorted(set(range(self.state.get('last_written',-1) + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries))
+                segments_to_download = sorted(set(range(self.state.get('last_written',-1) + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()) - set(self.pending_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries))
 
                 optimistic_seg = max(self.latest_sequence, self.state.get('last_written',0)) + 1  
                                         
@@ -2498,7 +2498,7 @@ class StreamRecovery(DownloadStream):
             self.logger = logging.getLogger()
             self.kill_all = threading.Event()
             self.kill_this = threading.Event()
-        self.pending_segments = []
+        self.pending_segments: dict[int, bytes] = {}
         self.sqlite_thread = None
         self.conn = None
         self.latest_sequence = -1
@@ -2722,7 +2722,9 @@ class StreamRecovery(DownloadStream):
                         # self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
                         # uncommitted_inserts += 1        
                          
-                        self.pending_segments.append((seg_num, segment_data))                
+                        existing = self.pending_segments.get(seg_num, None)
+                        if existing is None or len(segment_data) > len(existing):
+                            self.pending_segments[seg_num] = segment_data               
                         
                         self.segments_retries.pop(seg_num,None)
                         
@@ -2860,7 +2862,7 @@ class StreamRecovery(DownloadStream):
                     # Have up to 2x max workers of threads submitted
                     if len(future_to_seg) > max(10,2*self.max_workers, thread_windows_size):
                         break
-                    if seg_num not in submitted_segments and self.segments_retries.get(seg_num, {}).get('retries', 0) <= self.fragment_retries and time.time() - self.segments_retries.get(seg_num, {}).get('retries', 0) > self.segment_retry_time:
+                    if seg_num not in submitted_segments and self.segments_retries.get(seg_num, {}).get('retries', 0) <= self.fragment_retries and time.time() - self.segments_retries.get(seg_num, {}).get('retries', 0) > self.segment_retry_time and seg_num not in self.pending_segments:
                         # Check if segment already exist within database (used to not create more connections). Needs fixing upstream
                         if self.segment_exists(seg_num):
                             self.already_downloaded.add(seg_num)
