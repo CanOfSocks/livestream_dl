@@ -189,9 +189,9 @@ if __name__ == "__main__":
     
     parser.add_argument('--custom-sort', type=str, default=None, help="Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats")
     
-    #parser.add_argument('--video-format', type=int, help="Specify specific video format. Resolution will be ignored if used")
+    parser.add_argument('--video-format', type=str, default=None, help="Specify specific video format (string). Resolution will be ignore for video if used")
     
-    #parser.add_argument('--audio-format', type=int, help="Specify specific audio format. Resolution will be ignored if used")
+    parser.add_argument('--audio-format', type=str, default=None, help="Specify specific audio format (string). Resolution will be ignored for audio if used")
     
     parser.add_argument('--threads', type=int, default=1, help="Number of download threads per format. This will be 2x for an video and audio download. Default: 1")
     

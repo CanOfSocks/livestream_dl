@@ -165,7 +165,7 @@ class LiveStreamDownloader:
             self.logger.exception("Unexpected error occurred while downloading stream")
             raise
 
-    def submit_download(self, executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False):
+    def submit_download(self, executor, info_dict: dict, resolution, options: dict, download_folder, file_name, futures, is_audio=False):
         extra_kwargs = {}
 
         # Options only not used by recovery
@@ -210,6 +210,11 @@ class LiveStreamDownloader:
             proxies=options.get("proxy", None),
             yt_dlp_sort=options.get('custom_sort', None),
         )
+
+        if is_audio and options.get("audio_format"):
+            kwargs.update({"resolution": options.get("audio_format")})
+        elif options.get("video_format"):
+            kwargs.update({"resolution": options.get("video_format")})
 
         if extra_kwargs:
             kwargs.update(extra_kwargs)
@@ -290,7 +295,7 @@ class LiveStreamDownloader:
                     
                     #Video
                     self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False)
-                    if format_check.protocol != "m3u8_native":
+                    if format_check.protocol != "m3u8_native" or options.get("audio_format", None):
                         #Audio
                         self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
 
@@ -755,7 +760,7 @@ class LiveStreamDownloader:
         
             
     def create_mp4(self, file_names, info_dict, options):
-        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Files: {0}\n".format(json.dumps(self.file_names)))
+        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Files: {0}\n".format(json.dumps(self.file_names, default=lambda o: o.to_dict())))
         import subprocess
         import mimetypes
         #self.logger.debug("Files: {0}".format(json.dumps(file_names)))
@@ -1087,6 +1092,7 @@ class FileInfo(Path):
         }
 
 class DownloadStream:
+    sqlite_thread = None
     timeout_config = httpx.Timeout(10.0, connect=5.0)
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader = None, **kwargs):        
         self.livestream_coordinator = livestream_coordinator
@@ -1623,8 +1629,8 @@ class DownloadStream:
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             file_type, ext = str(stream_url_info.get('Content-Type')).split('/')
-            if file_type.lower() != "application":
-                self.type = self.type.lower()
+            if file_type.strip().lower() in ["video", "audio"]:
+                self.type = self.type.strip().lower()
                 self.ext = ext
 
         if self.livestream_coordinator:
@@ -1794,6 +1800,7 @@ class DownloadStream:
     
     def create_db(self, temp_file):
         # Connect to SQLite database (or create it if it doesn't exist)
+        self.sqlite_thread = threading.get_ident()
         conn = self.create_connection(temp_file)  # should return a Connection object
 
         # Create the table (id = segment order, segment_data as BLOB)
@@ -1997,8 +2004,8 @@ class DownloadStream:
                     for task in tasks:
                         if not task.done():
                             task.cancel()
-                            
-                self.close_connection()
+                if self.sqlite_thread is None or self.sqlite_thread == threading.get_ident():
+                    self.close_connection()
             except Exception as e:
                 self.logger.exception("Unable to perform cleanup")
             # Raising KeyboardInterrupt will bubble up to asyncio.run() 
