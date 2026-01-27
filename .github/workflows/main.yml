@@ -53,7 +53,7 @@ jobs:
           }
       - name: Build EXE
         run: |
-          pyinstaller --onefile runner.py
+          pyinstaller --onefile --name livestream_dl runner.py
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -69,6 +69,6 @@ jobs:
             * **Deno**: Must be installed and added to your system PATH.
           draft: false
           prerelease: true
-          files: dist/runner.exe
+          files: dist/livestream_dl.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
