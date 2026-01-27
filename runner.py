@@ -12,28 +12,28 @@ import json
 import threading
 kill_all = threading.Event()
 
-import signal
+#import signal
 from time import sleep, time
 import platform
 
-# Preserve original keyboard interrupt logic as true behaviour is known
-original_sigint = signal.getsignal(signal.SIGINT)
-
-def handle_shutdown(signum, frame):
-    kill_all.set()
-    sleep(0.5)
-    if callable(original_sigint):
-        original_sigint(signum, frame)
-
-# common
-signal.signal(signal.SIGINT, handle_shutdown)
-
-if platform.system() == "Windows":
-    # SIGTERM won’t fire — but SIGBREAK will on Ctrl-Break
-    signal.signal(signal.SIGBREAK, handle_shutdown)
-else:
-    # normal POSIX termination
-    signal.signal(signal.SIGTERM, handle_shutdown)
+## Preserve original keyboard interrupt logic as true behaviour is known
+#original_sigint = signal.getsignal(signal.SIGINT)
+#
+#def handle_shutdown(signum, frame):
+#    kill_all.set()
+#    sleep(0.5)
+#    if callable(original_sigint):
+#        original_sigint(signum, frame)
+#
+## common
+#signal.signal(signal.SIGINT, handle_shutdown)
+#
+#if platform.system() == "Windows":
+#    # SIGTERM won’t fire — but SIGBREAK will on Ctrl-Break
+#    signal.signal(signal.SIGBREAK, handle_shutdown)
+#else:
+#    # normal POSIX termination
+#    signal.signal(signal.SIGTERM, handle_shutdown)
 
 _original_getaddrinfo = socket.getaddrinfo
 
@@ -127,7 +127,10 @@ def main(id, resolution='best', options={}, info_dict=None, thread_kill: threadi
     else:        
         info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)), logger=logger, clean_info_dict=options.get('clean_info_json', False))
     downloader = download_Live.LiveStreamDownloader(kill_all=kill_all, logger=logger)
-    downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
+    try:
+        downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
+    except KeyboardInterrupt:
+        logger.info("Bye")
 
 def monitor_channel(options={}):
     import copy

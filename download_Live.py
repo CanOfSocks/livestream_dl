@@ -103,6 +103,9 @@ class LiveStreamDownloader:
             })
             
             return file, filetype
+        except KeyboardInterrupt:
+            self.logger.debug("Keyboard interrupt detected in download_stream")
+            raise
         except Exception as e:
             self.logger.exception("Unexpected error occurred while downloading stream")
             raise
@@ -128,6 +131,9 @@ class LiveStreamDownloader:
                 str(filetype).lower(): file
             })
             return file, filetype
+        except KeyboardInterrupt:
+            self.logger.debug("Keyboard interrupt detected in download_stream_direct")
+            raise
         except Exception as e:
             self.logger.exception("Unexpected error occurred while downloading stream")
             raise
@@ -161,6 +167,9 @@ class LiveStreamDownloader:
                 str(filetype).lower(): file
             })
             return file, filetype
+        except KeyboardInterrupt:
+            self.logger.info("Keyboard interrupt detected in recover_stream")
+            raise
         except Exception as e:
             self.logger.exception("Unexpected error occurred while downloading stream")
             raise
@@ -353,8 +362,9 @@ class LiveStreamDownloader:
                         self.chat_timeout = time.time()
                     while live_chat_thread.is_alive() and not (self.kill_all.is_set() or self.kill_this.is_set()):
                         time.sleep(0.1)
-                
+
             except KeyboardInterrupt as e:
+                self.kill_all.set()
                 self.kill_this.set()
                 self.logger.debug("Keyboard interrupt detected")
                 if len(not_done) > 0:
@@ -365,8 +375,8 @@ class LiveStreamDownloader:
                 executor.shutdown(wait=False,cancel_futures=True)
                 self.logger.debug("Shutdown all threads")
                 self.stats["status"] = "Cancelled"
-                raise        
-                
+                raise
+
         self.stats["status"] = "Muxing"
         self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options)
             
