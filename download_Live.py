@@ -1095,6 +1095,9 @@ class FileInfo(Path):
 class DownloadStream:
     sqlite_thread = None
     timeout_config = httpx.Timeout(10.0, connect=5.0)
+    pending_segments = []
+
+
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader = None, **kwargs):        
         self.livestream_coordinator = livestream_coordinator
         if self.livestream_coordinator:
@@ -1309,8 +1312,10 @@ class DownloadStream:
 
                         if segment_data is not None:
                             # Insert segment data in the main thread (database interaction)
-                            self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                            uncommitted_inserts += 1                       
+                            #self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
+                            #uncommitted_inserts += 1   
+
+                            self.pending_segments.append((seg_num, segment_data))                    
                                 
                             if self.livestream_coordinator:
                                 self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
@@ -1336,13 +1341,7 @@ class DownloadStream:
                     # Remove completed thread to free RAM
                     
 
-                # If finished threads exceeds batch size, commit the whole batch of threads at once. 
-                # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
-                if uncommitted_inserts >= self.batch_size:
-                    self.logger.debug("Writing segments to file...")
-                    self.commit_batch(self.conn)
-                    uncommitted_inserts = 0
-                    self.conn.execute('BEGIN TRANSACTION') 
+                
 
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1
 
@@ -1815,6 +1814,49 @@ class DownloadStream:
         conn.commit()
 
         return conn
+    
+    def commit_segments(self, force=False):
+        if not self.pending_segments:
+            if force:
+                self.conn.commit()
+                if self.livestream_coordinator:
+                    self.livestream_coordinator.stats[self.type]["current_filesize"] = os.path.getsize(self.temp_db_file)
+        # If finished threads exceeds batch size, commit the whole batch of threads at once. 
+        # Has risk of not committing if a thread has no segment data, but this would be corrected naturally in following loop(s)
+        elif force or len(self.pending_segments) >= self.batch_size:
+            self.logger.debug("Writing segments to file...")
+            try:
+                # 1. SORT the batch by the segment ID (index 0 of the tuple)
+                # This keeps the B-Tree insertions linear and avoids page splits.
+                self.pending_segments.sort(key=lambda x: x[0])
+
+                # 2. Use your specific UPSERT logic within executemany
+                sql = '''
+                    INSERT INTO segments (id, segment_data) 
+                    VALUES (?, ?) 
+                    ON CONFLICT(id) 
+                    DO UPDATE SET segment_data = CASE 
+                        WHEN LENGTH(excluded.segment_data) > LENGTH(segments.segment_data) 
+                        THEN excluded.segment_data 
+                        ELSE segments.segment_data 
+                    END;
+                '''
+                
+                self.conn.executemany(sql, self.pending_segments)
+                self.conn.commit()
+
+                # 3. Re-open transaction for the next batch (WAL mode optimization)
+                self.conn.execute('BEGIN TRANSACTION')
+                
+                # 4. Clear the buffer immediately to free RAM (important for video BLOBs)
+                self.pending_segments.clear()
+                
+            except Exception as e:
+                self.logger.exception(f"Batch insert failed:")
+                self.conn.rollback()
+
+            if self.livestream_coordinator:
+                self.livestream_coordinator.stats[self.type]["current_filesize"] = os.path.getsize(self.temp_db_file)
 
     # Function to check if a segment exists in the database
     def segment_exists(self, segment_order):
@@ -2674,8 +2716,10 @@ class StreamRecovery(DownloadStream):
                         self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
                         
                     if segment_data is not None:
-                        self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                        uncommitted_inserts += 1                        
+                        # self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
+                        # uncommitted_inserts += 1        
+                         
+                        self.pending_segments.append((seg_num, segment_data))                
                         
                         self.segments_retries.pop(seg_num,None)
                         
@@ -2695,11 +2739,13 @@ class StreamRecovery(DownloadStream):
                     
                         self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
 
-                if uncommitted_inserts >= max(self.batch_size, len(done)):
-                    self.logger.debug("Writing segments to file...")
-                    self.commit_batch(self.conn)
-                    uncommitted_inserts = 0
-                    self.conn.execute('BEGIN TRANSACTION')                             
+                #if uncommitted_inserts >= max(self.batch_size, len(done)):
+                #    self.logger.debug("Writing segments to file...")
+                #    self.commit_batch(self.conn)
+                #    uncommitted_inserts = 0
+                #    self.conn.execute('BEGIN TRANSACTION')    
+
+                self.commit_segments()                         
                     
                 if len(self.segments_retries) <= 0:
                     self.logger.info("All segment downloads complete, ending...")
