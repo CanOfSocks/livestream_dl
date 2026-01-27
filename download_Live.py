@@ -296,7 +296,7 @@ class LiveStreamDownloader:
                     
                     #Video
                     self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False)
-                    if format_check.protocol != "m3u8_native" or options.get("audio_format", None):
+                    if format_check.protocol != "m3u8_native": # or options.get("audio_format", None):
                         #Audio
                         self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
 
@@ -1093,10 +1093,8 @@ class FileInfo(Path):
         }
 
 class DownloadStream:
-    sqlite_thread = None
+    
     timeout_config = httpx.Timeout(10.0, connect=5.0)
-    pending_segments = []
-
 
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader = None, **kwargs):        
         self.livestream_coordinator = livestream_coordinator
@@ -1109,6 +1107,8 @@ class DownloadStream:
             self.kill_all = threading.Event()
             self.kill_this = threading.Event()
 
+        self.pending_segments = []
+        self.sqlite_thread = None
         
         self.params = download_params or locals().copy()
         self.conn = None
@@ -1146,7 +1146,7 @@ class DownloadStream:
             raise ValueError("Stream URL not found for {0}, unable to continue".format(resolution))
         
         self.format = self.stream_url.format_id
-        
+        print(self.stream_url)
         self.stream_urls.append(self.stream_url)
         # Extract and parse the query parameters into a dictionary
         #parsed_url = urlparse(self.stream_url)        
@@ -1321,7 +1321,7 @@ class DownloadStream:
                                 
                             if self.livestream_coordinator:
                                 self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
-                            segment_retries.pop(seg_num, None)
+                            
 
                             if status == 200 and seg_num > latest_downloaded_segment:
                                 latest_downloaded_segment = seg_num
@@ -1629,7 +1629,7 @@ class DownloadStream:
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
             file_type, ext = str(stream_url_info.get('Content-Type')).split('/')
             if file_type.strip().lower() in ["video", "audio"]:
-                self.type = self.type.strip().lower()
+                #self.type = self.type.strip().lower()
                 self.ext = ext
 
         if self.livestream_coordinator:
@@ -1791,7 +1791,7 @@ class DownloadStream:
             conn.execute('PRAGMA journal_mode = WAL;')
             conn.execute('PRAGMA synchronous = NORMAL;')
             conn.execute('PRAGMA page_size = 32768;')
-            conn.execute('PRAGMA cache_size = -64000;')
+            #conn.execute('PRAGMA cache_size = -64000;')
             # Optionally commit immediately to persist the PRAGMA settings
             conn.commit()
 
@@ -2495,7 +2495,8 @@ class StreamRecovery(DownloadStream):
             self.logger = logging.getLogger()
             self.kill_all = threading.Event()
             self.kill_this = threading.Event()
-
+        self.pending_segments = []
+        self.sqlite_thread = None
         self.conn = None
         self.latest_sequence = -1
         self.already_downloaded = set()
