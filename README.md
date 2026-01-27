@@ -28,7 +28,7 @@ This tool focuses on using `yt-dlp` for stream information extraction, ensuring 
 * [chat-downloader](https://github.com/xenova/chat-downloader) - For robust chat downloading with resume capabilities.
 
 ## Installation
-
+### Clone Repository (**Recommended**)
 1.  Clone the repository.
 2.  Install dependencies:
     ```bash
@@ -36,6 +36,20 @@ This tool focuses on using `yt-dlp` for stream information extraction, ensuring 
     ```
 3.  Ensure `ffmpeg` is in your system PATH.
 4.  Ensure `deno` is in your system PATH.
+5.  Refer to [Usage](https://github.com/CanOfSocks/livestream_dl#usage) for options.
+
+### Executable (.exe) file (Alpha)
+1.  Download latest .exe from the [releases](https://github.com/CanOfSocks/livestream_dl/releases) tab.
+2.  Ensure `ffmpeg` is in your system PATH or the "current" folder.
+3.  Ensure `deno` is in your system PATH or the "current" folder.
+4.  Launch with `livestream_dl.exe` (replacing `python runner.py` at [Usage](https://github.com/CanOfSocks/livestream_dl#usage).
+
+### Docker (Alpha)
+Run a premade container([ghcr.io/canofsocks/livestream_dl:latest](ghcr.io/canofsocks/livestream_dl:latest)). Includes [FFmpeg](https://ffmpeg.org/) and [deno](https://deno.com/). Example usage:
+```bash
+docker run -it -v "${PWD}/downloads:/app/downloads" ghcr.io/canofsocks/livestream_dl:latest python /app/runner.py --threads 4 --dash --m3u8 --write-thumbnail --embed-thumbnail --wait-for-video "60:600" --clean-info-json --remove-ip-from-json --live-chat --resolution "best" --write-info-json --log-level "INFO" -- "[VIDEO_ID]"
+```
+Refer to [Usage](https://github.com/CanOfSocks/livestream_dl#usage) for options.
 
 ---
 
