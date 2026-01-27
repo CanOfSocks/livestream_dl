@@ -28,7 +28,7 @@ This tool focuses on using `yt-dlp` for stream information extraction, ensuring 
 * [chat-downloader](https://github.com/xenova/chat-downloader) - For robust chat downloading with resume capabilities.
 
 ## Installation
-### Clone Repository **Recommended**
+### Clone Repository (**Recommended**)
 1.  Clone the repository.
 2.  Install dependencies:
     ```bash
