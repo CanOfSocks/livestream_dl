@@ -296,7 +296,7 @@ class LiveStreamDownloader:
                     
                     #Video
                     self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=False)
-                    if format_check.protocol != "m3u8_native": # or options.get("audio_format", None):
+                    if format_check.protocol != "m3u8_native" or options.get("audio_format", None):
                         #Audio
                         self.submit_download(executor, info_dict, resolution, options, download_folder, file_name, futures, is_audio=True)
 
