@@ -966,9 +966,12 @@ class LiveStreamDownloader:
             return
 
         if self.logger.getEffectiveLevel() > logging.INFO:
+            #print("Log level too high for printing: {0}".format(self.logger.getEffectiveLevel()))
             return
 
         if not (self.stats.get('video') or self.stats.get('audio')):
+            #print("No stats available")
+            print(json.dumps(self.stats))
             return
 
         # Build the output parts in a list
@@ -1203,7 +1206,7 @@ class DownloadStream:
         self.conn = self.create_db(self.temp_db_file)    
         
         if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type] = {}
+            self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
 
     def __enter__(self):
         return self
@@ -1595,8 +1598,10 @@ class DownloadStream:
             self.logger.debug("Latest sequence: {0}".format(self.latest_sequence))
             
         if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
-            self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
-            self.type = self.type.lower()
+            file_type, ext = str(stream_url_info.get('Content-Type')).split('/')
+            if file_type.lower() != "application":
+                self.type = self.type.lower()
+                self.ext = ext
 
         if self.livestream_coordinator:
             self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
@@ -2090,7 +2095,7 @@ class DownloadStreamDirect(DownloadStream):
             force_m3u8=force_m3u8,
             download_params=params,
             livestream_coordinator=livestream_coordinator, 
-            **kwargs
+            kwargs=kwargs
         )
         # Close the unused in-memory DB connection
         if self.conn:
@@ -2112,8 +2117,6 @@ class DownloadStreamDirect(DownloadStream):
 
         # Attempt to restore existing state
         self._load_existing_state()
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type] = {}
         self.logger.debug(f"DownloadStreamDirect initialized for {self.id} ({self.format})")
 
     def _load_existing_state(self):

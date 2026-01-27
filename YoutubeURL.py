@@ -142,7 +142,7 @@ class YoutubeURL:
 
         self.expire = int(merged["expire"]) if "expire" in merged else None
 
-        self.format_id = format_id
+        self.format_id = format_id or self.itag
 
         self.url_parameters = merged       
 
@@ -283,23 +283,26 @@ class Formats:
             info = ydl.process_ie_result(info_json)
             format = info.get('requested_downloads', info.get('requested_formats', info.get('url',[{}])))
             import json
-            #print(json.dumps(format))
+            #print("Format:", json.dumps(format))
+            #print("Requested Downloads:", json.dumps(info.get('requested_downloads', {})))
+            #print("Requested Formats:", json.dumps(info.get('requested_formats', {})))
 
-            format = format[0]
+            format: dict = format[0]
 
             if format.get('requested_formats', None):
                 if stream_type == "video":
-                    format = next((d for d in format.get('requested_formats') if d.get('vcodec') != 'none'), {})
+                    format.update(next((d for d in format.get('requested_formats') if d.get('vcodec') != 'none'), {}))
                 elif stream_type == "audio":
-                    format = next((d for d in format.get('requested_formats') if d.get('acodec') != 'none'), {})
+                    format.update(next((d for d in format.get('requested_formats') if d.get('acodec') != 'none'), {}))
                 else:
-                    format = next((d for d in format.get('requested_formats') if (d.get('vcodec') != 'none' or d.get('acodec') != 'none')), {})
+                    format.update(next((d for d in format.get('requested_formats') if (d.get('vcodec') != 'none' or d.get('acodec') != 'none')), {}))
 
                 if not format:
                     raise ValueError("No stream matches resolution/format input with a video or audio stream")
             #Handling for known issues with m3u8
             if (not format.get('url', None)) and info.get('url', None):                
                 format['url'] = info.get('url')
+                format['format_id'] = info.get("format_id")
                 format['protocol'] = info.get('protocol')
                 self.logger.debug("Updated format url to: {0}".format(info.get('url', None)))
 
@@ -307,18 +310,18 @@ class Formats:
             self.logger.debug("Formats: {0}".format(json.dumps(format,indent=4)))
             if format.get('protocol', "") == "http_dash_segments":
                 #format_url = format[0].get('fragment_base_url')
-                format_obj = YoutubeURL(format.get('fragment_base_url'), format.get('protocol'), format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
+                format_obj = YoutubeURL(format.get('fragment_base_url'), format.get('protocol'), format_id=format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                 #format_url = str(format_obj)
             elif format.get('protocol', "") == "m3u8_native":      
                 #format_url = video_base_url(self.getM3u8Url(format[0].get('url')))  
-                format_obj = YoutubeURL(self.getM3u8Url(format.get('url')), format.get('protocol'), format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
+                format_obj = YoutubeURL(url=self.getM3u8Url(format.get('url')), protocol=format.get('protocol'), format_id=format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                 #format_url = str(format_obj)
                 if not format.get('format_id', None):
                     format['format_id'] = str(format_obj.itag).strip() 
                 if (not self.protocol) and format_obj:
                     self.protocol = format_obj.protocol
             else:
-                format_obj = YoutubeURL(format.get('url'), format.get('protocol'), format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
+                format_obj = YoutubeURL(format.get('url'), format.get('protocol'), format_id=format.get('format_id'), logger=self.logger, vcodec=format.get('vcodec', None), acodec=format.get('acodec', None),)
                 #format_url = video_base_url(format[0].get('url'))
                 #format_url = str(format_obj)
             format_id = format_obj.format_id
