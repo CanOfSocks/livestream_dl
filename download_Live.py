@@ -1342,9 +1342,6 @@ class DownloadStream:
 
                     # Remove completed thread to free RAM
                     
-
-                
-
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1
 
                 # Check if optimistic segment has already downloaded or not
