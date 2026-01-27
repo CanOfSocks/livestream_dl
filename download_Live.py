@@ -1277,6 +1277,8 @@ class DownloadStream:
                 
                 if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
                     self.livestream_coordinator.stats[self.type] = {}
+
+                self.commit_segments()
                 # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
                 done, not_done = concurrent.futures.wait(future_to_seg, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
                 
