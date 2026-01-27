@@ -209,6 +209,7 @@ class LiveStreamDownloader:
             yt_dlp_options=options.get('ytdlp_options', None),
             proxies=options.get("proxy", None),
             yt_dlp_sort=options.get('custom_sort', None),
+            is_audio=is_audio
         )
 
         if is_audio and options.get("audio_format"):
@@ -1131,7 +1132,7 @@ class DownloadStream:
 
         self.type = None
 
-        if resolution == "audio_only":
+        if resolution == "audio_only" or kwargs.get("is_audio", False):
             self.type = "audio"
         else:
             self.type = "video"
@@ -2472,7 +2473,7 @@ class StreamRecovery(DownloadStream):
                     break            
             self.stream_urls = stream_urls          
         else:
-            if resolution == "audio_only":
+            if resolution == "audio_only" or kwargs.get("is_audio", False):
                 self.type = "audio"
             else:
                 self.type = "video"
