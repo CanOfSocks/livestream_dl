@@ -1087,6 +1087,7 @@ class FileInfo(Path):
         }
 
 class DownloadStream:
+    timeout_config = httpx.Timeout(10.0, connect=5.0)
     def __init__(self, info_dict, resolution='best', batch_size=10, max_workers=5, fragment_retries=5, folder=None, file_name=None, database_in_memory=False, cookies=None, recovery_thread_multiplier=2, yt_dlp_options=None, proxies=None, yt_dlp_sort=None, include_dash=False, include_m3u8=False, force_m3u8=False, download_params = {}, livestream_coordinator: LiveStreamDownloader = None, **kwargs):        
         self.livestream_coordinator = livestream_coordinator
         if self.livestream_coordinator:
@@ -1243,7 +1244,7 @@ class DownloadStream:
         # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-            httpx.Client(timeout=10, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
+            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
             submitted_segments = set()
             future_to_seg = {}
             
@@ -1485,57 +1486,80 @@ class DownloadStream:
             self.following_manifest_thread.join()
         return True           
     
-
     def download_segment(self, segment_url, segment_order, client: httpx.Client=None, immediate_403s=False):
-        
         total_retries = self.fragment_retries
         backoff_factor = 1
         backoff_max = 4
+        # 30-second hard limit for the entire download process per attempt
+        MAX_DURATION = 30.0 
         status_forcelist = {204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504}
-
-        
 
         for attempt in range(total_retries + 1):
             if client is None or client.is_closed:
-                client = httpx.Client(timeout=10, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
+                # Set a base timeout of 30s for connect/read as well
+                client = httpx.Client(
+                    timeout=self.timeout_config, 
+                    proxy=self.process_proxies_for_httpx(self.proxies), 
+                    http1=True, 
+                    http2=self.http2_available(), 
+                    follow_redirects=True
+                )
+            
+            start_time = time.time()
             try:
                 self.check_kill() 
-                response = client.get(segment_url)
-                status = response.status_code
-                headers = response.headers
-                head_seq = int(headers.get("X-Head-Seqnum", -1))
 
-                if status == 403 and immediate_403s:
-                    self.is_403 = True
+                with client.stream("GET", segment_url) as response:
+                    status = response.status_code
+                    headers = response.headers
+                    head_seq = int(headers.get("X-Head-Seqnum", -1))
 
-                if status in status_forcelist and attempt < total_retries:
-                     # Raise to trigger the except block below for backoff
-                    raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
-                
-                if status == 403:
-                    self.is_403 = True
-                elif status == 401:
-                    self.is_401 = True
-                elif status == 200 or status == 204:
-                    self.is_403 = self.is_401 = False
-                
-                if status == 200:
-                    return head_seq, response.content, int(segment_order), status, headers
-                elif status == 204:
-                    return head_seq, bytes(), int(segment_order), status, headers
-                else:
-                    return head_seq, None, int(segment_order), status, headers
+                    if status == 403 and immediate_403s:
+                        self.is_403 = True
 
-            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                    if status in status_forcelist and attempt < total_retries:
+                        raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
+
+                    # Handle auth flags
+                    if status == 403:
+                        self.is_403 = True
+                    elif status == 401:
+                        self.is_401 = True
+                    elif status in {200, 204}:
+                        self.is_403 = self.is_401 = False
+
+                    # Process successful stream
+                    if status == 200:
+                        buffer = bytearray()
+                        # Use 64kb chunks to regularly check progress
+                        for chunk in response.iter_bytes(chunk_size=(64 * 1024)):
+                            # Hard limit check: Total elapsed time
+                            if (time.time() - start_time) > MAX_DURATION:
+                                raise httpx.TimeoutException("Download exceeded hard limit of {0}".format(MAX_DURATION))
+                            
+                            buffer.extend(chunk)
+                        
+                        return head_seq, bytes(buffer), int(segment_order), status, headers
+                    
+                    elif status == 204:
+                        return head_seq, bytes(), int(segment_order), status, headers
+                    else:
+                        return head_seq, None, int(segment_order), status, headers
+
+            except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException) as e:
                 if attempt >= total_retries:
-                    return -1, None, segment_order, getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None, None
+                    # Return standard error format
+                    status_err = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+                    return -1, None, segment_order, status_err, None
                 
                 sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
                 time.sleep(sleep_time)
+                
             except Exception as e:
                 self.logger.exception(f"Unknown error: {e}")
                 if attempt >= total_retries:                    
                     return -1, None, segment_order, None, None
+                
                 sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
                 time.sleep(sleep_time)
 
@@ -1608,7 +1632,7 @@ class DownloadStream:
     
     def get_Headers(self, url, client: httpx.Client=None):
         if client is None or client.is_closed:
-            client = httpx.Client(timeout=10, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
+            client = httpx.Client(timeout=self.timeout_config, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
         try:
             # Send a GET request to a URL
             #response = requests.get(url, timeout=30, proxies=self.proxies)
@@ -2159,7 +2183,7 @@ class DownloadStreamDirect(DownloadStream):
         wait = 0
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"{self.id}-{self.format}") as executor,
-            httpx.Client(timeout=10, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
+            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
             
             # Trackers for optimistic segment downloads 
             optimistic_fails_max = 10
@@ -2303,7 +2327,7 @@ class DownloadStreamDirect(DownloadStream):
                     self.update_latest_segment(client=client)
                     wait += 1
                     continue
-                
+                    """
                 elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
                     self.logger.debug("Video is private, waiting for remaining threads to finish before ending")
                     time.sleep(5)
@@ -2312,7 +2336,7 @@ class DownloadStreamDirect(DownloadStream):
                 elif len(segments_to_download) > 0 and self.is_private:
                     self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
                     break
-
+                """
                 elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
                     self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
                     if self.refresh_url(follow_manifest=False) is True:
@@ -2594,7 +2618,7 @@ class StreamRecovery(DownloadStream):
         last_print = time.time()
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-              httpx.Client(timeout=10, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
+              httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
             submitted_segments = set()
             future_to_seg = {}
             
