@@ -1107,7 +1107,7 @@ class DownloadStream:
             self.kill_all = threading.Event()
             self.kill_this = threading.Event()
 
-        self.pending_segments = []
+        self.pending_segments: dict[int, bytes] = {}
         self.sqlite_thread = None
         
         self.params = download_params or locals().copy()
@@ -1315,13 +1315,13 @@ class DownloadStream:
                         if segment_data is not None:
                             # Insert segment data in the main thread (database interaction)
                             #self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                            #uncommitted_inserts += 1   
-
-                            self.pending_segments.append((seg_num, segment_data))                    
+                            #uncommitted_inserts += 1                               
+                            existing = self.pending_segments.get(seg_num, None)
+                            if existing is None or len(segment_data) > len(existing):
+                                self.pending_segments[seg_num] = segment_data                    
                                 
                             if self.livestream_coordinator:
-                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)
-                            
+                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)                            
 
                             if status == 200 and seg_num > latest_downloaded_segment:
                                 latest_downloaded_segment = seg_num
@@ -1348,7 +1348,7 @@ class DownloadStream:
                 if optimistic_seg not in self.already_downloaded and self.segment_exists(optimistic_seg):
                     self.already_downloaded.add(optimistic_seg)
                     
-                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
+                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(self.pending_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
 
                   
                                         
@@ -1447,7 +1447,7 @@ class DownloadStream:
 
                 # Add optimistic segment if conditions are right
                 # Only attempt to grab optimistic segment a number of times to ensure it does not cause a loop at the end of a stream
-                if (self.max_workers > 1 or not segments_to_download) and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in submitted_segments:
+                if (self.max_workers > 1 or not segments_to_download) and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in self.pending_segments and optimistic_seg not in submitted_segments:
                     # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s if no segments are to be submitted
                     if not segments_to_download:
                         time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
@@ -1473,7 +1473,7 @@ class DownloadStream:
                     # Have up to 2x max workers of threads submitted
                     if len(future_to_seg) > max(10,2*self.max_workers, thread_windows_size):
                         break
-                    if seg_num not in submitted_segments:
+                    if seg_num not in submitted_segments and seg_num not in self.pending_segments:
                         # Check if segment already exist within database (used to not create more connections). Needs fixing upstream
                         if self.segment_exists(seg_num):
                             self.already_downloaded.add(seg_num)
@@ -1827,7 +1827,7 @@ class DownloadStream:
             try:
                 # 1. SORT the batch by the segment ID (index 0 of the tuple)
                 # This keeps the B-Tree insertions linear and avoids page splits.
-                self.pending_segments.sort(key=lambda x: x[0])
+                batch = sorted(self.pending_segments.items(), key=lambda kv: kv[0])
 
                 # 2. Use your specific UPSERT logic within executemany
                 sql = '''
@@ -1841,7 +1841,10 @@ class DownloadStream:
                     END;
                 '''
                 
-                self.conn.executemany(sql, self.pending_segments)
+                self.conn.executemany(sql, batch)
+                # Micro-optimisation - unlikely to make a difference, but won't hurt
+                del batch
+                
                 self.conn.commit()
 
                 # 3. Re-open transaction for the next batch (WAL mode optimization)
