@@ -1321,7 +1321,7 @@ class DownloadStream:
                                 self.pending_segments[seg_num] = segment_data                    
                                 
                             if self.livestream_coordinator:
-                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded)                            
+                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded) + len(self.pending_segments)                          
 
                             if status == 200 and seg_num > latest_downloaded_segment:
                                 latest_downloaded_segment = seg_num
