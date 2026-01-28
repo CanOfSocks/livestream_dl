@@ -707,10 +707,10 @@ class LiveStreamDownloader:
                 super().__init__(logger=logger)
 
             def prefix(self, msg: str):
-                if msg.startswith("[live-chat] "):
+                if msg.startswith("[auxiliary] "):
                     return msg
                 else:
-                    return "[live-chat] {0}".format(msg)
+                    return "[auxiliary] {0}".format(msg)
             def debug(self, msg):
                 super().debug(self.prefix(msg))
             def info(self, msg):
@@ -729,7 +729,7 @@ class LiveStreamDownloader:
             'writethumbnail': (options.get('write_thumbnail', False) or options.get("embed_thumbnail", False)),
             'outtmpl': base_output,
             'retries': 10,
-            'logger': YoutubeURL.YTDLPLogger(logger=logger),
+            'logger': YTDLP_Auxiliary_logger(logger=logger),
         }
         if options.get('proxy', None) is not None:
             ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
@@ -977,7 +977,7 @@ class LiveStreamDownloader:
 
         if not (self.stats.get('video') or self.stats.get('audio')):
             #print("No stats available")
-            print(json.dumps(self.stats))
+            #print(json.dumps(self.stats))
             return
 
         # Build the output parts in a list
