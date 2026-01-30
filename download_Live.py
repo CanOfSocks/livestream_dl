@@ -1528,8 +1528,10 @@ class DownloadStream:
                     # Handle auth flags
                     if status == 403:
                         self.is_403 = True
+                        self.logger.warning("({0}) Encountered 403 status when downloading segment {1}".format(self.format, segment_order))
                     elif status == 401:
                         self.is_401 = True
+                        self.logger.warning("({0}) Encountered 401 status when downloading segment {1}. This can be cause by using too many threads.".format(self.format, segment_order))
                     elif status in {200, 204}:
                         self.is_403 = self.is_401 = False
 
