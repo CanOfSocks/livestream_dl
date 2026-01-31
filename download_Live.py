@@ -40,6 +40,7 @@ import threading
 
 import httpx
 
+
 #import setup_logger
 
 # Backward compatibility
@@ -486,7 +487,8 @@ class LiveStreamDownloader:
 
     def download_live_chat(self, info_dict, options):
         
-        
+        if info_dict.get("status", "") == "post_live":
+            self.logger.warning("Stream is post live, unlikely to retrieve live chat")
         if options.get('filename') is not None:
             filename = options.get('filename')
         else:
@@ -759,7 +761,6 @@ class LiveStreamDownloader:
             
         return created_files, 'auxiliary'
         
-            
     def create_mp4(self, file_names, info_dict, options):
         self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Files: {0}\n".format(json.dumps(self.file_names, default=lambda o: o.to_dict())))
         import subprocess
@@ -868,13 +869,20 @@ class LiveStreamDownloader:
                 
             #Add Copy codec
             ffmpeg_builder.extend(['-c', 'copy'])
-                
+            '''    
+            clean_description = self.universal_sanitize("{0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description","")))
+            
             # Add metadata
+            ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
+            ffmpeg_builder.extend(['-metadata', "COMMENT={0}".format(clean_description)])
+            ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(self.universal_sanitize(info_dict.get("fulltitle")))])
+            ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(self.universal_sanitize(info_dict.get("channel")))])
+            '''
             ffmpeg_builder.extend(['-metadata', "DATE={0}".format(info_dict.get("upload_date"))])
             ffmpeg_builder.extend(['-metadata', "COMMENT={0}\n{1}".format(info_dict.get("original_url"), info_dict.get("description",""))])
             ffmpeg_builder.extend(['-metadata', "TITLE={0}".format(info_dict.get("fulltitle"))])
             ffmpeg_builder.extend(['-metadata', "ARTIST={0}".format(info_dict.get("channel"))])
-
+            
             # Add output file to ffmpeg command
             ffmpeg_builder.append(str(Path(base_output).absolute()))
             
@@ -914,7 +922,7 @@ class LiveStreamDownloader:
         return file_names
         #for file in file_names:
         #    os.remove(file)
-
+        
     def write_ffmpeg_command(self, command_array, filename):
         import shlex
         # Determine the platform
@@ -951,6 +959,30 @@ class LiveStreamDownloader:
             f.write(command_string + "\n")
 
         return filename
+    
+    def universal_sanitize(self, text):
+        if not text: return ""
+        
+        # Map dangerous ASCII to safe "Fullwidth" Unicode equivalents
+        # Shells (Windows/Linux) treat these as normal text characters.
+        replacements = {
+            '&': '＆',  # Fullwidth Ampersand (Fixes your 'pp' crash)
+            '|': '｜',  # Fullwidth Pipe
+            '<': '＜',  # Fullwidth Less-Than
+            '>': '＞',  # Fullwidth Greater-Than
+            '"': '＂',  # Fullwidth Quote
+            '^': '＾',  # Fullwidth Caret
+            ';': '；',  # Fullwidth Semicolon
+            '$': '＄',  # Fullwidth Dollar Sign
+        }
+        
+        for char, replacement in replacements.items():
+            text = text.replace(char, replacement)
+    
+        # Hard truncation to stay safe within the 8,191 limit
+        # We leave room for the rest of the ffmpeg command.
+        return (text[:6144] + '...') if len(text) > 6144 else text
+        #return text
 
     def convert_bytes(self, bytes):
         # List of units in order
@@ -1328,6 +1360,9 @@ class DownloadStream:
                         elif status is None or status != 200:
                             segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
                             self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
+                    
+                    except httpx.ConnectTimeout:
+                        self.logger.warning('({0}) Experienced connection timeout while fetching segment {1}'.format(self.format, future_to_seg.get(future,"(Unknown)")))
                         
                     except Exception as e:
                         self.logger.exception("An unknown error occurred")
@@ -1374,16 +1409,19 @@ class DownloadStream:
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait % 10 == 0 and wait > 0:
+                        temp_stream_url = self.stream_url
+                        refresh = self.refresh_url()
                         if self.is_private:
                             self.logger.debug("Video is private and no more segments are available. Ending...")
                             break
-                        else:
-                            refresh = self.refresh_url()
-                            if refresh is False:
-                                break       
-                            elif refresh is True:
-                                self.logger.info("Video finished downloading via new manifest")
-                                break
+                        elif refresh is False:
+                            break                              
+                        elif refresh is True:
+                            self.logger.info("Video finished downloading via new manifest")
+                            break
+                        elif temp_stream_url != self.stream_url:
+                            self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                            segment_retries.clear()
                     time.sleep(10)
                     self.update_latest_segment(client=client)
                     wait += 1
@@ -1434,7 +1472,7 @@ class DownloadStream:
                         self.logger.warning("Failed to refresh URL or stream is private, ending...")
                         break
                     else:
-                        segment_retries = {}
+                        segment_retries.clear()
                 else:
                     wait = 0
                     
@@ -1552,6 +1590,12 @@ class DownloadStream:
                         return head_seq, bytes(), int(segment_order), status, headers
                     else:
                         return head_seq, None, int(segment_order), status, headers
+                    
+            except httpx.ConnectTimeout as e:
+                if attempt >= total_retries:
+                    raise                
+                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
+                time.sleep(sleep_time)
 
             except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException) as e:
                 if attempt >= total_retries:
@@ -1670,6 +1714,8 @@ class DownloadStream:
         except Exception as e:
             self.logger.exception("\033[31m{0}\033[0m".format(e))
             return None
+        
+        return None
     
     def detect_manifest_change(self, info_json, follow_manifest=True):
         resolution = "Unknown"
@@ -2291,6 +2337,9 @@ class DownloadStreamDirect(DownloadStream):
                             #print("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
                             self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
 
+                    except httpx.ConnectTimeout:
+                        self.logger.warning('({0}) Experienced connection timeout while fetching segment {1}'.format(self.format, seg_num or future_to_seg.get(future,"(Unknown)"))) 
+
                     except Exception as e:
                         self.logger.exception("An unknown error occurred")
                         seg_num = seg_num or future_to_seg.get(future,None)
@@ -2368,16 +2417,19 @@ class DownloadStreamDirect(DownloadStream):
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
                     elif wait % 10 == 0 and wait > 0:
+                        temp_stream_url = self.stream_url
+                        refresh = self.refresh_url()
                         if self.is_private:
                             self.logger.debug("Video is private and no more segments are available. Ending...")
                             break
-                        else:
-                            refresh = self.refresh_url()
-                            if refresh is False:
-                                break       
-                            elif refresh is True:
-                                self.logger.info("Video finished downloading via new manifest")
-                                break
+                        elif refresh is False:
+                            break                              
+                        elif refresh is True:
+                            self.logger.info("Video finished downloading via new manifest")
+                            break
+                        elif temp_stream_url != self.stream_url:
+                            self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                            segment_retries.clear()
                     time.sleep(10)
                     self.update_latest_segment(client=client)
                     wait += 1
@@ -2401,7 +2453,7 @@ class DownloadStreamDirect(DownloadStream):
                         self.logger.warning("Failed to refresh URL or stream is private, ending...")
                         break
                     else:
-                        segment_retries = {}
+                        segment_retries.clear()
                 else:
                     wait = 0
 
@@ -2703,48 +2755,61 @@ class StreamRecovery(DownloadStream):
                 
                 for future in done:
                     head_seg_num, segment_data, seg_num, status, headers = future.result()
+                    try:
+                        self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                                seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
+                            ))
+                        
+                        if seg_num in submitted_segments:
+                            submitted_segments.discard(seg_num)
+                        
+                        if head_seg_num > self.latest_sequence:
+                            self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
+                            self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, head_seg_num) if key not in self.already_downloaded})
+                            self.latest_sequence = head_seg_num
+                            
+                            
+                        if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
+                            self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
+                            
+                        if segment_data is not None:
+                            # self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
+                            # uncommitted_inserts += 1        
+                            
+                            existing = self.pending_segments.get(seg_num, None)
+                            if existing is None or len(segment_data) > len(existing):
+                                self.pending_segments[seg_num] = segment_data               
+                            
+                            self.segments_retries.pop(seg_num,None)
+                            
+                            
+                        else:                        
+                            self.segments_retries.setdefault(seg_num, {})['retries'] = self.segments_retries.get(seg_num,{}).get('retries',0) + 1
+                            self.segments_retries.setdefault(seg_num, {})['last_retry'] = time.time()
+                            self.segments_retries.setdefault(seg_num, {}).setdefault('ideal_retry_time', random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200)))
 
-                    self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
-                            seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
-                        ))
-                    
-                    if seg_num in submitted_segments:
-                        submitted_segments.discard(seg_num)
-                    
-                    if head_seg_num > self.latest_sequence:
-                        self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
-                        self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, head_seg_num) if key not in self.already_downloaded})
-                        self.latest_sequence = head_seg_num
-                        
-                        
-                    if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                        self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
-                        
-                    if segment_data is not None:
-                        # self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                        # uncommitted_inserts += 1        
-                         
-                        existing = self.pending_segments.get(seg_num, None)
-                        if existing is None or len(segment_data) > len(existing):
-                            self.pending_segments[seg_num] = segment_data               
-                        
-                        self.segments_retries.pop(seg_num,None)
-                        
-                        
-                    else:                        
-                        self.segments_retries.setdefault(seg_num, {})['retries'] = self.segments_retries.get(seg_num,{}).get('retries',0) + 1
-                        self.segments_retries.setdefault(seg_num, {})['last_retry'] = time.time()
-                        self.segments_retries.setdefault(seg_num, {}).setdefault('ideal_retry_time', random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200)))
+                            if self.segments_retries.get(seg_num, {}).get('retries',0) >= self.fragment_retries:
+                                self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
+                    except httpx.ConnectTimeout:
+                        self.logger.warning('({0}) Experienced connection timeout while fetching segment {1}'.format(self.format, future_to_seg.get(future,"(Unknown)")))      
 
-                        if self.segments_retries.get(seg_num, {}).get('retries',0) >= self.fragment_retries:
-                            self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
-                                
+                    except Exception as e:
+                        self.logger.exception("An unknown error occurred")
+                        seg_num = seg_num or future_to_seg.get(future,None)
+                        if seg_num is not None:
+                            self.segments_retries.setdefault(seg_num, {})['retries'] = self.segments_retries.get(seg_num,{}).get('retries',0) + 1
+                            self.segments_retries.setdefault(seg_num, {})['last_retry'] = time.time()
+                            self.segments_retries.setdefault(seg_num, {}).setdefault('ideal_retry_time', random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200)))
+
+                            if self.segments_retries.get(seg_num, {}).get('retries',0) >= self.fragment_retries:
+                                self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
+
                     future_to_seg.pop(future,None)
 
-                    if self.livestream_coordinator:
-                        self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
-                    
-                        self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
+                if self.livestream_coordinator:
+                    self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
+                
+                    self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
 
                 #if uncommitted_inserts >= max(self.batch_size, len(done)):
                 #    self.logger.debug("Writing segments to file...")
