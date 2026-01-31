@@ -1404,7 +1404,7 @@ class DownloadStream:
                     self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                         
                     # If waited for new fragments hits 20 loops, assume stream is offline
-                    if wait > self.wait_limit and wait > self.wait_limit:
+                    if (self.wait_limit or 0) > 0 and wait > self.wait_limit:
                         self.logger.debug("Wait time for new fragment exceeded, ending download...")
                         break    
                     # If over 10 wait loops have been executed, get page for new URL and update status if necessary
@@ -1463,14 +1463,22 @@ class DownloadStream:
                         break
                 
                 elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
+                    
                     self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
+                    temp_stream_url = self.stream_url
                     refresh = self.refresh_url()
                     if self.refresh_url() is True:
                         self.logger.info("Video finished downloading via new manifest")
                         break
                     elif self.is_private or refresh is False:
+                        # If stream URL has changed, refresh retry count
+                        if temp_stream_url != self.stream_url:
+                            self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                            segment_retries.clear()
+                            continue
                         self.logger.warning("Failed to refresh URL or stream is private, ending...")
                         break
+                    
                     else:
                         segment_retries.clear()
                 else:
