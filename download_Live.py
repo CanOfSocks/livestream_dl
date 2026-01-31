@@ -1403,7 +1403,7 @@ class DownloadStream:
                     
                     self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                         
-                    # If waited for new fragments hits 20 loops, assume stream is offline
+                    # If waited for more than (non-zero) wait limit break. Zero wait limit is intended to keep checking until stream ends
                     if (self.wait_limit or 0) > 0 and wait > self.wait_limit:
                         self.logger.debug("Wait time for new fragment exceeded, ending download...")
                         break    
