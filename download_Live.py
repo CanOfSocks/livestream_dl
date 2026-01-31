@@ -1471,7 +1471,7 @@ class DownloadStream:
                         self.logger.info("Video finished downloading via new manifest")
                         break
                     elif self.is_private or refresh is False:
-                        # If stream URL has changed, refresh retry count
+                        # If stream URL has changed, refresh retry count and continue
                         if temp_stream_url != self.stream_url:
                             self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
                             segment_retries.clear()
