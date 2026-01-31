@@ -193,7 +193,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--audio-format', type=str, default=None, help="Specify specific audio format (string). Resolution will be ignored for audio if used")
     
-    parser.add_argument('--threads', type=int, default=2, help="Number of download threads per format. This will be 2x for an video and audio download. Default: 1")
+    parser.add_argument('--threads', type=int, default=2, help="Number of download threads per format. This will be 2x for an video and audio download. Default: 2")
     
     parser.add_argument('--batch-size', type=int, default=5, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances. Default: 5")
     
