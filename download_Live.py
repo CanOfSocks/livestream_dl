@@ -1710,9 +1710,9 @@ class DownloadStream:
                     self.logger.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
-                        new_params = copy.deepcopy(self.params)
+                        new_params = copy.copy(self.params)
                         new_params.update({
-                            "info_dict": copy.deepcopy(info_json),
+                            "info_dict": info_json,
                             "resolution": str(self.format),
                             "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
                             "manifest": temp_stream_url.manifest,
@@ -1780,9 +1780,9 @@ class DownloadStream:
                     self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
-                        new_params = copy.deepcopy(self.params)
+                        new_params = copy.copy(self.params)
                         new_params.update({
-                            "info_dict": copy.deepcopy(info_json),
+                            "info_dict": info_json,
                             "resolution": "best",
                             "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
                             "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
