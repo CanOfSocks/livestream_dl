@@ -90,22 +90,18 @@ def process_proxies(proxy_string):
         "https": proxy_address,
         "http": proxy_address,        
     }
-    
 
-def parse_string_or_tuple(value):
-    try:
-        # Attempt to parse as a tuple using `ast.literal_eval`
-        parsed_value = ast.literal_eval(value)
-        # If parsed_value is not a tuple, keep it as a string
-        if isinstance(parsed_value, tuple):
-            return parsed_value
-        else:
-            return value
-    except (ValueError, SyntaxError):
-        # If parsing fails, treat it as a string
-        return value
-    
-
+def httpx_proxy(proxy_string: str):
+    if not proxy_string:
+        return None
+    proxy_string = proxy_string.strip()
+    if proxy_string.startswith('{'):
+        try:
+            return json.loads(proxy_string)
+        except Exception as e:
+            raise ValueError("Input is not valid JSON string")
+    else:
+        return proxy_string
 
 def main(id, resolution='best', options={}, info_dict=None, thread_kill: threading.Event=kill_all):
     logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id)
@@ -175,6 +171,8 @@ def monitor_channel(options={}):
         sleep(time_to_next)
         last_check=time()
 
+
+
 import argparse
 
 class VerboseHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -217,11 +215,11 @@ if __name__ == "__main__":
     
     parser.add_argument('--audio-format', type=str, default=None, help="Specify specific audio format (string). Resolution will be ignored for audio if used")
     
-    parser.add_argument('--threads', type=int, default=2, help="Number of download threads per format. This will be 2x for an video and audio download. Default: 2")
+    parser.add_argument('--threads', type=int, default=2, help="Number of download threads per format. This will be 2x for an video and audio download.")
     
-    parser.add_argument('--batch-size', type=int, default=5, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances. Default: 5")
+    parser.add_argument('--batch-size', type=int, default=5, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances.")
     
-    parser.add_argument('--segment-retries', type=int, default=10, help="Number of times to retry grabbing a segment. Default: 10")
+    parser.add_argument('--segment-retries', type=int, default=10, help="Number of times to retry grabbing a segment.")
     
     parser.add_argument('--no-merge', action='store_false', dest='merge', help="Don't merge video using ffmpeg")
 
@@ -255,9 +253,9 @@ if __name__ == "__main__":
 
     parser.add_argument('--force-recover-merge', action='store_true', help="Forces merging to final file even if all segements could not be recovered")
 
-    parser.add_argument('--recovery-failure-tolerance', type=int, default=0, help="Maximum number of fragments that fail to download (exceed the retry limit) and not throw an error. May cause unexpected issues when merging to .ts file and remuxing. Default: 0")
+    parser.add_argument('--recovery-failure-tolerance', type=int, default=0, help="Maximum number of fragments that fail to download (exceed the retry limit) and not throw an error. May cause unexpected issues when merging to .ts file and remuxing.")
 
-    parser.add_argument('--wait-limit', type=int, default=0, help="Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or 'post_live' status. Default: 0")
+    parser.add_argument('--wait-limit', type=int, default=0, help="Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or 'post_live' status.")
     
     parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments database in memory. Requires a lot of RAM (Not recommended)")
     
@@ -288,7 +286,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--ytdlp-options', type=str, default=None, help="""Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client": ["web_creator"]}, "youtubepot-bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin""")
 
-    parser.add_argument('--ytdlp-log-level', type=str, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], default=None, help="### NOT IMPLEMENTED ### Optional alternative log level for yt-dlp module tasks (such as video extraction or format selection). Uses main logger if not set")
+    parser.add_argument('--ytdlp-log-level', type=str, choices=["DEBUG", "VERBOSE", "INFO", "WARNING", "ERROR", "CRITICAL"], default=None, help="### NOT IMPLEMENTED ### Optional alternative log level for yt-dlp module tasks (such as video extraction or format selection). Uses main logger if not set")
 
     parser.add_argument('--dash', action='store_true', help="Gets any available DASH urls as a fallback to adaptive URLs. Dash URLs do not require yt-dlp modification to be used, but can't be used for stream recovery and can cause large info.json files when a stream is in the 'post_live' status")
 
@@ -296,25 +294,25 @@ if __name__ == "__main__":
 
     parser.add_argument('--force-m3u8', action='store_true', help="Forces use of m3u8 stream URLs")
 
-    parser.add_argument('--proxy', type=str, default=None, nargs="?", help="(Requires testing) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://requests.readthedocs.io/en/latest/user/advanced/#proxies. The first proxy specified will be used for yt-dlp and live chat functions.")
+    parser.add_argument('--proxy', type=str, default=None, help="(ALPHA) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://www.python-httpx.org/advanced/proxies. The first proxy specified will be used for yt-dlp and live chat functions. Not all functions have proxy compatibility enabled at this time.")
 
     ip_group = parser.add_mutually_exclusive_group()
     ip_group.add_argument("--ipv4", action="store_true", help="Force IPv4 only")
     ip_group.add_argument("--ipv6", action="store_true", help="Force IPv6 only")
     
-    parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. Default: 300. This is useful if waiting for chat to end causes hanging.")
+    parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. This is useful if waiting for chat to end causes hanging. Onl works with chat-downloader live chat downloads.")
     
     parser.add_argument('--new-line', action='store_true', help="Console messages always print to new line. (Currently only ensured for stats output)")
 
     monitor_group = parser.add_argument_group('Channel Monitor Options')
 
-    monitor_group.add_argument('--monitor-channel', action='store_true', help="Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument")
+    monitor_group.add_argument('--monitor-channel', action='store_true', help="Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument (e.g. UCxsZ6NCzjU_t4YSxQLBcM5A)")
 
     monitor_group.add_argument('--members-only', action='store_true', help="Monitor 'Members Only' playlist for streams instead of 'Streams' playlist. Requires cookies.")
 
-    monitor_group.add_argument('--upcoming-lookahead', type=int, default=24, help="Maximum time (in hours) to start a downloader instance for a video. Default: 24")
+    monitor_group.add_argument('--upcoming-lookahead', type=int, default=24, help="Maximum time (in hours) to start a downloader instance for a video.")
 
-    monitor_group.add_argument('--playlist-items', type=int, default=50, help="Maximum number of playlist items to check. Default: 50")
+    monitor_group.add_argument('--playlist-items', type=int, default=50, help="Maximum number of playlist items to check.")
     
     # Parse the arguments
     args = parser.parse_args()
@@ -332,9 +330,6 @@ if __name__ == "__main__":
 
     if options.get('resolution', None) is None and (options.get('video_format', None) is None or options.get('audio_format', None) is None):
         options['resolution'] = str(input("Please enter resolution: ")).strip()
-                      
-    if options.get('proxy', None) is not None:
-        options['proxy'] = process_proxies(options.get('proxy', None))
         
     id = options.get('ID')
     resolution = options.get('resolution')

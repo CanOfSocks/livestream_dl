@@ -33,7 +33,7 @@ import shutil
 
 import logging
 
-
+from typing import Optional
 #import re
 
 import threading
@@ -1230,7 +1230,7 @@ class DownloadStream:
 
         self.following_manifest_thread = None
         
-        self.proxies = proxies   
+        self.proxies, self.mounts = self.process_proxies_for_httpx(proxies=proxies)   
 
         current_level = self.logger.getEffectiveLevel()            
 
@@ -1286,7 +1286,7 @@ class DownloadStream:
         # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
+            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
             submitted_segments = set()
             future_to_seg = {}
             
@@ -1548,13 +1548,7 @@ class DownloadStream:
         for attempt in range(total_retries + 1):
             if client is None or client.is_closed:
                 # Set a base timeout of 30s for connect/read as well
-                client = httpx.Client(
-                    timeout=self.timeout_config, 
-                    proxy=self.process_proxies_for_httpx(self.proxies), 
-                    http1=True, 
-                    http2=self.http2_available(), 
-                    follow_redirects=True
-                )
+                httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None))
             
             start_time = time.time()
             try:
@@ -1623,45 +1617,20 @@ class DownloadStream:
                 time.sleep(sleep_time)
 
     
-    def process_proxies_for_httpx(self, proxy_string):
-        if not proxy_string:
-            return None
+    def process_proxies_for_httpx(self, proxies) -> tuple[Optional[str], Optional[dict]]:
+        if not proxies:
+            return None, None
+        if isinstance(proxies, str):
+            return proxies.strip(), None
+        elif isinstance(proxies, dict):
+            proxy_mounts = {
+                protocol: httpx.HTTPTransport(proxy=url) 
+                for protocol, url in proxies.items()
+            }
+            return None, proxy_mounts
         
-        proxy_string = str(proxy_string)
-        """
-        # Handle JSON input if necessary
-        if proxy_string.startswith('{'):
-            try:
-                data = json.loads(proxy_string)
-                # Extract the first available proxy URL from the dict
-                return data.get("https") or data.get("http")
-            except:
-                return None
-        """
-        if isinstance(self.proxies, dict):
-            # Get the URL, but ensure we don't pass the dictionary itself
-            proxy_string = self.proxies.get("https") or self.proxies.get("http")
-        else:
-            proxy_string = self.proxies
+        return None, None
 
-        #from urllib.parse import urlparse
-        parsed = urlparse(proxy_string)
-        
-        scheme = parsed.scheme
-        username = parsed.username
-        password = parsed.password
-        hostname = parsed.hostname
-        port = parsed.port
-        
-        auth = f"{username}:{password}@" if username and password else ""
-        
-        # httpx uses 'socks5://', it handles remote DNS internally. 
-        # 'socks5h' will often throw a 'Scheme not supported' error.
-        if scheme.startswith("socks"):
-            scheme = "socks5"
-            
-        return f"{scheme}://{auth}{hostname}:{port}"
-    
     def http2_available(self):
         HAS_HTTP2 = False
         try:
@@ -1691,7 +1660,7 @@ class DownloadStream:
     
     def get_Headers(self, url, client: httpx.Client=None):
         if client is None or client.is_closed:
-            client = httpx.Client(timeout=self.timeout_config, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
+            client = httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None))
         try:
             # Send a GET request to a URL
             #response = requests.get(url, timeout=30, proxies=self.proxies)
@@ -2292,7 +2261,7 @@ class DownloadStreamDirect(DownloadStream):
         wait = 0
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"{self.id}-{self.format}") as executor,
-            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
+            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
             
             # Trackers for optimistic segment downloads 
             optimistic_fails_max = 10
@@ -2567,7 +2536,7 @@ class StreamRecovery(DownloadStream):
         self.already_downloaded = set()
         self.batch_size = batch_size
         self.max_workers = max_workers
-        self.proxies = proxies
+        self.proxies, self.mounts = self.process_proxies_for_httpx(proxies=proxies)
         
         self.resolution = resolution
         self.yt_dlp_sort = yt_dlp_sort
@@ -2734,7 +2703,7 @@ class StreamRecovery(DownloadStream):
         last_print = time.time()
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-              httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True) as client):
+              httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
             submitted_segments = set()
             future_to_seg = {}
             
