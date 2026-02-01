@@ -1273,7 +1273,7 @@ class DownloadStream:
     
     def live_dl(self):
         
-        self.logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        self.logger.info("\033[31mStarting download of live fragments ({0} - {1})\033[0m".format(self.format, self.stream_url.fomat_note))
         self.already_downloaded = self.segment_exists_batch()
         latest_downloaded_segment = -1
         wait = 0   
@@ -2278,7 +2278,7 @@ class DownloadStreamDirect(DownloadStream):
             self.logger.warning(f"Failed to save state file: {e}")
     
     def live_dl(self):
-        self.logger.info(f"\033[31mStarting download of live fragments ({self.format}) [Direct Mode]\033[0m")
+        self.logger.info(f"\033[31mStarting download of live fragments ({self.format} - {self.stream_url.fomat_note}) [Direct Mode]\033[0m")
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "recording"
             self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state['last_written']
@@ -2675,7 +2675,7 @@ class StreamRecovery(DownloadStream):
             self.expires = max(expires)
             
         if self.expires and time.time() > self.expires:
-            self.logger.error("\033[31mCurrent time is beyond highest expire time, unable to recover\033[0m".format(self.format))
+            self.logger.error("\033[31m ({0}) Current time is beyond highest expire time, unable to recover\033[0m".format(self.format))
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
             raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
@@ -2715,7 +2715,7 @@ class StreamRecovery(DownloadStream):
         # This method is completely different from the base class.
         # It's designed to recover missing segments, not optimistically
         # download a live edge.
-        self.logger.info("\033[31mStarting download of live fragments ({0})\033[0m".format(self.format))
+        self.logger.info("\033[31mStarting download of live fragments ({0} - {1})\033[0m".format(self.format, self.stream_url.fomat_note))
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "recording"
         self.already_downloaded = self.segment_exists_batch()

@@ -175,11 +175,35 @@ def monitor_channel(options={}):
         sleep(time_to_next)
         last_check=time()
 
+import argparse
 
+class VerboseHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """
+    Formatter that:
+    1. Skips '(default: None)'
+    2. Appends '(type: name)' if a type is defined.
+    """
+    def _get_help_string(self, action):
+        help_text = action.help or ""
+
+        # 1. Handle the Type info
+        if action.type and hasattr(action.type, '__name__'):
+            type_name = action.type.__name__
+            help_text += f" (type: {type_name})"
+        
+        # 2. Handle the Default info (Logic from ArgumentDefaultsHelpFormatter)
+        # We only append the default if it's NOT None and NOT suppressed
+        if action.default is not argparse.SUPPRESS and action.default is not None:
+            # We manually mimic the ArgumentDefaultsHelpFormatter logic here
+            # to ensure the formatting stays consistent.
+            if '%(default)' not in help_text:
+                help_text += ' (default: %(default)s)'
+                
+        return help_text
     
 if __name__ == "__main__":
     # Create the parser
-    parser = argparse.ArgumentParser(description="Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)")
+    parser = argparse.ArgumentParser(description="Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)", formatter_class=VerboseHelpFormatter)
 
     parser.add_argument('ID', type=str, nargs='?', default=None, help='The video URL or ID')
     
@@ -249,8 +273,9 @@ if __name__ == "__main__":
 
     parser.add_argument('--clean-info-json', action='store_true', help="Enables yt-dlp's 'clean-info-json' option")
     
-    parser.add_argument("--log-level", type=str, default="INFO",
+    parser.add_argument("--log-level", type=str, 
                         choices=["DEBUG", "VERBOSE", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                        default="INFO",
                         help="Set the logging level. Default is INFO. Verbose logging is a custom level that includes the INFO logs of yt-dlp.")
     
     parser.add_argument("--no-console", action="store_false", help="Do not log messages to the console.")
@@ -281,13 +306,15 @@ if __name__ == "__main__":
     
     parser.add_argument('--new-line', action='store_true', help="Console messages always print to new line. (Currently only ensured for stats output)")
 
-    parser.add_argument('--monitor-channel', action='store_true', help="Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument")
+    monitor_group = parser.add_argument_group('Channel Monitor Options')
 
-    parser.add_argument('--members-only', action='store_true', help="Monitor 'Members Only' playlist for streams instead of 'Streams' playlist. Requires cookies.")
+    monitor_group.add_argument('--monitor-channel', action='store_true', help="Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument")
 
-    parser.add_argument('--upcoming-lookahead', type=int, default=24, help="Maximum time (in hours) to start a downloader instance for a video. Default: 24")
+    monitor_group.add_argument('--members-only', action='store_true', help="Monitor 'Members Only' playlist for streams instead of 'Streams' playlist. Requires cookies.")
 
-    parser.add_argument('--playlist-items', type=int, default=50, help="Maximum number of playlist items to check. Default: 50")
+    monitor_group.add_argument('--upcoming-lookahead', type=int, default=24, help="Maximum time (in hours) to start a downloader instance for a video. Default: 24")
+
+    monitor_group.add_argument('--playlist-items', type=int, default=50, help="Maximum number of playlist items to check. Default: 50")
     
     # Parse the arguments
     args = parser.parse_args()
