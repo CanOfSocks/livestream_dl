@@ -1745,9 +1745,9 @@ class DownloadStream:
                     self.logger.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
                     if follow_manifest:
-                        new_params = copy.deepcopy(self.params)
+                        new_params = copy.copy(self.params)
                         new_params.update({
-                            "info_dict": copy.deepcopy(info_json),
+                            "info_dict": info_json,
                             "resolution": self.resolution,
                             "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
                             "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
@@ -2130,6 +2130,7 @@ class DownloadStream:
                     filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
                     self.stream_urls = filtered_array
                     self.refresh_retries = 0
+                    self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Refreshed stream URL with {0} - {1}".format(stream_url.format_id, stream_url.fomat_note))
                 else:
                     self.logger.warning("Unable to refresh URLs for {0} on format {2} ({1})".format(self.id, self.format, resolution))
                     
