@@ -173,7 +173,6 @@ class YoutubeURL:
         """
         self.logger.debug("Attempting to parse url: {0}".format(url))
         parsed = urlparse(url)
-        
         # Process slash-separated path into key/value pairs
         segments = [s for s in parsed.path.split("/") if s]
         if segments:
@@ -281,24 +280,26 @@ class Formats:
         #try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.process_ie_result(info_json)
-            format = info.get('requested_downloads', info.get('requested_formats', info.get('url',[{}])))
+            #format = info.get('requested_downloads', info.get('requested_formats', info.get('url',[{}])))
+            formats = info.get('requested_formats', [])
             import json
             #print("Format:", json.dumps(format))
             #print("Requested Downloads:", json.dumps(info.get('requested_downloads', {})))
             #print("Requested Formats:", json.dumps(info.get('requested_formats', {})))
+            
+            format: dict = {}
 
-            format: dict = format[0]
-
-            if format.get('requested_formats', None):
+            if formats:
                 if stream_type == "video":
-                    format.update(next((d for d in format.get('requested_formats') if d.get('vcodec') != 'none'), {}))
+                    format.update(next((d for d in formats if d.get('vcodec') != 'none'), {}))
                 elif stream_type == "audio":
-                    format.update(next((d for d in format.get('requested_formats') if d.get('acodec') != 'none'), {}))
+                    format.update(next((d for d in formats if d.get('acodec') != 'none'), {}))
                 else:
-                    format.update(next((d for d in format.get('requested_formats') if (d.get('vcodec') != 'none' or d.get('acodec') != 'none')), {}))
+                    format.update(next((d for d in formats if (d.get('vcodec') != 'none' or d.get('acodec') != 'none')), {}))
 
                 if not format:
                     raise ValueError("No stream matches resolution/format input with a video or audio stream")
+            
             #Handling for known issues with m3u8
             if (not format.get('url', None)) and info.get('url', None):                
                 format['url'] = info.get('url')
@@ -307,6 +308,7 @@ class Formats:
                 format['protocol'] = info.get('protocol')
                 self.logger.debug("Updated format url to: {0}".format(info.get('url', None)))
 
+            #print(json.dumps(format))
             
             self.logger.debug("Formats: {0}".format(json.dumps(format,indent=4)))
             if format.get('protocol', "") == "http_dash_segments":
@@ -328,7 +330,7 @@ class Formats:
             format_id = format_obj.format_id
           
             # Fix for broken log line (original 'format_url' was not defined here)
-            format_url = str(format_obj) 
+            format_url = str(format_obj.base) 
             logger.debug("Got URL: {0}: {1}".format(format_id, format_url))
             
             # Retrieves all URLs of found format
