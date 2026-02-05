@@ -63,7 +63,7 @@ To enable adaptive stream URLs that allow for private stream recovery, the `yt-d
     pip show yt-dlp
     ```
 2.  Open `yt_dlp/extractor/youtube/_video.py`.
-3.  a) Replace `if fmt_stream.get('targetDurationSec'):` with `if fmt_stream.get('targetDurationSec') and not 'adaptive' in format_types:`, or
+3.  a) Replace `if fmt_stream.get('targetDurationSec'):` with `if fmt_stream.get('targetDurationSec') and not 'adaptive' in format_types:` (experimental patch to hopefully push to core yt-dlp), or
     b) Comment out or remove the following lines (approx line 3467):
     ```python
     if fmt_stream.get('targetDurationSec'):
