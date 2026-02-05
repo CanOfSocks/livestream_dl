@@ -53,7 +53,7 @@ jobs:
           }
       - name: Build EXE
         run: |
-          pyinstaller --onefile --name livestream_dl runner.py
+          pyinstaller --onefile --name livestream_dl --hidden-import yt_dlp_ejs runner.py
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
