@@ -1,16 +1,14 @@
-#!/usr/local/bin/python
 import yt_dlp
 import logging
 import json
+import time
+
 try:
-    # Try absolute import (standard execution)
     from setup_logger import VERBOSE_LEVEL_NUM
 except ModuleNotFoundError:
-    # Fallback to relative import (when part of a package)
     from .setup_logger import VERBOSE_LEVEL_NUM
 
 import argparse
-
 import threading
 
 extraction_event = threading.Event()
@@ -27,7 +25,6 @@ class MyLogger:
                 self.info(msg)
 
     def info(self, msg):
-        # Safe save to Verbose log level
         self.logger.log(VERBOSE_LEVEL_NUM, msg)
 
     def warning(self, msg):
@@ -45,8 +42,7 @@ class MyLogger:
             self.logger.error(msg)
             raise yt_dlp.utils.DownloadError(msg_str)
         elif "should already be available" in msg_str.lower():
-            # This is just a live stream status warning, don't throw an error
-            self.logger.warning(msg)  # Log normally as a warning
+            self.logger.warning(msg)
         else:
             self.logger.warning(msg)
 
@@ -67,29 +63,78 @@ class VideoDownloadError(yt_dlp.utils.DownloadError):
 
 class LivestreamError(TypeError):
     pass
-            
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False, logger=logging.getLogger(), clean_info_dict: bool=False):
-    #url = "https://www.youtube.com/watch?v={0}".format(id)
-    url = str(id)
 
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False, logger=logging.getLogger(), clean_info_dict: bool=False, max_retries=3, retry_delay=10):
+    url = str(id)
+    
+    if max_retries is None:
+        max_retries = 3
+    if retry_delay is None:
+        retry_delay = 10
+    
+    retry_count = 0
+    
+    while retry_count <= max_retries:
+        try:
+            return _extract_video_info(
+                url=url,
+                wait=wait,
+                cookies=cookies,
+                additional_options=additional_options,
+                proxy=proxy,
+                include_dash=include_dash,
+                include_m3u8=include_m3u8,
+                logger=logger,
+                clean_info_dict=clean_info_dict
+            )
+            
+        except VideoUnavailableError as e:
+            error_str = str(e).lower()
+            if "should already be available" in error_str or "live stream is not yet fully available" in error_str:
+                retry_count += 1
+                if retry_count <= max_retries:
+                    logger.warning(f"Video not fully available yet, retrying ({retry_count}/{max_retries})...")
+                    logger.info(f"Waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 1.5, 60)
+                    continue
+                else:
+                    logger.error(f"Maximum retry attempts reached ({max_retries}), giving up")
+                    raise VideoUnavailableError(f"Video {id} still unavailable after {max_retries} retries: {str(e)}")
+            else:
+                raise e
+                
+        except (yt_dlp.utils.DownloadError, Exception) as e:
+            error_str = str(e).lower()
+            if any(keyword in error_str for keyword in ["temporary failure", "connection reset", "timeout", "http error", "429", "503"]):
+                retry_count += 1
+                if retry_count <= max_retries:
+                    logger.warning(f"Encountered retryable error, waiting {retry_delay} seconds before retry ({retry_count}/{max_retries})...")
+                    logger.warning(f"Error details: {str(e)}")
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 1.5, 60)
+                    continue
+                else:
+                    logger.error(f"Maximum retry attempts reached ({max_retries}), giving up")
+                    raise VideoDownloadError(f"Video {id} failed after {max_retries} retries: {str(e)}")
+            else:
+                raise e
+
+def _extract_video_info(url, wait, cookies, additional_options, proxy, include_dash, include_m3u8, logger, clean_info_dict):
     yt_dlpLogger = MyLogger(logger=logger)
     
     ydl_opts = {
-        #'live_from_start': True,
         'retries': 25,
         'skip_download': True,
         'cookiefile': cookies,
-        'writesubtitles': True,              # Extract subtitles (live chat)
-        'subtitlesformat': 'json',           # Set format to JSON
-        'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
-#        'quiet': True,
-#        'no_warnings': True,
-#        'extractor_args': 'skip=dash,hls;',
+        'writesubtitles': True,
+        'subtitlesformat': 'json',
+        'subtitleslangs': ['live_chat'],
         'logger': yt_dlpLogger
     }
 
     if isinstance(wait, tuple):
-        if not (0 < len(wait) <= 2) :
+        if not (0 < len(wait) <= 2):
             raise ValueError("Wait tuple must contain 1 or 2 values")
         elif len(wait) < 2:
             ydl_opts['wait_for_video'] = (wait[0])
@@ -106,14 +151,13 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
         ydl_opts.update(additional_options)
         
     if proxy is not None:
-        #print(proxy)
         if isinstance(proxy, str):
             ydl_opts['proxy'] = proxy
         elif isinstance(proxy, dict):
             ydl_opts['proxy'] = next(iter(proxy.values()), None)
 
     ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": ["adaptive","incomplete","duplicate"]})
-    #ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": []})
+    
     if not include_dash:
         (ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).setdefault("skip", [])).append("dash")
     if not include_m3u8:
@@ -125,6 +169,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
             extraction_event.set()
             info_dict = ydl.extract_info(url, download=False)
             extraction_event.clear()
+            
             info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
 
             for stream_format in info_dict.get('formats', []):
@@ -132,44 +177,40 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                     stream_format.pop('fragments', None)
                 except:
                     pass
-            # Check if the video is private
+            
             if not (info_dict.get('live_status') == 'is_live' or info_dict.get('live_status') == 'post_live'):
-                #print("Video has been processed, please use yt-dlp directly")
                 raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
+                
         except yt_dlp.utils.DownloadError as e:
-            # If an error occurs, we can assume the video is private or unavailable
-            if 'video is private' in str(e) or "Private video. Sign in if you've been granted access to this video" in str(e):
-                raise VideoInaccessibleError("Video {0} is private, unable to get stream URLs".format(id))
-            elif 'This live event will begin in' in str(e) or 'Premieres in' in str(e):
-                raise VideoUnavailableError("Video is not yet available. Consider using waiting option")
-            #elif "This video is available to this channel's members on level" in str(e) or "members-only content" in str(e):
-            elif " members " in str(e) or " members-only " in str(e):
-                raise VideoInaccessibleError("Video {0} is a membership video. Requires valid cookies".format(id))
-            elif "not available on this app" in str(e):
-                raise VideoInaccessibleError("Video {0} not available on this player".format(id))
-            elif "no longer live" in str(e).lower():
-                raise LivestreamError("Livestream has ended")
-            elif "should already be available" in str(e):
-                # Handle "should already be available" error
-                raise VideoUnavailableError("Live stream is not yet fully available. Please wait a moment and retry")
+            extraction_event.clear()
+            error_msg = str(e)
+            
+            if 'video is private' in error_msg or "Private video. Sign in if you've been granted access to this video" in error_msg:
+                raise VideoInaccessibleError(f"Video {url} is private, cannot retrieve stream URL")
+            elif 'This live event will begin in' in error_msg or 'Premieres in' in error_msg:
+                raise VideoUnavailableError("Video not available yet. Consider using wait option")
+            elif " members " in error_msg or " members-only " in error_msg:
+                raise VideoInaccessibleError(f"Video {url} is members-only. Valid cookies required")
+            elif "not available on this app" in error_msg:
+                raise VideoInaccessibleError(f"Video {url} is not available on this player")
+            elif "no longer live" in error_msg.lower():
+                raise LivestreamError("Live stream has ended")
+            elif "should already be available" in error_msg.lower():
+                raise VideoUnavailableError(f"Live stream not fully available yet: {error_msg}")
             else:
                 raise e
-        finally:
-            extraction_event.clear()
-        
-    logging.debug("Info.json: {0}".format(json.dumps(info_dict)))
+                
+    logger.debug(f"Info.json: {json.dumps(info_dict)}")
     return info_dict, info_dict.get('live_status')
 
 def parse_wait(string) -> tuple[int, int]:
     try:
         if ":" in string:
-            # Split by colon and convert both parts to integers
             parts = string.split(":")
             if len(parts) != 2:
                 raise ValueError
             return (int(parts[0]), int(parts[1]))
         else:
-            # Return a single-item list or just the int depending on your needs
             return (int(string), None)
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{string}' must be an integer or 'min:max'")
