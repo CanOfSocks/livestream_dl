@@ -96,11 +96,11 @@ jobs:
               if count > 0:
                   with open(target_file, 'w', encoding='utf-8') as f:
                       f.write(new_content)
-                  print("✅ Patch applied successfully.")
+                  print("Patch applied successfully.")
               else:
-                  print("⚠️ Pattern not found. File may have changed or already be patched.")
+                  print("Pattern not found. File may have changed or already be patched.")
           else:
-              print(f"❌ Error: Could not find yt-dlp video file at {target_file}")
+              print(f"Error: Could not find yt-dlp video file at {target_file}")
               exit(1)
 
       # --- Build Step ---
