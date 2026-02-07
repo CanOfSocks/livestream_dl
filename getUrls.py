@@ -3,11 +3,11 @@ import yt_dlp
 import logging
 import json
 import time
+import random
+
 try:
-    # Try absolute import (standard execution)
     from setup_logger import VERBOSE_LEVEL_NUM
 except ModuleNotFoundError:
-    # Fallback to relative import (when part of a package)
     from .setup_logger import VERBOSE_LEVEL_NUM
 
 import argparse
@@ -16,8 +16,9 @@ import threading
 extraction_event = threading.Event()
 
 class MyLogger:
+    
     def __init__(self, logger: logging = logging.getLogger()):
-        self.logger = logger
+        self.logger=logger
 
     def debug(self, msg):
         if not msg.startswith("[wait] Remaining time until next attempt:"):
@@ -27,7 +28,6 @@ class MyLogger:
                 self.info(msg)
 
     def info(self, msg):
-        # Safe save to Verbose log level
         self.logger.log(VERBOSE_LEVEL_NUM, msg)
 
     def warning(self, msg):
@@ -45,11 +45,9 @@ class MyLogger:
             self.logger.error(msg)
             raise yt_dlp.utils.DownloadError(msg_str)
         elif "should already be available" in msg_str.lower():
-            # Throw special exception for external handling of sleep and retry
             self.logger.info(msg_str)
             raise yt_dlp.utils.DownloadError("Video should already be available, waiting before retry")
         elif "release time of video is not known" in msg_str.lower():
-            # Added: handle "Release time of video is not known" warning
             self.logger.info(msg_str)
             raise yt_dlp.utils.DownloadError("Release time of video is not known, waiting before retry")
         else:
@@ -59,60 +57,26 @@ class MyLogger:
         self.logger.error(msg)
 
 class VideoInaccessibleError(PermissionError):
-    """Video is private or requires membership"""
     pass
 
 class VideoProcessedError(ValueError):
-    """Video has been processed and is no longer live"""
     pass
 
 class VideoUnavailableError(ValueError):
-    """Video is not available yet or after retries"""
     pass
 
 class VideoDownloadError(yt_dlp.utils.DownloadError):
-    """General video download error"""
     pass
 
 class LivestreamError(TypeError):
-    """Livestream has ended"""
     pass
 
 class ShouldAlreadyAvailableError(yt_dlp.utils.DownloadError):
-    """Special exception: stream should already be available but isn't fully ready yet, requires wait and retry"""
     pass
             
-def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False, logger=logging.getLogger(), clean_info_dict: bool=False, max_retries=10):
-    """
-    Retrieve video information, waits and retries when encountering 'should already be available' 
-    or 'release time of video is not known' messages
-    
-    Args:
-        id: Video ID or URL
-        wait: Wait setting - can be True, integer, tuple (min, max), or string "min:max"
-        cookies: Path to cookies file
-        additional_options: Additional yt-dlp options
-        proxy: Proxy settings
-        return_format: Whether to return format information
-        sort: Sort formats
-        include_dash: Include DASH formats
-        include_m3u8: Include HLS/m3u8 formats
-        logger: Logger instance
-        clean_info_dict: Remove private keys from info dictionary
-        max_retries: Maximum number of retry attempts
-    
-    Returns:
-        tuple: (info_dict, live_status)
-    
-    Raises:
-        VideoInaccessibleError: Video is private or requires membership
-        VideoProcessedError: Video has been processed (no longer live)
-        VideoUnavailableError: Video not available after retries
-        LivestreamError: Livestream has ended
-    """
+def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=None, return_format=False, sort=None, include_dash=False, include_m3u8=False, logger=logging.getLogger(), clean_info_dict: bool=False, max_retries=5):
     url = str(id)
     
-    # Parse wait parameter
     wait_tuple = None
     if isinstance(wait, tuple):
         if not (0 < len(wait) <= 2):
@@ -124,7 +88,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
     elif isinstance(wait, int):
         wait_tuple = (wait, None)
     elif wait is True:
-        wait_tuple = (5, 300)
+        wait_tuple = (500, 600)
     elif isinstance(wait, str):
         wait_tuple = parse_wait(wait)
     
@@ -143,7 +107,6 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
             'logger': yt_dlpLogger
         }
         
-        # Set wait_for_video parameter
         if wait_tuple:
             if wait_tuple[1] is None:
                 ydl_opts['wait_for_video'] = (wait_tuple[0],)
@@ -179,25 +142,21 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                     except:
                         pass
                 
-                # Check if the video is live
                 if not (info_dict.get('live_status') == 'is_live' or info_dict.get('live_status') == 'post_live'):
                     raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
                     
-                # Successfully retrieved information
                 logging.debug("Info.json: {0}".format(json.dumps(info_dict)))
                 return info_dict, info_dict.get('live_status')
                 
         except yt_dlp.utils.DownloadError as e:
             extraction_event.clear()
             
-            # Check if it's a "should already be available" error
             should_retry = False
             wait_reason = ""
             
             if 'should already be available' in str(e).lower():
                 should_retry = True
                 wait_reason = "should already be available"
-            # Added: check if it's a "release time of video is not known" error
             elif 'release time of video is not known' in str(e).lower():
                 should_retry = True
                 wait_reason = "release time of video is not known"
@@ -205,23 +164,28 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
             if should_retry:
                 retry_count += 1
                 
-                # Calculate wait time - use second value of wait parameter if available, otherwise use first value
+                if retry_count >= max_retries:
+                    logger.warning(f"Maximum retry count reached ({max_retries}), giving up")
+                    raise VideoUnavailableError(f"Stream still unavailable after {max_retries} retries (streaming room not started)")
+                
                 if wait_tuple and wait_tuple[1] is not None:
-                    wait_time = wait_tuple[1]  # Use second value
+                    base_wait = wait_tuple[1]
                 elif wait_tuple and wait_tuple[0] is not None:
-                    wait_time = wait_tuple[0]  # If no second value, use first value
+                    base_wait = wait_tuple[0]
                 else:
-                    wait_time = 600  # Default value
+                    base_wait = 600
                 
-                logger.warning(f"Encountered '{wait_reason}' warning, waiting {wait_time} seconds before retry (attempt {retry_count}/{max_retries})")
+                jitter_percent = 0.1
+                jitter_range = int(base_wait * jitter_percent)
+                jitter = random.randint(-jitter_range, jitter_range)
+                wait_time = max(300, base_wait + jitter)
                 
-                # Sleep for specified wait time
+                logger.warning(f"Encountered '{wait_reason}' warning, waiting {wait_time} seconds before retry (Attempt {retry_count}/{max_retries})")
+                
                 time.sleep(wait_time)
                 
-                # Continue loop to retry
                 continue
                 
-            # Handle other errors
             elif 'video is private' in str(e) or "Private video. Sign in if you've been granted access to this video" in str(e):
                 raise VideoInaccessibleError(f"Video {id} is private, unable to get stream URLs")
             elif 'This live event will begin in' in str(e) or 'Premieres in' in str(e):
@@ -238,22 +202,9 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
         finally:
             extraction_event.clear()
     
-    # Reached maximum retry count
     raise VideoUnavailableError(f"Stream not available after {max_retries} retries with wait_for_video")
 
 def parse_wait(string) -> tuple[int, int]:
-    """
-    Parse wait string into tuple
-    
-    Args:
-        string: Wait string in format "min" or "min:max"
-    
-    Returns:
-        tuple: (min_wait, max_wait) or (min_wait, None)
-    
-    Raises:
-        argparse.ArgumentTypeError: Invalid format
-    """
     try:
         if ":" in string:
             parts = string.split(":")
