@@ -134,11 +134,23 @@ def monitor_channel(options={}):
     from typing import Dict
     threads: Dict[str, threading.Thread] = {}
     last_check = time()
-    channel_id = options.get("ID")
+    channel_id: str = options.get("ID")
     tab = "membership" if options.get("members_only", False) else "streams"
     if not options.get("wait_for_video", None):
         options["wait_for_video"] = (60, None)
     wait = max((num for num in options.get("wait_for_video", []) if isinstance(num, (int, float))), default=60)
+
+    while not channel_id.startswith("UC"):
+        new_channel_id = monitor_channel.resolve_channel(channel_id) or ""
+        # Break if resolved and start search
+        if channel_id.startswith("UC"):
+            channel_id = new_channel_id
+            break
+        time_to_next = max(wait-(time()-last_check),1)
+        logger.debug("Sleeping for {0:.2f}s for next URL resolve attempt".format(time_to_next))
+        sleep(time_to_next)
+        last_check=time()
+
     logger.debug("Starting runner for channel: '{0}' on tab: '{1}'".format(channel_id, tab))
     while True:
         for id, thread in list(threads.items()):
@@ -165,7 +177,7 @@ def monitor_channel(options={}):
                 threads[video_id] = t  # store the thread in a dictionary
         except Exception as e:
             logger.exception("An error occurred fetching upcoming streams")
-        time_to_next = wait-(time()-last_check)
+        time_to_next = max(wait-(time()-last_check),1)
         logger.debug("Active threads: {0}".format(list(threads.keys())))
         logger.debug("Sleeping for {0:.2f}s for next stream check".format(time_to_next))
         sleep(time_to_next)
@@ -306,7 +318,7 @@ if __name__ == "__main__":
 
     monitor_group = parser.add_argument_group('Channel Monitor Options')
 
-    monitor_group.add_argument('--monitor-channel', action='store_true', help="Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument (e.g. UCxsZ6NCzjU_t4YSxQLBcM5A)")
+    monitor_group.add_argument('--monitor-channel', action='store_true', help="Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument (e.g. UCxsZ6NCzjU_t4YSxQLBcM5A). Not using the channel ID will attempt to resolve the channel ID.")
 
     monitor_group.add_argument('--members-only', action='store_true', help="Monitor 'Members Only' playlist for streams instead of 'Streams' playlist. Requires cookies.")
 
