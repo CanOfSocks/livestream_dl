@@ -9,7 +9,7 @@ from typing import Literal, Optional
 __all__ = ["YoutubeURL", "Formats"]
 
 import logging
-
+import copy
 
 try:
     # Try absolute import (standard execution)
@@ -287,9 +287,19 @@ class Formats:
             #print("Requested Downloads:", json.dumps(info.get('requested_downloads', {})))
             #print("Requested Formats:", json.dumps(info.get('requested_formats', {})))
             
-            format: dict = {}
+            format: dict = {}            
+                
+            #print(json.dumps(formats))
+            
+            #Handling for known issues with m3u8
+            #if (not format.get('url', None)) and info.get('url', None):                
+            format['url'] = info.get('url')
+            format['format_id'] = info.get("format_id")
+            format['format_note'] = info.get("format_note")
+            format['protocol'] = info.get('protocol')
+            #self.logger.debug("Updated format url to: {0}".format(info.get('url', None)))
 
-            if formats:
+            if not format.get('url', None) and formats:
                 if stream_type == "video":
                     format.update(next((d for d in formats if d.get('vcodec') != 'none'), {}))
                 elif stream_type == "audio":
@@ -299,14 +309,6 @@ class Formats:
 
                 if not format:
                     raise ValueError("No stream matches resolution/format input with a video or audio stream")
-            
-            #Handling for known issues with m3u8
-            if (not format.get('url', None)) and info.get('url', None):                
-                format['url'] = info.get('url')
-                format['format_id'] = info.get("format_id")
-                format['format_note'] = info.get("format_note")
-                format['protocol'] = info.get('protocol')
-                self.logger.debug("Updated format url to: {0}".format(info.get('url', None)))
 
             #print(json.dumps(format))
             
