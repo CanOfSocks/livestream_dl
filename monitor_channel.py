@@ -126,8 +126,6 @@ def get_by_name(channel_name: str, logger: logging = None):
     with YoutubeDL(ydl_opts) as ydl:
         results = ydl.extract_info(search_query, download=False)
         results = ydl.sanitize_info(results)
-        with open("data.json", "w") as json_file:
-            json.dump(results, json_file, indent=4)
         if 'entries' in results and len(results['entries']) > 0:
             first_result = results['entries'][0]
             logger.info(f"Found Channel: {first_result.get('uploader')}")
