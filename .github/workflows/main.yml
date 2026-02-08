@@ -1,4 +1,4 @@
-name: Build & Release Windows EXE
+name: Build & Release Multi-Platform
 
 on:
   push:
@@ -10,26 +10,62 @@ on:
         description: "Tag name (e.g. v1.2.3)"
         required: false
         default: ""
+
 permissions:
   contents: write
-  
+
 jobs:
   build:
-    runs-on: windows-latest
+    name: Build ${{ matrix.asset_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x64 (Runs on Win ARM64 via emulation)
+          - os: windows-latest
+            architecture: x64
+            asset_name: livestream_dl-windows-x64.exe
+            executable_name: livestream_dl.exe
+            use_qemu: false
+
+          - os: windows-11-arm
+            architecture: arm64
+            asset_name: livestream_dl-windows-arm64.exe
+            executable_name: livestream_dl.exe
+            use_qemu: false  
+            
+          # Linux x64
+          - os: ubuntu-latest
+            architecture: x64
+            asset_name: livestream_dl-linux-x64
+            executable_name: livestream_dl
+            use_qemu: false
+
+          # Linux ARM64
+          - os: ubuntu-24.04-arm
+            architecture: arm64
+            asset_name: livestream_dl-linux-arm64
+            executable_name: livestream_dl
+            use_qemu: false
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # --- QEMU Setup for Linux ARM64 ---
+      - name: Set up QEMU
+        if: ${{ matrix.use_qemu }}
+        uses: docker/setup-qemu-action@v3
+
+      # --- Python Setup ---
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          architecture: ${{ matrix.architecture == 'aarch64' && 'x64' || matrix.architecture }}
 
-      - name: Get current date
-        id: date
-        run: echo "DATE=$(Get-Date -Format 'yyyy.MM.dd')" >> $env:GITHUB_ENV
-
+      # --- Install Dependencies ---
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -37,23 +73,80 @@ jobs:
           pip install -U --pre "yt-dlp[default]"
           pip install pyinstaller
 
+      # --- Universal Patching (Python) ---
+      # We use python here so it runs on both Windows and Linux
       - name: Apply yt-dlp patches
+        shell: python
         run: |
-          $path = python -c "import yt_dlp; import os; print(os.path.dirname(yt_dlp.__file__))"
-          $toModifyFile = "$path\extractor\youtube\_video.py"
+          import yt_dlp
+          import os
+          import re
+          
+          # Locate the file
+          path = os.path.dirname(yt_dlp.__file__)
+          target_file = os.path.join(path, 'extractor', 'youtube', '_video.py')
+          
+          print(f"Patching file: {target_file}")
+          
+          if os.path.exists(target_file):
+              with open(target_file, 'r', encoding='utf-8') as f:
+                  content = f.read()
+              
+              # Regex to find and comment out the specific block
+              # Matches the exact indentation structure
+              pattern = r"(\s+)if fmt_stream\.get\('targetDurationSec'\):\s*\n(\s+)continue"
+              replacement = r"\1#if fmt_stream.get('targetDurationSec'):\n\2#continue"
+              
+              new_content, count = re.subn(pattern, replacement, content)
+              
+              if count > 0:
+                  with open(target_file, 'w', encoding='utf-8') as f:
+                      f.write(new_content)
+                  print("Patch applied successfully.")
+              else:
+                  print("Pattern not found. File may have changed or already be patched.")
+          else:
+              print(f"Error: Could not find yt-dlp video file at {target_file}")
+              exit(1)
 
-          if (Test-Path $toModifyFile) {
-            $content = Get-Content $toModifyFile -Raw
-            #this is replace is entirely generated. 
-            $content = $content -replace "(\s+)if fmt_stream\.get\('targetDurationSec'\):\s*\n(\s+)continue", "`$1#if fmt_stream.get('targetDurationSec'):`n`$2#continue"
-            Set-Content $toModifyFile $content
-            Write-Host "Patches applied successfully"
-          } else {
-            Write-Error "Could not find yt-dlp video file at $toModifyFile"
-          }
-      - name: Build EXE
+      # --- Build Step ---
+      - name: Build Executable
         run: |
           pyinstaller --onefile --name livestream_dl --hidden-import yt_dlp_ejs runner.py
+
+      # --- Rename for Upload ---
+      - name: Rename Output
+        shell: bash
+        run: |
+          # Check if using Windows or Linux dist folder location
+          if [ -f "dist/${{ matrix.executable_name }}" ]; then
+            mv "dist/${{ matrix.executable_name }}" "dist/${{ matrix.asset_name }}"
+          fi
+
+      # --- Upload Artifacts (To be grabbed by Release job) ---
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get current date
+        id: date
+        run: echo "DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List Artifacts
+        run: ls -R artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -67,8 +160,15 @@ jobs:
             **Dependencies Required:**
             * **FFmpeg**: Must be installed and added to your system PATH.
             * **Deno**: Must be installed and added to your system PATH.
+            
+            **Downloads:**
+            | Platform | Architecture | Filename |
+            | :--- | :--- | :--- |
+            | 🪟 Windows | x64 (Intel/AMD) | `livestream_dl-windows-x64.exe` |
+            | 🐧 Linux | x64 (Intel/AMD) | `livestream_dl-linux-x64` |
+            | 🐧 Linux | arm64 (RPi/Server) | `livestream_dl-linux-arm64` |
           draft: false
           prerelease: true
-          files: dist/livestream_dl.exe
+          files: artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
