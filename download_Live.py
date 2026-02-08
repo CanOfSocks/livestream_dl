@@ -1000,7 +1000,7 @@ class LiveStreamDownloader:
     def print_stats(self, options):
         if options.get('stats_as_json', False):
             # \033[K clears the line after printing the JSON
-            print(f"\r{json.dumps(self.stats)}\033[K", end="", flush=True)
+            print(f"\r{json.dumps(self.stats)}\033[K", end="\r", flush=True)
             return
 
         if self.logger.getEffectiveLevel() > logging.INFO:
@@ -1042,7 +1042,7 @@ class LiveStreamDownloader:
             print(full_line)
         else:
             # \r moves to start, \033[K clears anything left over from the previous longer line
-            print(f"\r{full_line}\033[K", end="", flush=True)
+            print(f"\r{full_line}\033[K", end="\r", flush=True)
         
     def add_url_param(self, url: str, key, value) -> str:
         parsed = urlparse(url)
