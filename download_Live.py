@@ -323,7 +323,7 @@ class LiveStreamDownloader:
                         #        raise future.exception()
                         
                         result, type = future.result()
-                        self.logger.info("\033[31m{0}\033[0m".format(result))
+                        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "\033[93m{0}\033[0m".format(result))
                         
                         if type == 'auxiliary':
                             self.file_names.update(result)
@@ -1273,7 +1273,7 @@ class DownloadStream:
     
     def live_dl(self):
         
-        self.logger.info("\033[31mStarting download of live fragments ({0} - {1})\033[0m".format(self.format, self.stream_url.fomat_note))
+        self.logger.info("\033[33mStarting download of live fragments ({0} - {1})\033[0m".format(self.format, self.stream_url.fomat_note))
         self.already_downloaded = self.segment_exists_batch()
         latest_downloaded_segment = -1
         wait = 0   
@@ -2248,7 +2248,7 @@ class DownloadStreamDirect(DownloadStream):
             self.logger.warning(f"Failed to save state file: {e}")
     
     def live_dl(self):
-        self.logger.info(f"\033[31mStarting download of live fragments ({self.format} - {self.stream_url.fomat_note}) [Direct Mode]\033[0m")
+        self.logger.info(f"\033[93mStarting download of live fragments ({self.format} - {self.stream_url.fomat_note}) [Direct Mode]\033[0m")
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "recording"
             self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state['last_written']
@@ -2685,7 +2685,7 @@ class StreamRecovery(DownloadStream):
         # This method is completely different from the base class.
         # It's designed to recover missing segments, not optimistically
         # download a live edge.
-        self.logger.info("\033[31mStarting download of live fragments ({0} - {1})\033[0m".format(self.format, self.stream_url.fomat_note))
+        self.logger.info("\033[93mStarting download of live fragments ({0} - {1})\033[0m".format(self.format, self.stream_url.fomat_note))
         if self.livestream_coordinator:
             self.livestream_coordinator.stats[self.type]['status'] = "recording"
         self.already_downloaded = self.segment_exists_batch()
