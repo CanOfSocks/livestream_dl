@@ -998,52 +998,74 @@ class LiveStreamDownloader:
         return f"{bytes:.2f} {units[unit_index]}"
 
     def print_stats(self, options):
-        if options.get('stats_as_json', False):
-            # \033[K clears the line after printing the JSON
-            print(f"\r{json.dumps(self.stats)}\033[K", end="\r", flush=True)
-            return
+            # Lazy-load output control attributes (resolves multi-threading race conditions)
+            if not hasattr(self, '_print_lock'):
+                self._print_lock = threading.Lock()
+                self._last_printed_length = 0
+                self._last_print_time = 0
+            
+            if options.get('stats_as_json', False):
+                # \033[K clears the line after printing the JSON
+                print(f"\r{json.dumps(self.stats)}\033[K", end="", flush=True)
+                return
 
-        if self.logger.getEffectiveLevel() > logging.INFO:
-            #print("Log level too high for printing: {0}".format(self.logger.getEffectiveLevel()))
-            return
+            if self.logger.getEffectiveLevel() > logging.INFO:
+                return
 
-        if not (self.stats.get('video') or self.stats.get('audio')):
-            #print("No stats available")
-            #print(json.dumps(self.stats))
-            return
+            if not (self.stats.get('video') or self.stats.get('audio')):
+                return
 
-        # Build the output parts in a list
-        parts = [f"{self.stats.get('id')}:"]
+            # Control print frequency (max 10 times per second, avoid excessive refresh)
+            current_time = time.time()
+            if current_time - self._last_print_time < 0.1:
+                return
+            
+            # Use thread lock to ensure only one thread can print at a time
+            with self._print_lock:
+                self._last_print_time = current_time
+                
+                # Build the output parts in a list
+                parts = [f"{self.stats.get('id')}:"]
 
-        if self.stats.get('video'):
-            v = self.stats.get('video', {})
-            v_str = f"Video: {v.get('downloaded_segments', 0)}/{v.get('latest_sequence', 0)}"
-            if v.get('status'):
-                v_str += f" ({v.get('status').capitalize()})"
-            parts.append(v_str)
+                if self.stats.get('video'):
+                    v = self.stats.get('video', {})
+                    v_str = f"Video: {v.get('downloaded_segments', 0)}/{v.get('latest_sequence', 0)}"
+                    if v.get('status'):
+                        v_str += f" ({v.get('status').capitalize()})"
+                    parts.append(v_str)
 
-        if self.stats.get('audio'):
-            a = self.stats.get('audio', {})
-            a_str = f"Audio: {a.get('downloaded_segments', 0)}/{a.get('latest_sequence', 0)}"
-            # Note: Fixed a likely typo in your original code where you checked 
-            # video status while printing audio stats
-            if a.get('status'):
-                a_str += f" ({a.get('status').capitalize()})"
-            parts.append(a_str)
+                if self.stats.get('audio'):
+                    a = self.stats.get('audio', {})
+                    a_str = f"Audio: {a.get('downloaded_segments', 0)}/{a.get('latest_sequence', 0)}"
+                    if a.get('status'):
+                        a_str += f" ({a.get('status').capitalize()})"
+                    parts.append(a_str)
 
-        if self.stats.get('video', {}).get('current_filesize') or self.stats.get('audio', {}).get('current_filesize'):
-            size = self.stats.get('video', {}).get('current_filesize', 0) + self.stats.get('audio', {}).get('current_filesize', 0)
-            parts.append(f"~{self.convert_bytes(size)} downloaded")
+                if self.stats.get('video', {}).get('current_filesize') or self.stats.get('audio', {}).get('current_filesize'):
+                    size = self.stats.get('video', {}).get('current_filesize', 0) + self.stats.get('audio', {}).get('current_filesize', 0)
+                    parts.append(f"~{self.convert_bytes(size)} downloaded")
 
-        # Join everything with commas or spaces
-        full_line = " ".join(parts)
+                # Join everything with commas or spaces
+                full_line = " ".join(parts)
+                
+                # Key fix 1: Ensure minimum line length
+                min_length = 60
+                if len(full_line) < min_length:
+                    full_line = full_line.ljust(min_length)
+                
+                # Key fix 2: If new line is shorter than last, pad with spaces to the same length
+                if len(full_line) < self._last_printed_length:
+                    full_line = full_line.ljust(self._last_printed_length)
+                
+                # Save current line length for next use
+                self._last_printed_length = len(full_line)
 
-        if options.get("new_line", False):
-            print(full_line)
-        else:
-            # \r moves to start, \033[K clears anything left over from the previous longer line
-            print(f"\r{full_line}\033[K", end="\r", flush=True)
-        
+                if options.get("new_line", False):
+                    print(full_line)
+                else:
+                    # \r moves to start, \033[K clears anything left over from the previous longer line
+                    print(f"\r{full_line}\033[K", end="", flush=True)
+            
     def add_url_param(self, url: str, key, value) -> str:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
