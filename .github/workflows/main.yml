@@ -28,6 +28,12 @@ jobs:
             asset_name: livestream_dl-windows-x64.exe
             executable_name: livestream_dl.exe
             use_qemu: false
+
+          - os: windows-11-arm
+            architecture: arm64
+            asset_name: livestream_dl-windows-arm64.exe
+            executable_name: livestream_dl.exe
+            use_qemu: false  
             
           # Linux x64
           - os: ubuntu-latest
@@ -36,12 +42,12 @@ jobs:
             executable_name: livestream_dl
             use_qemu: false
 
-          # Linux ARM64 (Uses QEMU emulation)
-          - os: ubuntu-latest
-            architecture: aarch64
+          # Linux ARM64
+          - os: ubuntu-24.04-arm
+            architecture: arm64
             asset_name: livestream_dl-linux-arm64
             executable_name: livestream_dl
-            use_qemu: true
+            use_qemu: false
 
     steps:
       - name: Checkout repo
