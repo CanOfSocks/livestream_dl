@@ -765,6 +765,7 @@ class LiveStreamDownloader:
         self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Files: {0}\n".format(json.dumps(self.file_names, default=lambda o: o.to_dict())))
         import subprocess
         import mimetypes
+        from yt_dlp.postprocessor.ffmpeg import FFmpegMetadataPP
         #self.logger.debug("Files: {0}".format(json.dumps(file_names)))
         stream_manifests = list(self.file_names["streams"].items())
         for manifest, stream in stream_manifests:
@@ -1591,6 +1592,7 @@ class DownloadStream:
                     elif status == 204:
                         return head_seq, bytes(), int(segment_order), status, headers
                     else:
+                        self.logger.warning("({0}) Unexpected status returned {1}".format(self.format, status))
                         return head_seq, None, int(segment_order), status, headers
                     
             except httpx.ConnectTimeout as e:
@@ -1601,6 +1603,7 @@ class DownloadStream:
 
             except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException) as e:
                 if attempt >= total_retries:
+                    self.logger.warning("({0}) Unexpected error downloading segment {1} file after {2} attempts {3}".format(self.format, segment_order, attempt, e))
                     # Return standard error format
                     status_err = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
                     return -1, None, segment_order, status_err, None
