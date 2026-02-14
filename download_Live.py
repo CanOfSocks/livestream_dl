@@ -1221,23 +1221,67 @@ class LiveStreamDownloader:
                 pass
 
     def refresh_info_json(self, update_threshold: int, id, cookies=None, additional_options=None, include_dash=False, include_m3u8=False):
-        # Check if time difference is greater than the threshold. If doesn't exist, subtraction of zero will always be true
-        if time.time() - self.refresh_json.get("refresh_time", 0.0) > update_threshold:
-            self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True)
-
-            # Remove unnecessary items for info.json used purely for url refresh
-            self.remove_format_segment_playlist_from_info_dict(self.refresh_json)
-
-            self.refresh_json.pop("thumbnails", None)
-            self.refresh_json.pop("tags", None)
-            self.refresh_json.pop("description", None)
-
-            # Add refresh time for reference
-            self.refresh_json["refresh_time"] = time.time()                   
-
+        # Check if the update threshold has been exceeded
+        current_time = time.time()
+        last_refresh = self.refresh_json.get("refresh_time", 0.0)
+        
+        # If the time since the last update is less than the threshold, return the cached information directly
+        if current_time - last_refresh <= update_threshold and self.refresh_json:
             return self.refresh_json, self.live_status
-        else:
+        
+        # Acquire the lock to prevent multiple threads from refreshing simultaneously
+        acquired = self.lock.acquire(timeout=30.0)
+        if not acquired:
+            self.logger.warning("Unable to acquire refresh lock, using cached information")
             return self.refresh_json, self.live_status
+            
+        try:
+            # Check again to prevent other threads from updating while waiting for the lock
+            if current_time - self.refresh_json.get("refresh_time", 0.0) <= update_threshold and self.refresh_json:
+                return self.refresh_json, self.live_status
+            
+            # Call the underlying function
+            new_info, new_status = getUrls.get_Video_Info(
+                id=id, 
+                wait=False, 
+                cookies=cookies, 
+                additional_options=additional_options, 
+                include_dash=include_dash, 
+                include_m3u8=include_m3u8, 
+                clean_info_dict=True,
+                logger=self.logger
+            )
+            
+            # Remove unnecessary items
+            self.remove_format_segment_playlist_from_info_dict(new_info)
+            new_info.pop("thumbnails", None)
+            new_info.pop("tags", None)
+            new_info.pop("description", None)
+            
+            # Add refresh time
+            new_info["refresh_time"] = time.time()
+            
+            # Update cache
+            self.refresh_json = new_info
+            self.live_status = new_status
+            
+            return self.refresh_json, self.live_status
+            
+        except getUrls.MaxRetryExceededError as e:
+            # Maximum number of retries exceeded
+            self.logger.error(f"[Live stream offline status, please check] {e}")
+            # Return the last successful cache (if available)
+            if self.refresh_json:
+                self.logger.warning("Using the last successful cached information")
+                return self.refresh_json, self.live_status
+            raise
+        except Exception as e:
+            self.logger.exception(f"Error occurred while refreshing video information: {e}")
+            if self.refresh_json:
+                return self.refresh_json, self.live_status
+            raise
+        finally:
+            self.lock.release()
         
 class FileInfo(Path):
     _file_type: str = None
