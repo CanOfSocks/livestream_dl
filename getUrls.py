@@ -112,7 +112,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
         elif isinstance(proxy, dict):
             ydl_opts['proxy'] = next(iter(proxy.values()), None)
 
-    ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": ["adaptive","incomplete","duplicate"]})
+    ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": ["live_adaptive","incomplete","duplicate"]})
     #ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": []})
     if not include_dash:
         (ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).setdefault("skip", [])).append("dash")
