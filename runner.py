@@ -217,9 +217,7 @@ if __name__ == "__main__":
 
     parser.add_argument('ID', type=str, nargs='?', default=None, help='The video URL or ID')
     
-    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="""Desired resolution. Based off yt-dlp's format selection: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection.
-                        Audio will always be set as "ba" (best audio) regardless of filters set. "best" will be converted to "bv"
-                        A prompt will be displayed if no value is entered""")
+    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="""Desired resolution. Based off yt-dlp's format selection: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection. A value of "bv+ba/best" is recommended for most people.""")
     
     parser.add_argument('--custom-sort', type=str, default=None, help="Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats")
     
