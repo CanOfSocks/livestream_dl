@@ -131,7 +131,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--resolution` | `best` | Desired resolution. Can be `bv+ba/best`, `best`, or a custom [yt-dlp format filter](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection).  <br>-A recommended value is "bv+ba/best".  <br>-If unspecified, a prompt will appear.|
+| `--resolution` | Input Prompt | Desired resolution. Can be `bv+ba/best`, `best`, or a custom [yt-dlp format filter](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection).  <br>-A recommended value is `bv+ba/best`.  <br>-If unspecified, a prompt will appear.|
 | `--custom-sort` | `None` | Custom sorting algorithm for formats based on [yt-dlp sorting syntax](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats). |
 | `--threads` | `2` | Number of download threads *per format*. Total threads = this value × 2 (for video+audio). |
 | `--batch-size` | `5` | Number of segments downloaded before the temporary database is committed to disk (reduces disk IO). |
