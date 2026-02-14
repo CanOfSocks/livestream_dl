@@ -1051,7 +1051,7 @@ class LiveStreamDownloader:
                 try:                    
                     livestream_merger.real_run_ffmpeg(
                         [(path, input_args) for path in files],
-                        [str(merged_file.absolute(), args)])
+                        [(str(merged_file.absolute()), args)])
                 except subprocess.CalledProcessError as e:
                     self.logger.error(e.stderr)
                     self.logger.critical(e)
