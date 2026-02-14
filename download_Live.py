@@ -310,11 +310,9 @@ class LiveStreamDownloader:
                         format_obj = YoutubeURL.YoutubeURL(format_info.get('fragment_base_url'), format_info.get('protocol'), format_id=format_info.get('format_id'), logger=self.logger, vcodec=format_info.get('vcodec', None), acodec=format_info.get('acodec', None), format_note=format_info.get("format_note"), language=format_info.get('language', None), ext=format_info.get('ext', None))
                         
                     elif format_info.get('protocol', "") == "m3u8_native":      
-                        format_obj = YoutubeURL(url=format_handler.getM3u8Url(format_info.get('url')), protocol=format_info.get('protocol'), format_id=format_info.get('format_id'), logger=self.logger, vcodec=format_info.get('vcodec', None), acodec=format_info.get('acodec', None), format_note=format_info.get("format_note"), language=format_info.get('language', None), ext=format_info.get('ext', None))
+                        format_obj = YoutubeURL.YoutubeURL(url=format_handler.getM3u8Url(format_info.get('url')), protocol=format_info.get('protocol'), format_id=format_info.get('format_id'), logger=self.logger, vcodec=format_info.get('vcodec', None), acodec=format_info.get('acodec', None), format_note=format_info.get("format_note"), language=format_info.get('language', None), ext=format_info.get('ext', None))
                         if not format_info.get('format_id', None):
                             format['format_id'] = str(format_obj.itag).strip() 
-                        if (not self.protocol) and format_obj:
-                            self.protocol = format_obj.protocol
                     else:
                         format_obj = YoutubeURL.YoutubeURL(format_info.get('url'), format_info.get('protocol'), format_id=format_info.get('format_id'), logger=self.logger, vcodec=format_info.get('vcodec', None), acodec=format_info.get('acodec', None), format_note=format_info.get("format_note"), language=format_info.get('language', None), ext=format_info.get('ext', None))
 
@@ -827,7 +825,7 @@ class LiveStreamDownloader:
             
         return created_files, 'auxiliary'
         
-    def create_mp4(self, file_names, info_dict, options):
+    def create_mp4(self, file_names: dict, info_dict: dict, options: dict):
         self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Files: {0}\n".format(json.dumps(self.file_names, default=lambda o: o.to_dict())))
         import subprocess
         import mimetypes
@@ -915,10 +913,9 @@ class LiveStreamDownloader:
             if len(stream_manifests) > 1:
                 base_output = f"{base_output}.{manifest}" 
 
-            ext = info_dict.get('ext', '.mp4')
-                
-            if ext is not None and not str(ext).startswith("."):
-                ext = "." + str(ext)
+            ext = options.get("ext") or info_dict.get('ext', '.mp4')               
+            ext = "." + str(ext).strip(" .")
+
             if not base_output.endswith(ext):
                 base_output = base_output + ext  
 
@@ -1050,11 +1047,11 @@ class LiveStreamDownloader:
                     else: # For other formats, attach using disposition instead
                         args.extend(['-disposition:{0}'.format(thumbnail), 'attached_pic'])
                     
-                
+                merged_file = FileInfo(base_output, file_type='merged')
                 try:                    
                     livestream_merger.real_run_ffmpeg(
                         [(path, input_args) for path in files],
-                        [(base_output, args)])
+                        [str(merged_file.absolute(), args)])
                 except subprocess.CalledProcessError as e:
                     self.logger.error(e.stderr)
                     self.logger.critical(e)
@@ -1064,7 +1061,7 @@ class LiveStreamDownloader:
                     self.logger.exception(e)
                     raise e
             
-                file_names["streams"][manifest]['merged'] = FileInfo(base_output, file_type='merged')
+                file_names["streams"][manifest]['merged'] = merged_file
                 self.logger.info("Successfully merged files into: {0}".format(file_names["streams"][manifest].get('merged').absolute()))
                 
                 

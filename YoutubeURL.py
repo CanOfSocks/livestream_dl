@@ -240,15 +240,8 @@ class Formats:
         
     def getFormats(self, info_json, resolution, sort=None, raw=False, include_dash=True, include_m3u8=False, force_m3u8=False, logger: logging = logging.getLogger(), base_path=None, ydl_options: dict={}, **kwargs) -> dict[str, Any]: 
         self.logger = logger    
-        resolution = str(resolution).strip()
-        
-        original_res = resolution
-        
-        if resolution.lower() == "best":
-            resolution = "bv/best"
-        elif resolution.lower() == "audio_only":
-            resolution = "ba"
-            
+        resolution = str(resolution).strip()               
+                    
         if not raw:
             # Use https (adaptive) protocol with fallback to dash
             resolutions = ["({0})[protocol=https]".format(resolution)]
@@ -288,8 +281,6 @@ class Formats:
 
         self.logger.debug("Searching for resolution: {0}".format(resolution))
         #print("Searching for resolution: {0}".format(resolution))
-            
-        self.logger.debug("Original: {0}, passed: {1}".format(original_res, ydl_opts))
 
         #try:
         with YoutubeDL(ydl_opts) as ydl:
