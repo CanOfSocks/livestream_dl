@@ -1221,95 +1221,23 @@ class LiveStreamDownloader:
                 pass
 
     def refresh_info_json(self, update_threshold: int, id, cookies=None, additional_options=None, include_dash=False, include_m3u8=False):
-            """
-            Refresh video information, including retry logic for handling "should already be available" warnings
-            """
-            # Check if update is needed (based on time threshold)
-            current_time = time.time()
-            last_refresh = self.refresh_json.get("refresh_time", 0.0)
-            
-            # If the time since last update is less than threshold, return cached information directly
-            if current_time - last_refresh <= update_threshold and self.refresh_json:
-                return self.refresh_json, self.live_status
-            
-            # Acquire lock to avoid multiple threads refreshing simultaneously
-            acquired = self.lock.acquire(timeout=30.0)  # Wait at most 30 seconds to acquire lock
-            if not acquired:
-                self.logger.warning("Unable to acquire refresh lock, using cached information")
-                return self.refresh_json, self.live_status
-                
-            try:
-                # Check again to prevent other threads from updating while waiting for lock
-                if current_time - self.refresh_json.get("refresh_time", 0.0) <= update_threshold and self.refresh_json:
-                    return self.refresh_json, self.live_status
-                
-                # Call the underlying function
-                new_info, new_status = getUrls.get_Video_Info(
-                    id=id, 
-                    wait=False, 
-                    cookies=cookies, 
-                    additional_options=additional_options, 
-                    include_dash=include_dash, 
-                    include_m3u8=include_m3u8, 
-                    clean_info_dict=True,
-                    logger=self.logger
-                )
-                
-                # Keep necessary fields
-                # Only remove the truly large fragment lists, keep other necessary fields
-                
-                # 1. Remove fragment lists
-                self.remove_format_segment_playlist_from_info_dict(new_info)
-                
-                # 2. Keep the following fields (they are needed for yt-dlp processing)
-                # - extractor: YouTube extractor needs this
-                # - extractor_key: Extractor key value
-                # - webpage_url: Webpage URL
-                # - formats: Format list (but fragments have been removed)
-                # - thumbnails: Keep thumbnails as they may be used for embed
-                # - description: Keep description, may be used for metadata
-                # - tags: Keep tags, may be used for metadata
+        # Check if time difference is greater than the threshold. If doesn't exist, subtraction of zero will always be true
+        if time.time() - self.refresh_json.get("refresh_time", 0.0) > update_threshold:
+            self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True)
 
-                # 3. Ensure extractor related fields exist
-                if 'extractor' not in new_info:
-                    # If no extractor, copy from original info_dict
-                    if self.info_dict and 'extractor' in self.info_dict:
-                        new_info['extractor'] = self.info_dict['extractor']
-                    else:
-                        # Set default value
-                        new_info['extractor'] = 'youtube'
-                        
-                if 'extractor_key' not in new_info:
-                    if self.info_dict and 'extractor_key' in self.info_dict:
-                        new_info['extractor_key'] = self.info_dict['extractor_key']
-                    else:
-                        new_info['extractor_key'] = 'Youtube'
-                
-                # Add refresh time
-                new_info["refresh_time"] = time.time()
-                
-                # Update cache
-                self.refresh_json = new_info
-                self.live_status = new_status
-                
-                self.logger.debug(f"Successfully refreshed video information, current status: {new_status}")
-                return self.refresh_json, self.live_status
-                
-            except getUrls.MaxRetryExceededError as e:
-                # Exceeded maximum retry attempts
-                self.logger.error(f"[Live stream offline status, please check] {e}")
-                # Return the last successful cache (if available)
-                if self.refresh_json:
-                    self.logger.warning("Using the last successful cached information")
-                    return self.refresh_json, self.live_status
-                raise
-            except Exception as e:
-                self.logger.exception(f"Error occurred while refreshing video information: {e}")
-                if self.refresh_json:
-                    return self.refresh_json, self.live_status
-                raise
-            finally:
-                self.lock.release()
+            # Remove unnecessary items for info.json used purely for url refresh
+            self.remove_format_segment_playlist_from_info_dict(self.refresh_json)
+
+            self.refresh_json.pop("thumbnails", None)
+            self.refresh_json.pop("tags", None)
+            self.refresh_json.pop("description", None)
+
+            # Add refresh time for reference
+            self.refresh_json["refresh_time"] = time.time()                   
+
+            return self.refresh_json, self.live_status
+        else:
+            return self.refresh_json, self.live_status
         
 class FileInfo(Path):
     _file_type: str = None
@@ -1496,6 +1424,9 @@ class DownloadStream:
         if self.livestream_coordinator:
             self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
 
+        # Initialize refresh state
+        self._refresh_state: dict = {}
+
     def __enter__(self):
         return self
     
@@ -1549,7 +1480,8 @@ class DownloadStream:
 
             while True:     
                 self.check_kill(executor)
-                if self.refresh_Check() is True:
+                refresh = self.refresh_Check()
+                if refresh is True:
                     break
                 
                 if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
@@ -1658,135 +1590,132 @@ class DownloadStream:
 
                     # Ensure wait isn't triggered while optimistic segments is enabled
                     wait = 0
-                # If update has no segments and no segments are currently running, wait                              
-                if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
-                    
-                    self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+
+                if refresh != "IN_PROGRESS":
+                    # If update has no segments and no segments are currently running, wait                              
+                    if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                         
-                    # If waited for more than (non-zero) wait limit break. Zero wait limit is intended to keep checking until stream ends
-                    if (self.wait_limit or 0) > 0 and wait > self.wait_limit:
-                        self.logger.debug("Wait time for new fragment exceeded, ending download...")
-                        break    
-                    # If over 10 wait loops have been executed, get page for new URL and update status if necessary
-                    elif wait % 10 == 0 and wait > 0:
+                        self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                            
+                        # If waited for more than (non-zero) wait limit break. Zero wait limit is intended to keep checking until stream ends
+                        if (self.wait_limit or 0) > 0 and wait > self.wait_limit:
+                            self.logger.debug("Wait time for new fragment exceeded, ending download...")
+                            break    
+                        # If over 10 wait loops have been executed, get page for new URL and update status if necessary
+                        elif wait % 10 == 0 and wait > 0:
+                            temp_stream_url = self.stream_url
+                            refresh = self.refresh_url()
+                            if self.is_private:
+                                self.logger.debug("Video is private and no more segments are available. Ending...")
+                                break
+                            elif refresh is False:
+                                break                              
+                            elif refresh is True:
+                                self.logger.info("Video finished downloading via new manifest")
+                                break
+                            elif temp_stream_url != self.stream_url:
+                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                                segment_retries.clear()
+                        time.sleep(10)
+                        self.update_latest_segment(client=client)
+                        wait += 1
+                        continue
+                    
+                    elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
+                        self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
+                        time.sleep(5)
+                        continue
+                    elif len(segments_to_download) > 0 and self.is_private:
+                        if self.stream_url.protocol == "https":
+                            self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
+                            self.commit_batch(self.conn)
+                            self.close_connection()
+
+                            for i in range(5, 0, -1):
+                                self.logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
+                                time.sleep(60)
+                            self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
+                            if self.livestream_coordinator:
+                                try:
+                                    # Construct the options dictionary for the recovery call
+                                    recovery_options = {
+                                        "batch_size": self.batch_size,
+                                        "max_workers": max((self.recovery_thread_multiplier * self.max_workers * int(len(self.stream_urls))), self.recovery_thread_multiplier),
+                                        "file_name": self.file_base_name,
+                                        "cookies": self.cookies,
+                                        "fragment_retries": self.fragment_retries,
+                                        "proxies": self.proxies,
+                                        "no_merge": True
+                                    }
+                                    self.livestream_coordinator.recover_stream(
+                                        info_dict=self.info_dict, 
+                                        stream_url=self.stream_url,
+                                        options=recovery_options,
+                                        stream_urls=self.stream_urls,
+                                        live_status=self.live_status,
+                                    )
+                                    #self.livestream_coordinator.recover_stream(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies, no_merge=True)
+                                except Exception as e:
+                                    self.logger.exception("An error occurred while trying to recover the stream")
+                            else:
+                                try:
+                                    recovery_options = {
+                                        "batch_size": self.batch_size,
+                                        "max_workers": max((self.recovery_thread_multiplier * self.max_workers * int(len(self.stream_urls))), self.recovery_thread_multiplier),
+                                        "file_name": self.file_base_name,
+                                        "cookies": self.cookies,
+                                        "fragment_retries": self.fragment_retries,
+                                        "proxies": self.proxies
+                                    }
+                                    with StreamRecovery(
+                                        info_dict=self.info_dict, 
+                                        stream_url=self.stream_url, 
+                                        options=recovery_options,
+                                        livestream_coordinator=self.livestream_coordinator,
+                                        stream_urls=self.stream_urls,
+                                        live_status=self.live_status,
+                                    ) as downloader:
+                                        downloader.live_dl()
+                                        downloader.close_connection()
+                                    #with StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), 
+                                    #                    file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies) as downloader:
+                                    #    downloader.live_dl()
+                                    #    downloader.close_connection()
+                                except Exception as e:
+                                    self.logger.exception("An error occurred while trying to recover the stream")
+                            time.sleep(1)
+                            self.conn = self.create_connection(self.temp_db_file)
+                            return True
+                            
+                        else:
+                            self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
+                            break
+                    
+                    elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
+                        
+                        self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
                         temp_stream_url = self.stream_url
                         refresh = self.refresh_url()
-                        if self.is_private:
-                            self.logger.debug("Video is private and no more segments are available. Ending...")
-                            break
-                        elif refresh is False:
-                            break                              
-                        elif refresh is True:
+                        if self.refresh_url() is True:
                             self.logger.info("Video finished downloading via new manifest")
                             break
-                        elif temp_stream_url != self.stream_url:
-                            self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
-                            segment_retries.clear()
-                    time.sleep(10)
-                    self.update_latest_segment(client=client)
-                    wait += 1
-                    continue
-                
-                elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
-                    self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
-                    time.sleep(5)
-                    continue
-                elif len(segments_to_download) > 0 and self.is_private:
-                    if self.stream_url.protocol == "https":
-                        self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
-                        self.commit_batch(self.conn)
-                        self.close_connection()
-
-                        for i in range(5, 0, -1):
-                            self.logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
-                            time.sleep(60)
-                        self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
-                        if self.livestream_coordinator:
-                            try:
-                                # Construct the options dictionary for the recovery call
-                                recovery_options = {
-                                    "batch_size": self.batch_size,
-                                    "max_workers": max((self.recovery_thread_multiplier * self.max_workers * int(len(self.stream_urls))), self.recovery_thread_multiplier),
-                                    "file_name": self.file_base_name,
-                                    "cookies": self.cookies,
-                                    "fragment_retries": self.fragment_retries,
-                                    "proxies": self.proxies,
-                                    "no_merge": True
-                                }
-                                self.livestream_coordinator.recover_stream(
-                                    info_dict=self.info_dict, 
-                                    resolution=str(self.format), 
-                                    options=recovery_options,
-                                    stream_urls=self.stream_urls,
-                                    live_status=self.live_status,
-                                )
-                                #self.livestream_coordinator.recover_stream(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies, no_merge=True)
-                            except Exception as e:
-                                self.logger.exception("An error occurred while trying to recover the stream")
-                        else:
-                            try:
-                                recovery_options = {
-                                    "batch_size": self.batch_size,
-                                    "max_workers": max((self.recovery_thread_multiplier * self.max_workers * int(len(self.stream_urls))), self.recovery_thread_multiplier),
-                                    "file_name": self.file_base_name,
-                                    "cookies": self.cookies,
-                                    "fragment_retries": self.fragment_retries,
-                                    "proxies": self.proxies
-                                }
-                                with StreamRecovery(
-                                    info_dict=self.info_dict, 
-                                    stream_url=self.stream_url, 
-                                    options=recovery_options,
-                                    livestream_coordinator=self.livestream_coordinator,
-                                    stream_urls=self.stream_urls,
-                                    live_status=self.live_status,
-                                ) as downloader:
-                                    downloader.live_dl()
-                                    downloader.close_connection()
-                                #with StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), 
-                                #                    file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies) as downloader:
-                                #    downloader.live_dl()
-                                #    downloader.close_connection()
-                            except Exception as e:
-                                self.logger.exception("An error occurred while trying to recover the stream")
-                        time.sleep(1)
-                        self.conn = self.create_connection(self.temp_db_file)
-                        return True
+                        elif self.is_private or refresh is False:
+                            # If stream URL has changed, refresh retry count and continue
+                            if temp_stream_url != self.stream_url:
+                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                                segment_retries.clear()
+                                continue
+                            self.logger.warning("Failed to refresh URL or stream is private, ending...")
+                            break
                         
-                    else:
-                        self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
-                        break
-                
-                elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
-                    
-                    self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
-                    temp_stream_url = self.stream_url
-                    refresh = self.refresh_url()
-                    if self.refresh_url() is True:
-                        self.logger.info("Video finished downloading via new manifest")
-                        break
-                    elif self.is_private or refresh is False:
-                        # If stream URL has changed, refresh retry count and continue
-                        if temp_stream_url != self.stream_url:
-                            self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                        else:
                             segment_retries.clear()
-                            continue
-                        self.logger.warning("Failed to refresh URL or stream is private, ending...")
-                        break
-                    
                     else:
-                        segment_retries.clear()
-                else:
-                    wait = 0
+                        wait = 0
                     
-                
-
-                #segments_to_download = segments_to_download - self.already_downloaded
-
-                #print("Segments to download: {0}".format(segments_to_download))
-                #print("remaining threads: {0}".format(future_to_seg))
-
-                
+                elif not segments_to_download and not submitted_segments and self._refresh_state.get("thread", None) is not None:
+                    # Wait up to 0.5 seconds if there are no outstanding or in progress segments to prevent excessive loop processing when there is no work to do
+                    self._refresh_state.get("thread").join(0.5)
                 
                 # Get current state of futures to determine if more threads should be added this loop
                 if len(not_done) <= 0 and len(done) > 0:
@@ -2476,32 +2405,94 @@ class DownloadStream:
             os.remove(self.folder)
 
     def refresh_url(self, follow_manifest=True):
-        self.logger.info("Refreshing URL for {0}".format(self.format))
+        # 1. Initialize the state dictionary if it doesn't exist
+        if not hasattr(self, '_refresh_state'):
+            self._refresh_state = {
+                'thread': None,
+                'status': 'IDLE', # IDLE, IN_PROGRESS, or DONE
+                'result': None,
+                'exc': None
+            }
+
+        state = self._refresh_state
+
+        # 2. Check if the thread is currently running
+        if state.get('status') == 'IN_PROGRESS':
+            if state.get('thread') and state.get('thread').is_alive():
+                return "IN_PROGRESS"
+            else:
+                # Thread finished running since our last check
+                state['status'] = 'DONE'
+
+        # 3. If the thread just finished, grab the results and reset the state
+        if state.get('status') == 'DONE':
+            exc = state.get('exc')
+            res = state.get('result')
+            
+            # Reset the state dictionary for the next time we need to refresh
+            self._refresh_state = {
+                'thread': None, 'status': 'IDLE', 'result': None, 'exc': None
+            }
+        else:
+            # 4. Otherwise, we are IDLE. Start the background thread!
+            self.logger.info("Starting background URL refresh for {0}".format(self.format))
+            state['status'] = 'IN_PROGRESS'
+            
+            def fetch_url_data():
+                try:
+                    if self.livestream_coordinator:
+                        if self.livestream_coordinator.lock.acquire(timeout=5.0):
+                            try:
+                                info_dict, live_status = self.livestream_coordinator.refresh_info_json(
+                                    update_threshold=min(900.0, time.time() - self.url_checked), 
+                                    id=self.id, cookies=self.cookies, 
+                                    additional_options=self.yt_dlp_options, 
+                                    include_dash=self.include_dash, 
+                                    include_m3u8=(self.include_m3u8 or self.force_m3u8)
+                                )
+                                state['result'] = (info_dict, live_status)
+                            finally:
+                                self.livestream_coordinator.lock.release()
+                        else:
+                            state['result'] = None
+                    else:
+                        info_dict, live_status = getUrls.get_Video_Info(
+                            self.id, wait=False, cookies=self.cookies, 
+                            additional_options=self.yt_dlp_options, 
+                            include_dash=self.include_dash, 
+                            include_m3u8=(self.include_m3u8 or self.force_m3u8)
+                        )
+                        state['result'] = (info_dict, live_status)
+                except Exception as e:
+                    state['exc'] = e
+                # We don't need a 'finally' block to set DONE here, 
+                # because `is_alive()` handles the transition perfectly in step 2.
+
+            state['thread'] = threading.Thread(target=fetch_url_data, daemon=True)
+            state['thread'].start()
+            return "IN_PROGRESS"
+
+        # 5. Process the retrieved results (Only runs if status was DONE)
         if self.following_manifest_thread is None:
             try:
-                # Attempt to use coordinator check if available to reduce the overall stream information extration between video and audio streams
-                if self.livestream_coordinator:
-                    if self.livestream_coordinator.lock.acquire(timeout=5.0):  # wait up to 5 seconds for lock, otherwise try next loop. If unable to aquire, return False before other fields try to update
-                        try:
-                            # use existing info.json if coordinator was refreshed within last 15 mins, or within the time since the last refresh, whatever is smaller
-                            # 15 minutes should be enough time to be efficient with natural jitter of the each download stream for a majority of livestreams
-                            info_dict, live_status = self.livestream_coordinator.refresh_info_json(update_threshold=min(900.0, time.time()-self.url_checked), id=self.id, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=(self.include_m3u8 or self.force_m3u8))
-                        finally:
-                            self.livestream_coordinator.lock.release()
-                    else:
-                        return None
-                else:
-                    info_dict, live_status = getUrls.get_Video_Info(self.id, wait=False, cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash, include_m3u8=(self.include_m3u8 or self.force_m3u8))
+                # Raise any exceptions caught in the thread
+                if exc:
+                    raise exc
+                
+                # If lock acquisition failed
+                if res is None:
+                    return None
+                    
+                info_dict, live_status = res
                 
                 # Check for new manifest, if it has, start a nested download session
                 if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
                     return True
                 
-                #resolution = "(format_id^={0})[protocol={1}]".format(str(self.format).rsplit('-', 1)[0], self.stream_url.protocol)
-                #resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
+                # Extract formats
                 resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
-                #stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=str(self.format), sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8)
                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) 
+                
                 if stream_url is not None:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
@@ -2530,7 +2521,6 @@ class DownloadStream:
                 if self.get_expire_time(self.stream_url) < time.time():
                     raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
             except getUrls.VideoProcessedError as e:
-                # Livestream has been processed
                 self.logger.exception("Error refreshing URL: {0}".format(e))
                 self.logger.info("Livestream has ended and processed.")
                 self.live_status = "was_live"
@@ -2547,7 +2537,6 @@ class DownloadStream:
 
         if self.live_status != 'is_live':
             self.logger.debug("Livestream has ended.")
-            #self.catchup()
             return False 
         
         return None
@@ -2641,7 +2630,9 @@ class DownloadStreamDirect(DownloadStream):
 
             while True:
                 self.check_kill(executor)
-                if self.refresh_Check() is True:
+
+                refresh = self.refresh_Check()
+                if refresh is True:
                     break
 
                 done, _ = concurrent.futures.wait(future_to_seg, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
@@ -2755,58 +2746,63 @@ class DownloadStreamDirect(DownloadStream):
                     
                     self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     segments_to_download.append(optimistic_seg)
-                                    
-                # If update has no segments and no segments are currently running, wait                              
-                if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
-                    
-                    self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                if refresh != "IN_PROGRESS":                    
+                    # If update has no segments and no segments are currently running, wait                              
+                    if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
                         
-                    # If waited for new fragments hits 20 loops, assume stream is offline
-                    if wait > self.wait_limit and wait > self.wait_limit:
-                        self.logger.debug("Wait time for new fragment exceeded, ending download...")
-                        break    
-                    # If over 10 wait loops have been executed, get page for new URL and update status if necessary
-                    elif wait % 10 == 0 and wait > 0:
-                        temp_stream_url = self.stream_url
-                        refresh = self.refresh_url()
-                        if self.is_private:
-                            self.logger.debug("Video is private and no more segments are available. Ending...")
-                            break
-                        elif refresh is False:
-                            break                              
-                        elif refresh is True:
-                            self.logger.info("Video finished downloading via new manifest")
-                            break
-                        elif temp_stream_url != self.stream_url:
-                            self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
-                            segment_retries.clear()
-                    time.sleep(10)
-                    self.update_latest_segment(client=client)
-                    wait += 1
-                    continue
+                        self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
+                            
+                        # If waited for new fragments hits 20 loops, assume stream is offline
+                        if wait > self.wait_limit and wait > self.wait_limit:
+                            self.logger.debug("Wait time for new fragment exceeded, ending download...")
+                            break    
+                        # If over 10 wait loops have been executed, get page for new URL and update status if necessary
+                        elif wait % 10 == 0 and wait > 0:
+                            temp_stream_url = self.stream_url
+                            refresh = self.refresh_url()
+                            if self.is_private:
+                                self.logger.debug("Video is private and no more segments are available. Ending...")
+                                break
+                            elif refresh is False:
+                                break                              
+                            elif refresh is True:
+                                self.logger.info("Video finished downloading via new manifest")
+                                break
+                            elif temp_stream_url != self.stream_url:
+                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                                segment_retries.clear()
+                        time.sleep(10)
+                        self.update_latest_segment(client=client)
+                        wait += 1
+                        continue
+                        """
+                    elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
+                        self.logger.debug("Video is private, waiting for remaining threads to finish before ending")
+                        time.sleep(5)
+                        continue
+
+                    elif len(segments_to_download) > 0 and self.is_private:
+                        self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
+                        break
                     """
-                elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
-                    self.logger.debug("Video is private, waiting for remaining threads to finish before ending")
-                    time.sleep(5)
-                    continue
-
-                elif len(segments_to_download) > 0 and self.is_private:
-                    self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
-                    break
-                """
-                elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
-                    self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
-                    if self.refresh_url(follow_manifest=False) is True:
-                        self.logger.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
-                        break
-                    elif self.is_private or self.refresh_url(follow_manifest=False) is False:
-                        self.logger.warning("Failed to refresh URL or stream is private, ending...")
-                        break
+                    elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
+                        self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
+                        refresh = self.refresh_url(follow_manifest=False)
+                        if refresh is True:
+                            self.logger.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
+                            break
+                        elif self.is_private or refresh is False:
+                            self.logger.warning("Failed to refresh URL or stream is private, ending...")
+                            break
+                        else:
+                            segment_retries.clear()
                     else:
-                        segment_retries.clear()
-                else:
-                    wait = 0
+                        wait = 0
+                elif not segments_to_download and not submitted_segments and self._refresh_state.get("thread", None) is not None:
+                    # Wait up to 0.5 seconds if there are no outstanding or in progress segments to prevent excessive loop processing when there is no work to do
+                    self._refresh_state.get("thread").join(0.5)
 
+                    
                 for seg_num in segments_to_download:
                     # Have up to 2x max workers of threads submitted
                     if len(future_to_seg) > max(10,2*self.max_workers):
@@ -3448,10 +3444,3 @@ class StreamRecovery(DownloadStream):
             json.dump(self.user_agent_403s, outfile, indent=4)
         with open("{0}.{1}_usr_ag_full_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
             json.dump(self.user_agent_full_403s, outfile, indent=4)
-
-
-
-
-
-
-
