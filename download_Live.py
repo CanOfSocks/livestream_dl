@@ -1221,67 +1221,95 @@ class LiveStreamDownloader:
                 pass
 
     def refresh_info_json(self, update_threshold: int, id, cookies=None, additional_options=None, include_dash=False, include_m3u8=False):
-        # Check if the update threshold has been exceeded
-        current_time = time.time()
-        last_refresh = self.refresh_json.get("refresh_time", 0.0)
-        
-        # If the time since the last update is less than the threshold, return the cached information directly
-        if current_time - last_refresh <= update_threshold and self.refresh_json:
-            return self.refresh_json, self.live_status
-        
-        # Acquire the lock to prevent multiple threads from refreshing simultaneously
-        acquired = self.lock.acquire(timeout=30.0)
-        if not acquired:
-            self.logger.warning("Unable to acquire refresh lock, using cached information")
-            return self.refresh_json, self.live_status
+            """
+            Refresh video information, including retry logic for handling "should already be available" warnings
+            """
+            # Check if update is needed (based on time threshold)
+            current_time = time.time()
+            last_refresh = self.refresh_json.get("refresh_time", 0.0)
             
-        try:
-            # Check again to prevent other threads from updating while waiting for the lock
-            if current_time - self.refresh_json.get("refresh_time", 0.0) <= update_threshold and self.refresh_json:
+            # If the time since last update is less than threshold, return cached information directly
+            if current_time - last_refresh <= update_threshold and self.refresh_json:
                 return self.refresh_json, self.live_status
             
-            # Call the underlying function
-            new_info, new_status = getUrls.get_Video_Info(
-                id=id, 
-                wait=False, 
-                cookies=cookies, 
-                additional_options=additional_options, 
-                include_dash=include_dash, 
-                include_m3u8=include_m3u8, 
-                clean_info_dict=True,
-                logger=self.logger
-            )
-            
-            # Remove unnecessary items
-            self.remove_format_segment_playlist_from_info_dict(new_info)
-            new_info.pop("thumbnails", None)
-            new_info.pop("tags", None)
-            new_info.pop("description", None)
-            
-            # Add refresh time
-            new_info["refresh_time"] = time.time()
-            
-            # Update cache
-            self.refresh_json = new_info
-            self.live_status = new_status
-            
-            return self.refresh_json, self.live_status
-            
-        except getUrls.MaxRetryExceededError as e:
-            # Maximum number of retries exceeded
-            self.logger.error(f"[Live stream offline status, please check] {e}")
-            # Return the last successful cache (if available)
-            if self.refresh_json:
-                self.logger.warning("Using the last successful cached information")
+            # Acquire lock to avoid multiple threads refreshing simultaneously
+            acquired = self.lock.acquire(timeout=30.0)  # Wait at most 30 seconds to acquire lock
+            if not acquired:
+                self.logger.warning("Unable to acquire refresh lock, using cached information")
                 return self.refresh_json, self.live_status
-            raise
-        except Exception as e:
-            self.logger.exception(f"Error occurred while refreshing video information: {e}")
-            if self.refresh_json:
+                
+            try:
+                # Check again to prevent other threads from updating while waiting for lock
+                if current_time - self.refresh_json.get("refresh_time", 0.0) <= update_threshold and self.refresh_json:
+                    return self.refresh_json, self.live_status
+                
+                # Call the underlying function
+                new_info, new_status = getUrls.get_Video_Info(
+                    id=id, 
+                    wait=False, 
+                    cookies=cookies, 
+                    additional_options=additional_options, 
+                    include_dash=include_dash, 
+                    include_m3u8=include_m3u8, 
+                    clean_info_dict=True,
+                    logger=self.logger
+                )
+                
+                # Keep necessary fields
+                # Only remove the truly large fragment lists, keep other necessary fields
+                
+                # 1. Remove fragment lists
+                self.remove_format_segment_playlist_from_info_dict(new_info)
+                
+                # 2. Keep the following fields (they are needed for yt-dlp processing)
+                # - extractor: YouTube extractor needs this
+                # - extractor_key: Extractor key value
+                # - webpage_url: Webpage URL
+                # - formats: Format list (but fragments have been removed)
+                # - thumbnails: Keep thumbnails as they may be used for embed
+                # - description: Keep description, may be used for metadata
+                # - tags: Keep tags, may be used for metadata
+
+                # 3. Ensure extractor related fields exist
+                if 'extractor' not in new_info:
+                    # If no extractor, copy from original info_dict
+                    if self.info_dict and 'extractor' in self.info_dict:
+                        new_info['extractor'] = self.info_dict['extractor']
+                    else:
+                        # Set default value
+                        new_info['extractor'] = 'youtube'
+                        
+                if 'extractor_key' not in new_info:
+                    if self.info_dict and 'extractor_key' in self.info_dict:
+                        new_info['extractor_key'] = self.info_dict['extractor_key']
+                    else:
+                        new_info['extractor_key'] = 'Youtube'
+                
+                # Add refresh time
+                new_info["refresh_time"] = time.time()
+                
+                # Update cache
+                self.refresh_json = new_info
+                self.live_status = new_status
+                
+                self.logger.debug(f"Successfully refreshed video information, current status: {new_status}")
                 return self.refresh_json, self.live_status
-            raise
-        finally:
-            self.lock.release()
+                
+            except getUrls.MaxRetryExceededError as e:
+                # Exceeded maximum retry attempts
+                self.logger.error(f"[Live stream offline status, please check] {e}")
+                # Return the last successful cache (if available)
+                if self.refresh_json:
+                    self.logger.warning("Using the last successful cached information")
+                    return self.refresh_json, self.live_status
+                raise
+            except Exception as e:
+                self.logger.exception(f"Error occurred while refreshing video information: {e}")
+                if self.refresh_json:
+                    return self.refresh_json, self.live_status
+                raise
+            finally:
+                self.lock.release()
         
 class FileInfo(Path):
     _file_type: str = None
@@ -1951,134 +1979,241 @@ class DownloadStream:
         return None
     
     def detect_manifest_change(self, info_json, follow_manifest=True):
-        resolution = "Unknown"
+        """Detect manifest changes and start a new download thread if necessary"""
+        
+        # Added: Check if info_json is valid
+        if not info_json:
+            self.logger.debug("info_json is empty, cannot detect manifest changes")
+            return False
+        
+        # Added: Check if required keys exist
+        required_keys = ['formats', 'extractor', 'extractor_key']
+        missing_keys = [key for key in required_keys if key not in info_json]
+        if missing_keys:
+            self.logger.debug(f"info_json missing required keys: {missing_keys}, cannot detect manifest changes")
+            return False
+        
         try:
-            resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
+            resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(
+                self.stream_url.itag, self.stream_url.protocol
+            )
             self.logger.debug("Searching for new manifest of same format {0}".format(resolution))
-            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
-            if temp_stream_url is not None:
-                #resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
-                
-                #parsed_url = urlparse(temp_stream_url)        
-                #temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
-                #if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                if temp_stream_url.itag is not None and temp_stream_url.protocol == self.stream_url.protocol and temp_stream_url.itag == self.stream_url.itag and temp_stream_url.manifest != self.stream_url.manifest:
-                    self.logger.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
-                    self.commit_batch(self.conn)
-                    if follow_manifest:
-                        #new_params = copy.copy(self.params)
-                        new_options = copy.copy(self.options)
-                        new_options.update({
-                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                        })
-                        new_params = {
-                            "info_dict": info_json,
-                            "stream_url": temp_stream_url,                            
-                            "manifest": temp_stream_url.manifest,
-                            "options": new_options,
-                        }
-                        if new_options.get("download_function", None) is not None: 
-                            self.following_manifest_thread = threading.Thread(
-                                target=new_options.get("download_function"),
-                                kwargs=new_params,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        else:
-                            download_Instance = self.__class__(**new_params)
-                            self.following_manifest_thread = threading.Thread(
-                                target=download_Instance.live_dl,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        new_options = None
-                    return True
-                else:
-                    return False
-        except yt_dlp.utils.ExtractorError as e:
-            self.logger.warning("Unable to find stream of same format ({0}) for {1}".format(resolution, self.id))
             
-        try:
-            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) is not None:
-                self.logger.debug("Searching for new manifest of same resolution {0}".format(resolution))
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
-                if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
-                    self.logger.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
+            # Safely get format URL
+            try:
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(
+                    info_json=info_json, 
+                    resolution=resolution, 
+                    include_dash=self.include_dash, 
+                    include_m3u8=self.include_m3u8, 
+                    force_m3u8=self.force_m3u8, 
+                    stream_type=self.type
+                )
+            except (KeyError, AttributeError, yt_dlp.utils.ExtractorError) as e:
+                self.logger.debug(f"Expected error when getting format: {e}")
+                temp_stream_url = None
+            except Exception as e:
+                self.logger.debug(f"Unexpected error when getting format: {e}")
+                temp_stream_url = None
+            
+            if temp_stream_url is not None:
+                # Check if same format but different manifest URL was found
+                if (temp_stream_url.itag is not None and 
+                    temp_stream_url.protocol == self.stream_url.protocol and 
+                    temp_stream_url.itag == self.stream_url.itag and 
+                    temp_stream_url.manifest != self.stream_url.manifest):
+                    
+                    self.logger.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(
+                        self.format, self.id
+                    ))
+                    
                     self.commit_batch(self.conn)
                     if follow_manifest:
-                        #new_params = copy.copy(self.params)
-                        new_options = copy.copy(self.options)
-                        new_options.update({
-                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                        })
-                        new_params.update({
-                            "info_dict": info_json,
-                            "stream_url": temp_stream_url,
-                            #"file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                            "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
-                            "options": new_options,
-                        })
-                        if new_params.get("download_function", None) is not None: 
-                            self.following_manifest_thread = threading.Thread(
-                                target=new_params.get("download_function"),
-                                kwargs=new_params,
-                                daemon=True
-                            )
+                        try:
+                            new_options = copy.copy(self.options)
+                            new_options.update({
+                                "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                            })
+                            new_params = {
+                                "info_dict": info_json,
+                                "stream_url": temp_stream_url,                            
+                                "manifest": temp_stream_url.manifest,
+                                "options": new_options,
+                            }
+                            
+                            if new_options.get("download_function", None) is not None: 
+                                self.following_manifest_thread = threading.Thread(
+                                    target=new_options.get("download_function"),
+                                    kwargs=new_params,
+                                    daemon=True
+                                )
+                            else:
+                                download_Instance = self.__class__(**new_params)
+                                self.following_manifest_thread = threading.Thread(
+                                    target=download_Instance.live_dl,
+                                    daemon=True
+                                )
+                            
                             self.following_manifest_thread.start()
-                        else:
-                            download_Instance = self.__class__(**new_params)
-                            self.following_manifest_thread = threading.Thread(
-                                target=download_Instance.live_dl,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        new_options = None
-                    return True
-                else:
-                    return False
+                            new_options = None
+                            
+                        except Exception as e:
+                            self.logger.exception(f"Error starting new manifest download thread: {e}")
+                            return False
+                            
+                        return True
         except yt_dlp.utils.ExtractorError as e:
-            self.logger.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
-
+            self.logger.debug("Unable to find stream of same format ({0}) for {1}: {2}".format(
+                resolution, self.id, e
+            ))
+        except Exception as e:
+            self.logger.debug(f"Non-critical error when detecting same format manifest change: {e}")
+        
         try:
-            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) is not None:
+            if YoutubeURL.Formats().getFormatURL(
+                info_json=info_json, 
+                resolution=self.resolution, 
+                include_dash=self.include_dash, 
+                include_m3u8=self.include_m3u8, 
+                force_m3u8=self.force_m3u8, 
+                stream_type=self.type
+            ) is not None:
+                
+                self.logger.debug("Searching for new manifest of same resolution {0}".format(self.resolution))
+                
+                try:
+                    temp_stream_url = YoutubeURL.Formats().getFormatURL(
+                        info_json=info_json, 
+                        resolution=self.resolution, 
+                        include_dash=self.include_dash, 
+                        include_m3u8=self.include_m3u8, 
+                        force_m3u8=self.force_m3u8, 
+                        stream_type=self.type
+                    )
+                except (KeyError, AttributeError, yt_dlp.utils.ExtractorError) as e:
+                    self.logger.debug(f"Error getting same resolution format: {e}")
+                    temp_stream_url = None
+                
+                if temp_stream_url is not None and temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
+                    self.logger.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(
+                        self.resolution, self.format, self.id
+                    ))
+                    
+                    self.commit_batch(self.conn)
+                    if follow_manifest:
+                        try:
+                            new_options = copy.copy(self.options)
+                            new_options.update({
+                                "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                            })
+                            new_params = {
+                                "info_dict": info_json,
+                                "stream_url": temp_stream_url,
+                                "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
+                                "options": new_options,
+                            }
+                            
+                            if new_params.get("download_function", None) is not None: 
+                                self.following_manifest_thread = threading.Thread(
+                                    target=new_params.get("download_function"),
+                                    kwargs=new_params,
+                                    daemon=True
+                                )
+                            else:
+                                download_Instance = self.__class__(**new_params)
+                                self.following_manifest_thread = threading.Thread(
+                                    target=download_Instance.live_dl,
+                                    daemon=True
+                                )
+                            
+                            self.following_manifest_thread.start()
+                            new_options = None
+                            
+                        except Exception as e:
+                            self.logger.exception(f"Error starting new manifest download thread: {e}")
+                            return False
+                            
+                        return True
+        except yt_dlp.utils.ExtractorError as e:
+            self.logger.debug("Unable to find stream of same resolution ({0}) for {1}".format(
+                self.resolution, self.id
+            ))
+        except Exception as e:
+            self.logger.debug(f"Non-critical error when detecting same resolution manifest change: {e}")
+        
+        try:
+            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(
+                info_json=info_json, 
+                resolution="best", 
+                include_dash=self.include_dash, 
+                include_m3u8=self.include_m3u8, 
+                force_m3u8=self.force_m3u8, 
+                stream_type=self.type
+            ) is not None:
+                
                 self.logger.debug("Searching for new best stream")
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
-                if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
-                    self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
+                
+                try:
+                    temp_stream_url = YoutubeURL.Formats().getFormatURL(
+                        info_json=info_json, 
+                        resolution="best", 
+                        include_dash=self.include_dash, 
+                        include_m3u8=self.include_m3u8, 
+                        force_m3u8=self.force_m3u8, 
+                        stream_type=self.type
+                    )
+                except (KeyError, AttributeError, yt_dlp.utils.ExtractorError) as e:
+                    self.logger.debug(f"Error getting best quality format: {e}")
+                    temp_stream_url = None
+                
+                if temp_stream_url is not None and temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
+                    self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(
+                        self.resolution, self.format, self.id
+                    ))
+                    
                     self.commit_batch(self.conn)
                     if follow_manifest:
-                        #new_params = copy.copy(self.params)
-                        new_options = copy.copy(self.options)
-                        new_options.update({
-                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                            "resolution": "best",
-                        })
-                        new_params.update({
-                            "info_dict": info_json,
-                            "stream_url": temp_stream_url,                            
-                            "options": new_options,
-                            "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
-                        })
-                        if new_params.get("download_function", None) is not None: 
-                            self.following_manifest_thread = threading.Thread(
-                                target=new_params.get("download_function"),
-                                kwargs=new_params,
-                                daemon=True
-                            )
+                        try:
+                            new_options = copy.copy(self.options)
+                            new_options.update({
+                                "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                                "resolution": "best",
+                            })
+                            new_params = {
+                                "info_dict": info_json,
+                                "stream_url": temp_stream_url,                            
+                                "options": new_options,
+                                "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
+                            }
+                            
+                            if new_params.get("download_function", None) is not None: 
+                                self.following_manifest_thread = threading.Thread(
+                                    target=new_params.get("download_function"),
+                                    kwargs=new_params,
+                                    daemon=True
+                                )
+                            else:
+                                download_Instance = self.__class__(**new_params)
+                                self.following_manifest_thread = threading.Thread(
+                                    target=download_Instance.live_dl,
+                                    daemon=True
+                                )
+                            
                             self.following_manifest_thread.start()
-                        else:
-                            download_Instance = self.__class__(**new_params)
-                            self.following_manifest_thread = threading.Thread(
-                                target=download_Instance.live_dl,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        new_options = None
-                    return True
-                else:
-                    return False
+                            new_options = None
+                            
+                        except Exception as e:
+                            self.logger.exception(f"Error starting new manifest download thread: {e}")
+                            return False
+                            
+                        return True
         except yt_dlp.utils.ExtractorError as e:
-            self.logger.warning("Unable to find any stream for {1} when attempting to find 'best' stream".format(self.resolution, self.id))
+            self.logger.debug("Unable to find any stream for {1} when attempting to find 'best' stream".format(
+                self.resolution, self.id
+            ))
+        except Exception as e:
+            self.logger.debug(f"Non-critical error when detecting best quality manifest change: {e}")
+        
         return False
 
     def create_connection(self, file):
