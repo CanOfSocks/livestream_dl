@@ -20,7 +20,7 @@ extraction_event = threading.Event()
 class MyLogger:
     def __init__(self, logger: logging = logging.getLogger()):
         self.logger = logger
-        # Add retry-related attributes
+        # Retry related attributes
         self.retry_count = 0
         self.max_retries = 6
         self.base_wait = 600  # Base wait time 600 seconds
@@ -65,7 +65,7 @@ class MyLogger:
             # This is a livestream status warning, needs retry
             self.should_retry = True
             self.retry_message = msg_str
-            self.logger.warning(f"Live stream not fully available yet, will retry: {msg_str}")
+            self.logger.warning(f"Livestream not yet fully available, will retry: {msg_str}")
         else:
             self.logger.warning(msg)
 
@@ -161,6 +161,9 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
     retry_count = 0
     
     while retry_count < max_retries:
+        # Set ydl to None at the beginning of each iteration
+        ydl = None
+        
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try:
@@ -175,11 +178,11 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                         retry_count += 1
                         
                         if retry_count >= max_retries:
-                            error_msg = f"[Live stream offline status please check] Maximum retry attempts {max_retries} exceeded, unable to get video information"
+                            error_msg = f"[Livestream offline status please check] Maximum retry attempts {max_retries} exceeded, unable to get video information"
                             logger.error(error_msg)
                             raise MaxRetryExceededError(error_msg)
                         
-                        logger.warning(f"Detected warning requiring retry, waiting {wait_time:.2f} seconds for attempt {retry_count}/{max_retries}")
+                        logger.warning(f"Detected warning requiring retry, waiting {wait_time:.2f} seconds for retry attempt {retry_count}/{max_retries}")
                         
                         # Segmented waiting, can be interrupted by extraction_event
                         end_time = time.time() + wait_time
@@ -190,7 +193,7 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                             time.sleep(1)
                         continue  # Continue to next retry
                     
-                    # Successfully got information, proceed with processing
+                    # Successfully obtained information, proceed with processing
                     info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
 
                     for stream_format in info_dict.get('formats', []):
@@ -202,12 +205,18 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                     # Reset retry state
                     yt_dlpLogger.reset_retry_state()
                     
+                    # Ensure required fields exist
+                    if 'extractor' not in info_dict:
+                        info_dict['extractor'] = 'youtube'
+                    if 'extractor_key' not in info_dict:
+                        info_dict['extractor_key'] = 'Youtube'
+                    
                     # Check if the video is private
                     if not (info_dict.get('live_status') == 'is_live' or info_dict.get('live_status') == 'post_live'):
                         #print("Video has been processed, please use yt-dlp directly")
                         raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
                     
-                    # Successfully return
+                    # Successful return
                     return info_dict, info_dict.get('live_status')
                     
                 except yt_dlp.utils.DownloadError as e:
@@ -230,11 +239,11 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                         retry_count += 1
                         
                         if retry_count >= max_retries:
-                            error_msg = f"[Live stream offline status please check] Maximum retry attempts {max_retries} exceeded, unable to get video information"
+                            error_msg = f"[Livestream offline status please check] Maximum retry attempts {max_retries} exceeded, unable to get video information"
                             logger.error(error_msg)
                             raise MaxRetryExceededError(error_msg)
                         
-                        logger.warning(f"Live stream not fully available yet, waiting {wait_time:.2f} seconds for attempt {retry_count}/{max_retries}")
+                        logger.warning(f"Livestream not yet fully available, waiting {wait_time:.2f} seconds for retry attempt {retry_count}/{max_retries}")
                         
                         # Segmented waiting, can be interrupted by extraction_event
                         end_time = time.time() + wait_time
@@ -246,7 +255,12 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                         continue  # Continue to next retry
                     else:
                         raise e
+                except Exception as e:
+                    extraction_event.clear()
+                    # Other exceptions are raised directly
+                    raise e
                 finally:
+                    # Ensure extraction_event is cleared in any case
                     extraction_event.clear()
                     
         except yt_dlp.utils.DownloadError as e:
@@ -256,11 +270,11 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                 retry_count += 1
                 
                 if retry_count >= max_retries:
-                    error_msg = f"[Live stream offline status please check] Maximum retry attempts {max_retries} exceeded, unable to get video information"
+                    error_msg = f"[Livestream offline status please check] Maximum retry attempts {max_retries} exceeded, unable to get video information"
                     logger.error(error_msg)
                     raise MaxRetryExceededError(error_msg)
                 
-                logger.warning(f"Live stream not fully available yet, waiting {wait_time:.2f} seconds for attempt {retry_count}/{max_retries}")
+                logger.warning(f"Livestream not yet fully available, waiting {wait_time:.2f} seconds for retry attempt {retry_count}/{max_retries}")
                 
                 # Segmented waiting, can be interrupted by extraction_event
                 end_time = time.time() + wait_time
@@ -272,6 +286,16 @@ def get_Video_Info(id, wait=True, cookies=None, additional_options=None, proxy=N
                 continue
             else:
                 raise e
+        except (MaxRetryExceededError, VideoInaccessibleError, VideoProcessedError, VideoUnavailableError, LivestreamError) as e:
+            # These are our custom errors, raise directly
+            raise e
+        except Exception as e:
+            # Other unexpected errors, log but continue retrying
+            logger.exception(f"Unexpected error: {e}")
+            retry_count += 1
+            if retry_count >= max_retries:
+                raise
+            time.sleep(30)  # Short wait before retry
         
     logging.debug("Info.json: {0}".format(json.dumps(info_dict)))
     return info_dict, info_dict.get('live_status')
