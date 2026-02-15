@@ -45,27 +45,11 @@ class MyLogger:
             self.logger.log(VERBOSE_LEVEL_NUM, msg)
 
     def warning(self, msg):
-        msg_str = str(msg).lower()
-        
-        # --- HARD FAILURES ---
-        if "country" in msg_str and ("not available" in msg_str or "uploader has not made" in msg_str):
-             raise VideoInaccessibleError("Video is region-locked (Geo-restricted)")
-             
-        elif "sign in to confirm your age" in msg_str or "age-restricted" in msg_str:
-             raise VideoInaccessibleError("Video is age-restricted and requires valid cookies")
-
-        elif "video has been removed" in msg_str:
-             raise VideoUnavailableError("Video has been removed/deleted")
+        msg_str = str(msg).lower()       
 
         # --- RETRYABLE TECHNICAL ERRORS ---
         # These occur when a stream is starting but CDN isn't ready
-        elif any(err in msg_str for err in ["fragment not found", "empty manifest", "playlist not found"]):
-             self.should_retry = True
-             self.retry_message = msg_str
-             self.logger.warning(f"CDN/Manifest propagation issue, retrying: {msg_str}")
-
-        # --- EXISTING LOGIC ---
-        elif ("private" in msg_str or "unavailable" in msg_str):
+        if ("private" in msg_str or "unavailable" in msg_str):
             self.logger.info(msg_str)
             raise yt_dlp.utils.DownloadError("Private video. Sign in if you've been granted access to this video")
         elif "video is no longer live" in msg_str:
@@ -252,6 +236,12 @@ def get_Video_Info(
                 raise LivestreamError("Livestream has ended")   
             elif "terminated" in err_str:
                 raise VideoInaccessibleError(f"Video {id} has been terminated")
+            elif "country" in err_str and ("not available" in err_str or "uploader has not made" in err_str):
+                raise VideoInaccessibleError("Video is region-locked (Geo-restricted)")                
+            elif "sign in to confirm your age" in err_str or "age-restricted" in err_str:
+                raise VideoInaccessibleError("Video is age-restricted and requires valid cookies")
+            elif "video has been removed" in err_str:
+                raise VideoUnavailableError("Video has been removed/deleted")
             else:
                 raise e
         finally:
