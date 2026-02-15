@@ -76,7 +76,7 @@ class LiveStreamDownloader:
 
         self.refresh_json = {}
         self.live_status = ""
-        self.lock: threading.Lock = threading.Lock()
+        self.lock: threading.RLock = threading.RLock()
 
     # Create runner function for each download format
     def download_stream(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, **kwargs):
@@ -1280,6 +1280,8 @@ class LiveStreamDownloader:
                             else:
                                 error_msg = "[Live stream offline, please check] Maximum retry attempts reached, stream still not ready"
                                 self.logger.error(error_msg)
+                                self.kill_this.set()
+                                self.kill_all.set()
                                 raise TimeoutError(error_msg)
                         else:
                             self.logger.error(f"Error occurred while refreshing video info: {e}")
