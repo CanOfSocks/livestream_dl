@@ -248,7 +248,7 @@ class LiveStreamDownloader:
 
 
     # Multithreaded function to download new segments with delayed commit after a batch
-    def download_segments(self, info_dict: dict, resolution='best', options: dict={}, thread_event: threading.Event=None):
+    def download_segments(self, info_dict: dict, resolution='bv+ba/best', options: dict={}, thread_event: threading.Event=None):
         futures = set()
         #file_names = {}
 
