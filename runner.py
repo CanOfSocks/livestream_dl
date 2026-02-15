@@ -103,7 +103,7 @@ def httpx_proxy(proxy_string: str):
     else:
         return proxy_string
 
-def main(id, resolution='best', options={}, info_dict=None, thread_kill: threading.Event=kill_all):
+def main(id, resolution='bv+ba/best', options={}, info_dict=None, thread_kill: threading.Event=kill_all):
     logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id)
 
     # Initialise yt-dlp logger
@@ -217,7 +217,7 @@ if __name__ == "__main__":
 
     parser.add_argument('ID', type=str, nargs='?', default=None, help='The video URL or ID')
     
-    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="""Desired resolution. Based off yt-dlp's format selection: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection. A value of "bv+ba/best" is recommended for most people.""")
+    parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="""Resolution selection criteria. Based off yt-dlp's format selection: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection. A value of "bv+ba/best" is recommended for most people.""")
     
     parser.add_argument('--custom-sort', type=str, default=None, help="Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats")
     
