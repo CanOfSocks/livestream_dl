@@ -1269,7 +1269,7 @@ class LiveStreamDownloader:
                     error_msg = str(e)
                     
                     # Live stream not started (requires exponential backoff retry)
-                    if "[Live stream offline status, waiting for live stream]" in error_msg:
+                    if "[Livestream offline status waiting for stream]" in error_msg:
                         if attempt < max_retries:
                             # Exponential backoff algorithm: 20% → 40% → 80% → 160% → 320% ...
                             jitter_factor = 0.2 * (2 ** attempt)
@@ -1280,7 +1280,7 @@ class LiveStreamDownloader:
                             wait_time = max(wait_time, 300)
                             
                             self.logger.warning(
-                                f"[Live stream offline status, waiting for live stream] "
+                                f"[Livestream offline status waiting for stream] "
                                 f"Retry {attempt + 1}/{max_retries}, waiting {wait_time:.2f} seconds"
                             )
                             
@@ -3412,7 +3412,6 @@ class StreamRecovery(DownloadStream):
             json.dump(self.user_agent_403s, outfile, indent=4)
         with open("{0}.{1}_usr_ag_full_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
             json.dump(self.user_agent_full_403s, outfile, indent=4)
-
 
 
 
