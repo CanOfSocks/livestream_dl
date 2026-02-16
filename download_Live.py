@@ -177,7 +177,7 @@ class LiveStreamDownloader:
             self.logger.exception("Unexpected error occurred while downloading stream")
             raise
 
-    def recover_stream(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, **kwargs):
+    def recover_stream(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, stream_urls: list = [], **kwargs):
         options = options or {}
         try:
             current_options = options.copy()
@@ -189,7 +189,7 @@ class LiveStreamDownloader:
             no_merge = current_options.get('no_merge', False)
             keep_database = current_options.get('keep_database', False)
 
-            with StreamRecovery(info_dict, stream_url=stream_url, options=current_options, livestream_coordinator=self, **kwargs) as downloader:
+            with StreamRecovery(info_dict, stream_url=stream_url, options=current_options, stream_urls=stream_urls, livestream_coordinator=self, **kwargs) as downloader:
                 self.stats["status"] = "Recording"
                 result = downloader.live_dl()
                 #downloader.save_stats()    
@@ -1695,6 +1695,7 @@ class DownloadStream:
                                     }
                                     self.livestream_coordinator.recover_stream(
                                         info_dict=self.info_dict, 
+                                        stream_url=self.stream_url
                                         options=recovery_options,
                                         stream_urls=self.stream_urls,
                                         live_status=self.live_status,
