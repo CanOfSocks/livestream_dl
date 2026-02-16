@@ -359,7 +359,7 @@ class LiveStreamDownloader:
                             #        raise future.exception()
                             
                             result, type = future.result()
-                            self.logger.info("\033[93m{0}\033[0m".format(result))
+                            self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "\033[93m{0}\033[0m".format(result))
                             
                             if type == 'auxiliary':
                                 self.file_names.update(result)
