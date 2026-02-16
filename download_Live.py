@@ -1695,7 +1695,7 @@ class DownloadStream:
                                     }
                                     self.livestream_coordinator.recover_stream(
                                         info_dict=self.info_dict, 
-                                        stream_url=self.stream_url
+                                        stream_url=self.stream_url,
                                         options=recovery_options,
                                         stream_urls=self.stream_urls,
                                         live_status=self.live_status,
