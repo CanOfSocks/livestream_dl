@@ -35,7 +35,7 @@ class MyLogger:
         if ("should already be available" in msg_str.lower() or 
             "release time of video is not known" in msg_str.lower()):
             self.retry_warning_detected = True
-            self.logger.warning(f"[Livestream offline status waiting for stream]: {msg_str}")
+            self.logger.warning(f"Livestream offline status waiting for stream: {msg_str}")
         else:
             self.logger.log(VERBOSE_LEVEL_NUM, msg)
 
@@ -55,7 +55,7 @@ class MyLogger:
             raise yt_dlp.utils.DownloadError(msg_str)
         elif "should already be available" in msg_str:
             self.retry_warning_detected = True
-            self.logger.warning(f"[Livestream offline status waiting for stream]: {msg_str}")
+            self.logger.warning(f"Livestream offline status waiting for stream: {msg_str}")
         else:
             self.logger.warning(msg)
 
@@ -159,7 +159,7 @@ def get_Video_Info(
             extraction_event.clear()
             
             if yt_dlpLogger.retry_warning_detected:
-                raise Exception("[Livestream offline status waiting for stream]")
+                raise Exception("Livestream offline status waiting for stream")
             
             info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
 
@@ -198,7 +198,7 @@ def get_Video_Info(
                 raise VideoUnavailableError("Video has been removed/deleted")
             else:
                 if yt_dlpLogger.retry_warning_detected:
-                    raise Exception("[Livestream offline status waiting for stream]")
+                    raise Exception("Livestream offline status waiting for stream")
                 raise e
         finally:
             extraction_event.clear()
