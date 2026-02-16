@@ -1221,76 +1221,88 @@ class LiveStreamDownloader:
                 pass
 
     def refresh_info_json(self, update_threshold: int, id, cookies=None, additional_options=None, include_dash=False, include_m3u8=False):
-            import time
-            import random
+        import time
+        import random
+        
+        max_retries = 10
+        base_wait = 300
+        
+        if time.time() - self.refresh_json.get("refresh_time", 0.0) <= update_threshold:
+            return self.refresh_json, self.live_status
+        
+        with self.lock:
+            # Add overall waiting time limit
+            start_time = time.time()
+            max_total_time = 7200  # Maximum wait time of 2 hours
             
-            max_retries = 6
-            base_wait = 300
-            
-            if time.time() - self.refresh_json.get("refresh_time", 0.0) <= update_threshold:
-                return self.refresh_json, self.live_status
-            
-            with self.lock:
-                for attempt in range(max_retries + 1):
-                    try:
-                        self.logger.debug(f"Attempting to get video info, attempt {attempt + 1}/{max_retries + 1}")
-                        
-                        self.refresh_json, self.live_status = getUrls.get_Video_Info(
-                            id=id, 
-                            wait=False, 
-                            cookies=cookies, 
-                            additional_options=additional_options, 
-                            include_dash=include_dash, 
-                            include_m3u8=include_m3u8, 
-                            clean_info_dict=True
-                        )
-
-                        self.remove_format_segment_playlist_from_info_dict(self.refresh_json)
-                        self.refresh_json.pop("thumbnails", None)
-                        self.refresh_json.pop("tags", None)
-                        self.refresh_json.pop("description", None)
-                        self.refresh_json["refresh_time"] = time.time()
-                        
-                        self.logger.info("Video info refreshed successfully")
-                        return self.refresh_json, self.live_status
-                        
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "[Live stream offline, waiting for stream]" in error_msg:
-                            if attempt < max_retries:
-                                # Exponential backoff: 20% → 40% → 80% → 160% → 320%
-                                jitter_factor = 0.2 * (2 ** attempt)
-                                jitter = random.uniform(-jitter_factor, jitter_factor)
-                                
-                                # Calculate wait time, ensure minimum 300 seconds
-                                wait_time = base_wait * (1 + jitter)
-                                wait_time = max(wait_time, 300)  # ← Ensure not less than 300 seconds
-                                
-                                self.logger.warning(
-                                    f"[Live stream offline, waiting for stream] "
-                                    f"Retry {attempt + 1}/{max_retries}, waiting {wait_time:.2f} seconds"
-                                )
-                                
-                                end_time = time.time() + wait_time
-                                while time.time() < end_time:
-                                    if self.kill_all.is_set() or self.kill_this.is_set():
-                                        self.logger.warning("Termination signal detected, interrupting wait")
-                                        raise KeyboardInterrupt("User interrupt")
-                                    time.sleep(1)
-                            else:
-                                error_msg = "[Live stream offline, please check] Maximum retry attempts reached, stream still not ready"
-                                self.logger.error(error_msg)
-                                self.kill_this.set()
-                                self.kill_all.set()
-                                raise TimeoutError(error_msg)
-                        else:
-                            self.logger.error(f"Error occurred while refreshing video info: {e}")
-                            if attempt == max_retries:
-                                raise
-                            time.sleep(5)
+            for attempt in range(max_retries + 1):
+                # Check total time at each loop iteration
+                if time.time() - start_time > max_total_time:
+                    self.logger.error("Overall waiting time exceeded 2 hours, forcing stop")
+                    self.kill_this.set()
+                    self.kill_all.set()
+                    raise TimeoutError("Overall waiting time too long")
                 
-                return self.refresh_json, self.live_status
+                try:
+                    self.logger.debug(f"Attempting to get video information, attempt {attempt + 1}/{max_retries + 1}")
+                    
+                    self.refresh_json, self.live_status = getUrls.get_Video_Info(
+                        id=id, 
+                        wait=False, 
+                        cookies=cookies, 
+                        additional_options=additional_options, 
+                        include_dash=include_dash, 
+                        include_m3u8=include_m3u8, 
+                        clean_info_dict=True
+                    )
+
+                    self.remove_format_segment_playlist_from_info_dict(self.refresh_json)
+                    self.refresh_json.pop("thumbnails", None)
+                    self.refresh_json.pop("tags", None)
+                    self.refresh_json.pop("description", None)
+                    self.refresh_json["refresh_time"] = time.time()
+                    
+                    self.logger.info("URL refresh successful")
+                    return self.refresh_json, self.live_status
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    if "[Live stream offline, waiting for stream]" in error_msg:
+                        if attempt < max_retries:
+                            # Exponential backoff algorithm: 20% → 40% → 80% → 160% → 320%
+                            jitter_factor = 0.2 * (2 ** attempt)
+                            jitter = random.uniform(-jitter_factor, jitter_factor)
+                            
+                            # Calculate wait time, ensuring minimum 300 seconds
+                            wait_time = base_wait * (1 + jitter)
+                            wait_time = max(wait_time, 300)  # ← Ensure not less than 300 seconds
+                            
+                            self.logger.warning(
+                                f"[Live stream offline, waiting for stream] "
+                                f"Retry {attempt + 1}/{max_retries}, waiting {wait_time:.2f} seconds"
+                            )
+                            
+                            end_time = time.time() + wait_time
+                            while time.time() < end_time:
+                                if self.kill_all.is_set() or self.kill_this.is_set():
+                                    self.logger.warning("Termination signal detected, interrupting wait")
+                                    raise KeyboardInterrupt("User interrupted")
+                                time.sleep(1)
+                        else:
+                            error_msg = "[Live stream offline, please check] Maximum retry attempts reached, stream still not ready"
+                            self.logger.error(error_msg)
+                            # Notify all threads to stop
+                            self.kill_this.set()
+                            self.kill_all.set()
+                            raise TimeoutError(error_msg)
+                    else:
+                        self.logger.error(f"Error occurred while refreshing video information: {e}")
+                        if attempt == max_retries:
+                            raise
+                        time.sleep(5)
             
+            return self.refresh_json, self.live_status
+        
 class FileInfo(Path):
     _file_type: str = None
     _format: str = None
