@@ -1269,7 +1269,7 @@ class LiveStreamDownloader:
                     error_msg = str(e)
                     
                     # Live stream not started (requires exponential backoff retry)
-                    if "[Livestream offline status waiting for stream]" in error_msg:
+                    if "Livestream offline status waiting for stream" in error_msg:
                         if attempt < max_retries:
                             # Exponential backoff algorithm: 20% → 40% → 80% → 160% → 320% ...
                             jitter_factor = 0.2 * (2 ** attempt)
@@ -1280,7 +1280,7 @@ class LiveStreamDownloader:
                             wait_time = max(wait_time, 300)
                             
                             self.logger.warning(
-                                f"[Livestream offline status waiting for stream] "
+                                f"Livestream offline status waiting for stream"
                                 f"Retry {attempt + 1}/{max_retries}, waiting {wait_time:.2f} seconds"
                             )
                             
