@@ -226,6 +226,8 @@ if __name__ == "__main__":
     parser.add_argument('--batch-size', type=int, default=5, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances.")
     
     parser.add_argument('--segment-retries', type=int, default=10, help="Number of times to retry grabbing a segment.")
+
+    parser.add_argument('--disable-graceful-shutdown', action='store_true', help="Disable graceful shutdown for downloader. Useful for testing when you don't want merging to be triggered on a keyboard interrupt.")
     
     parser.add_argument('--no-merge', action='store_false', dest='merge', help="Don't merge video using ffmpeg")
 
@@ -261,7 +263,7 @@ if __name__ == "__main__":
 
     parser.add_argument('--recovery-failure-tolerance', type=int, default=0, help="Maximum number of fragments that fail to download (exceed the retry limit) and not throw an error. May cause unexpected issues when merging to .ts file and remuxing.")
 
-    parser.add_argument('--wait-limit', type=int, default=0, help="Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or 'post_live' status.")
+    parser.add_argument('--wait-limit', type=int, default=1800, help="Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or 'post_live' status.")
     
     parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments database in memory. Requires a lot of RAM (Not recommended)")
     

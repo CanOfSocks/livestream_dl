@@ -156,6 +156,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--keep-ts-files` | `False` | Keep the intermediate TS files but delete the database. |
 | `--live-chat` | `False` | Download live chat (requires `yt-dlp` or `chat-downloader`). |
 | `--stop-chat-when-done` | `300` | Max seconds to wait for chat download to finish after stream ends. |
+| `--disable-graceful-shutdown` | `False` | Disable graceful shutdown for downloader. Useful for testing when you don't want merging/muxing to be triggered on a keyboard interrupt. |
 
 ### Database & Storage Modes
 
@@ -172,7 +173,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--recovery` | `False` | Puts the downloader directly into stream recovery mode. |
 | `--force-recover-merge` | `False` | Forces merging to the final file even if not all segments were successfully recovered. |
 | `--recovery-failure-tolerance` | `0` | Max number of fragments allowed to fail during recovery without throwing a final error. |
-| `--wait-limit` | `0` | Max wait intervals (~10s each) for new segments. If `0`, waits until status changes to `post_live` or `was_live`. |
+| `--wait-limit` | `1800` | Max wait intervals (~10s each) for new segments after a download has started. If `0`, waits until status changes to `post_live` or `was_live`. Defaults to ~5 hours to avoid URL expiry errors. |
 
 ### Network & Logging
 

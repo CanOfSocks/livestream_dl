@@ -13,7 +13,7 @@ from pathlib import Path
 import copy
 
 
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse #, parse_qs, urlencode, urlunparse
 
 try:
     import getUrls
@@ -28,8 +28,6 @@ except ModuleNotFoundError as e:
 
 import os
 
-from urllib.parse import urlparse, parse_qs
-
 import shutil
 
 import logging
@@ -43,6 +41,8 @@ import httpx
 
 import struct
 
+import signal
+import contextlib
 
 #import setup_logger
 
@@ -77,6 +77,43 @@ class LiveStreamDownloader:
         self.refresh_json = {}
         self.live_status = ""
         self.lock: threading.Lock = threading.Lock()
+
+        self.graceful_stop = threading.Event()
+
+    @contextlib.contextmanager
+    def graceful_signal_catcher(self, disable_graceful=False):
+        # Check if we are in the main thread
+        is_main = (threading.current_thread() is threading.main_thread())
+        
+        original_sigint = None
+        original_sigterm = None
+
+        if is_main and not disable_graceful:
+            original_sigint = signal.getsignal(signal.SIGINT)
+            original_sigterm = signal.getsignal(signal.SIGTERM)
+
+            def handler(signum, frame):
+                self.logger.warning(f"\n[Caught Signal {signum}] Stopping downloads gracefully...")
+                self.graceful_stop.set()
+                # Restore original handlers so a second Ctrl+C forces a hard exit
+                signal.signal(signal.SIGINT, original_sigint)
+                signal.signal(signal.SIGTERM, original_sigterm)
+
+            # Set temporary handlers only if we are in the main thread
+            try:
+                signal.signal(signal.SIGINT, handler)
+                signal.signal(signal.SIGTERM, handler)
+            except ValueError:
+                # Fallback in case of weird environment issues
+                is_main = False
+
+        try:
+            yield
+        finally:
+            # Only attempt to restore if we actually changed them
+            if is_main and not disable_graceful:
+                signal.signal(signal.SIGINT, original_sigint)
+                signal.signal(signal.SIGTERM, original_sigterm)
 
     # Create runner function for each download format
     def download_stream(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, **kwargs):
@@ -344,59 +381,59 @@ class LiveStreamDownloader:
                     
                     live_chat_thread = threading.Thread(target=self.download_live_chat, args=(info_dict,options), daemon=True)
                     live_chat_thread.start()
-
-                while True:
-                    if self.kill_all.is_set() or self.kill_this.is_set():
-                        raise KeyboardInterrupt("Thread kill event is set, ending...")
-                    done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
-                    # Continuously check for completion or interruption
-                    for future in done:
-                        try:
-                            #if future.exception() is not None:
-                            #    if type == 'auxiliary': 
-                                    #logging.error(str(future.exception()))
-                            #   else:
-                            #        raise future.exception()
-                            
-                            result, type = future.result()
-                            self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "\033[93m{0}\033[0m".format(result))
-                            
-                            if type == 'auxiliary':
-                                self.file_names.update(result)
-
-                                # Remove parts that would not be needed by stream downloaders
-                                self.remove_format_segment_playlist_from_info_dict(info_dict=info_dict)
-                                info_dict.pop("thumbnails", None)
-                                # Remove no longer required parts for the rest of the downloader
-                                #info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"id", "ext", "upload_date", "original_url", "description", "fulltitle", "channel"})
+                with self.graceful_signal_catcher(disable_graceful=options.get("disable_graceful_shutdown", False)):
+                    while True:
+                        if self.kill_all.is_set() or self.kill_this.is_set():
+                            raise KeyboardInterrupt("Thread kill event is set, ending...")
+                        done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
+                        # Continuously check for completion or interruption
+                        for future in done:
+                            try:
+                                #if future.exception() is not None:
+                                #    if type == 'auxiliary': 
+                                        #logging.error(str(future.exception()))
+                                #   else:
+                                #        raise future.exception()
                                 
+                                result, type = future.result()
+                                self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "\033[93m{0}\033[0m".format(result))
+                                
+                                if type == 'auxiliary':
+                                    self.file_names.update(result)
 
-                            elif str(type).lower() == 'video':
-                                #self.file_names['video'] = result
-                                pass
-                            elif str(type).lower() == 'audio':
-                                #self.file_names['audio'] = result  
-                                pass
-                            elif str(type).lower() == 'live_chat':
-                                pass
-                            else:
-                                self.file_names[str(type)] = result
-                        except Exception as e:
-                            self.logger.exception(e)
-                        futures.discard(future)
-                        
-                    if len(not_done) <= 0:
-                        break
-                    #else:
-                    #    time.sleep(0.9)
-                    self.print_stats(options=options)
+                                    # Remove parts that would not be needed by stream downloaders
+                                    self.remove_format_segment_playlist_from_info_dict(info_dict=info_dict)
+                                    info_dict.pop("thumbnails", None)
+                                    # Remove no longer required parts for the rest of the downloader
+                                    #info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"id", "ext", "upload_date", "original_url", "description", "fulltitle", "channel"})
+                                    
 
-                if live_chat_thread and live_chat_thread.is_alive():
-                    self.logger.info("Media downloads finished, waiting for live chat to end...")
-                    if options.get('stop_chat_when_done', None):
-                        self.chat_timeout = time.time()
-                    while live_chat_thread.is_alive() and not (self.kill_all.is_set() or self.kill_this.is_set()):
-                        time.sleep(0.1)
+                                elif str(type).lower() == 'video':
+                                    #self.file_names['video'] = result
+                                    pass
+                                elif str(type).lower() == 'audio':
+                                    #self.file_names['audio'] = result  
+                                    pass
+                                elif str(type).lower() == 'live_chat':
+                                    pass
+                                else:
+                                    self.file_names[str(type)] = result
+                            except Exception as e:
+                                self.logger.exception(e)
+                            futures.discard(future)
+                            
+                        if len(not_done) <= 0:
+                            break
+                        #else:
+                        #    time.sleep(0.9)
+                        self.print_stats(options=options)
+
+                    if live_chat_thread and live_chat_thread.is_alive():
+                        self.logger.info("Media downloads finished, waiting for live chat to end...")
+                        if options.get('stop_chat_when_done', None):
+                            self.chat_timeout = time.time()
+                        while live_chat_thread.is_alive() and not (self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set()):
+                            live_chat_thread.join(3.0)
                 
             except KeyboardInterrupt as e:
                 self.kill_this.set()
@@ -597,7 +634,7 @@ class LiveStreamDownloader:
 
                 # Process chat messages for the duration of the timeout
                 for message in chat:
-                    if self.kill_all.is_set() or self.kill_this.is_set():
+                    if self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set():
                         self.logger.debug("Killing live chat downloader")
                         chat_download.close()
                         break
@@ -1200,7 +1237,7 @@ class LiveStreamDownloader:
         else:
             # \r moves to start, \033[K clears anything left over from the previous longer line
             print(f"\r{full_line}\033[K", end="", flush=True)
-        
+        """
     def add_url_param(self, url: str, key, value) -> str:
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
@@ -1209,6 +1246,7 @@ class LiveStreamDownloader:
         new_query = urlencode(query, doseq=True)
         new_url = parsed._replace(query=new_query)
         return str(urlunparse(new_url))  
+        """
     
     def trim_info_json(self, info_dict: dict, keys_to_keep: set):
         return {k: info_dict[k] for k in info_dict.keys() & keys_to_keep}
@@ -1420,9 +1458,6 @@ class DownloadStream:
         self.url_checked = time.time()
         
         self.conn = self.create_db(self.temp_db_file)   
-
-        #self.refresh_thread: threading.Thread = None 
-        #self._refresh_state: dict = {}
         
         if self.livestream_coordinator:
             self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
@@ -1480,6 +1515,11 @@ class DownloadStream:
 
             while True:     
                 self.check_kill(executor)
+
+                if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
+                    self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
+                    break
+
                 refresh = self.refresh_Check()
                 if refresh is True:
                     break
@@ -1581,7 +1621,7 @@ class DownloadStream:
                 if (self.max_workers > 1 or not segments_to_download) and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in self.pending_segments and optimistic_seg not in submitted_segments:
                     # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s if no segments are to be submitted
                     if not segments_to_download:
-                        time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
+                        self.smart_sleep(max(self.estimated_segment_duration, 2) + 0.1)
                     self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     future_to_seg.update({
                         executor.submit(self.download_segment, self.stream_url.segment(optimistic_seg), optimistic_seg, client): optimistic_seg
@@ -1616,14 +1656,14 @@ class DownloadStream:
                             elif temp_stream_url != self.stream_url:
                                 self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
                                 segment_retries.clear()
-                        time.sleep(10)
+                        self.smart_sleep(10)
                         self.update_latest_segment(client=client)
                         wait += 1
                         continue
                     
                     elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
                         self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
-                        time.sleep(5)
+                        self.smart_sleep(5)
                         continue
                     elif len(segments_to_download) > 0 and self.is_private:
                         if self.stream_url.protocol == "https":
@@ -1633,7 +1673,13 @@ class DownloadStream:
 
                             for i in range(5, 0, -1):
                                 self.logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
-                                time.sleep(60)
+                                self.smart_sleep(60)
+                            # Break if a graceful shutdown is triggered
+                                if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():                            
+                                    break
+                            if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
+                                break
+                            
                             self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
                             if self.livestream_coordinator:
                                 try:
@@ -1682,7 +1728,7 @@ class DownloadStream:
                                     #    downloader.close_connection()
                                 except Exception as e:
                                     self.logger.exception("An error occurred while trying to recover the stream")
-                            time.sleep(1)
+                            self.smart_sleep(1)
                             self.conn = self.create_connection(self.temp_db_file)
                             return True
                             
@@ -1756,6 +1802,8 @@ class DownloadStream:
         status_forcelist = {204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504}
 
         for attempt in range(total_retries + 1):
+            if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
+                return -1, None, segment_order, None, None
             if client is None or client.is_closed:
                 # Set a base timeout of 30s for connect/read as well
                 httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None))
@@ -1808,7 +1856,7 @@ class DownloadStream:
                 if attempt >= total_retries:
                     raise                
                 sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
-                time.sleep(sleep_time)
+                self.smart_sleep(sleep_time)
 
             except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException) as e:
                 if attempt >= total_retries:
@@ -1818,7 +1866,7 @@ class DownloadStream:
                     return -1, None, segment_order, status_err, None
                 
                 sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
-                time.sleep(sleep_time)
+                self.smart_sleep(sleep_time)
                 
             except Exception as e:
                 self.logger.exception(f"Unknown error: {e}")
@@ -1826,7 +1874,7 @@ class DownloadStream:
                     return -1, None, segment_order, None, None
                 
                 sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
-                time.sleep(sleep_time)
+                self.smart_sleep(sleep_time)
 
     
     def process_proxies_for_httpx(self, proxies) -> tuple[Optional[str], Optional[dict]]:
@@ -2283,6 +2331,14 @@ class DownloadStream:
             # which handles the final cleanup of the event loop.
             raise KeyboardInterrupt("Kill command executed")
         
+    def smart_sleep(self, timeout):
+        """Sleeps for the given timeout, but wakes up instantly if a graceful stop is triggered."""
+        if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None):
+            # wait() returns True immediately if the flag is set, or blocks for 'timeout' seconds
+            self.livestream_coordinator.graceful_stop.wait(timeout)
+        else:
+            time.sleep(timeout)
+        
     def delete_temp_database(self):
         self.close_connection()
         os.remove(self.temp_db_file)
@@ -2523,6 +2579,10 @@ class DownloadStreamDirect(DownloadStream):
             while True:
                 self.check_kill(executor)
 
+                if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
+                    self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
+                    break
+
                 refresh = self.refresh_Check()
                 if refresh is True:
                     break
@@ -2634,7 +2694,7 @@ class DownloadStreamDirect(DownloadStream):
                 if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded and len(segments_to_download) <= 2 * self.max_workers:
                     # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
                     if not segments_to_download:
-                        time.sleep(max(self.estimated_segment_duration, 2) + 0.1)
+                        self.smart_sleep(max(self.estimated_segment_duration, 2) + 0.1)
                     
                     self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
                     segments_to_download.append(optimistic_seg)
@@ -2663,7 +2723,7 @@ class DownloadStreamDirect(DownloadStream):
                             elif temp_stream_url != self.stream_url:
                                 self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
                                 segment_retries.clear()
-                        time.sleep(10)
+                        self.smart_sleep(10)
                         self.update_latest_segment(client=client)
                         wait += 1
                         continue
@@ -2971,6 +3031,11 @@ class StreamRecovery(DownloadStream):
             thread_windows_size = 2*self.max_workers
             while True:     
                 self.check_kill(executor)     
+
+                if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
+                    self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
+                    break
+
                 if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
                     self.livestream_coordinator.stats[self.type] = {}     
 
@@ -3065,7 +3130,7 @@ class StreamRecovery(DownloadStream):
                 
                 elif self.is_401:
                     self.logger.debug("401s detected for {0}, sleeping for a minute")
-                    time.sleep(60)
+                    self.smart_sleep(60)
                     for url in self.stream_urls:
                         if self.live_status == 'post_live':
                             self.update_latest_segment(url=self.stream_url.segment(self.latest_sequence+1), client=client)
