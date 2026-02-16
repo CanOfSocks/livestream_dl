@@ -359,7 +359,7 @@ class LiveStreamDownloader:
                             #        raise future.exception()
                             
                             result, type = future.result()
-                            self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "\033[93m{0}\033[0m".format(result))
+                            self.logger.info("\033[93m{0}\033[0m".format(result))
                             
                             if type == 'auxiliary':
                                 self.file_names.update(result)
@@ -1238,10 +1238,10 @@ class LiveStreamDownloader:
             for attempt in range(max_retries + 1):
                 # Check total time at each loop iteration
                 if time.time() - start_time > max_total_time:
-                    self.logger.error("Overall waiting time exceeded 2 hours, forcing stop")
+                    self.logger.error("Overall waiting time exceeded 2 hours, force stopping")
                     self.kill_this.set()
                     self.kill_all.set()
-                    raise TimeoutError("[Live Stream Offline — Please Check] Waiting for Over 2 Hours")
+                    raise TimeoutError("[Live stream offline status, please check] Wait time exceeded 2 hours")
                 
                 try:
                     self.logger.debug(f"Attempting to get video information, attempt {attempt + 1}/{max_retries + 1}")
@@ -1267,18 +1267,20 @@ class LiveStreamDownloader:
                     
                 except Exception as e:
                     error_msg = str(e)
-                    if "[Live stream offline, waiting for stream]" in error_msg:
+                    
+                    # Live stream not started (requires exponential backoff retry)
+                    if "[Live stream offline status, waiting for live stream]" in error_msg:
                         if attempt < max_retries:
-                            # Exponential backoff algorithm: 20% → 40% → 80% → 160% → 320%
+                            # Exponential backoff algorithm: 20% → 40% → 80% → 160% → 320% ...
                             jitter_factor = 0.2 * (2 ** attempt)
                             jitter = random.uniform(-jitter_factor, jitter_factor)
                             
-                            # Calculate wait time, ensuring minimum 300 seconds
+                            # Calculate wait time, ensure minimum of 300 seconds
                             wait_time = base_wait * (1 + jitter)
-                            wait_time = max(wait_time, 300)  # ← Ensure not less than 300 seconds
+                            wait_time = max(wait_time, 300)
                             
                             self.logger.warning(
-                                f"[Live stream offline, waiting for stream] "
+                                f"[Live stream offline status, waiting for live stream] "
                                 f"Retry {attempt + 1}/{max_retries}, waiting {wait_time:.2f} seconds"
                             )
                             
@@ -1286,18 +1288,28 @@ class LiveStreamDownloader:
                             while time.time() < end_time:
                                 if self.kill_all.is_set() or self.kill_this.is_set():
                                     self.logger.warning("Termination signal detected, interrupting wait")
-                                    raise KeyboardInterrupt("User interrupted")
+                                    raise KeyboardInterrupt("User interruption")
                                 time.sleep(1)
                         else:
-                            error_msg = "[Live stream offline, please check] Maximum retry attempts reached, stream still not ready"
+                            error_msg = "[Live stream offline status, please check] Maximum retry attempts reached, live stream still not ready"
                             self.logger.error(error_msg)
-                            # Notify all threads to stop
                             self.kill_this.set()
                             self.kill_all.set()
                             raise TimeoutError(error_msg)
+                    
+                    # Non-retryable errors (region restriction, age restriction, video deleted)
+                    elif isinstance(e, (getUrls.VideoInaccessibleError, getUrls.VideoUnavailableError)):
+                        self.logger.error(f"Video inaccessible: {e}")
+                        self.kill_this.set()
+                        self.kill_all.set()
+                        raise
+                    
+                    # Other errors (network issues, etc.) - simple retry
                     else:
-                        self.logger.error(f"Error occurred while refreshing video information: {e}")
+                        self.logger.error(f"Error occurred while refreshing URL: {e}")
                         if attempt == max_retries:
+                            self.kill_this.set()
+                            self.kill_all.set()
                             raise
                         time.sleep(5)
             
