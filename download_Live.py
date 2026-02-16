@@ -1241,7 +1241,7 @@ class LiveStreamDownloader:
                     self.logger.error("Overall waiting time exceeded 2 hours, forcing stop")
                     self.kill_this.set()
                     self.kill_all.set()
-                    raise TimeoutError("Overall waiting time too long")
+                    raise TimeoutError("[Live Stream Offline — Please Check] Waiting for Over 2 Hours")
                 
                 try:
                     self.logger.debug(f"Attempting to get video information, attempt {attempt + 1}/{max_retries + 1}")
