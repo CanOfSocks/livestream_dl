@@ -123,8 +123,28 @@ def main(id, resolution='bv+ba/best', options={}, info_dict=None, thread_kill: t
         pass
     else:        
         info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)), logger=logger, clean_info_dict=options.get('clean_info_json', False))
+    
     downloader = download_Live.LiveStreamDownloader(kill_all=kill_all, logger=logger)
-    downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
+
+    try:
+        downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
+    except TimeoutError as e:
+        if "[Live stream offline, please check]" in str(e):
+            logger.error(f"Live stream offline, stopping download: {e}")
+            kill_all.set()
+        else:
+            logger.error(f"Download timeout: {e}")
+            raise
+    except KeyboardInterrupt:
+        logger.info("User interrupted download")
+        kill_all.set()
+    except getUrls.LivestreamNotReadyError as e:
+        logger.error(f"Live stream not ready: {e}")
+        kill_all.set()
+    except Exception as e:
+        logger.exception(f"Unexpected error during download process: {e}")
+        kill_all.set()
+        raise
 
 def monitor_channel(options={}):
     import copy
