@@ -1004,7 +1004,7 @@ class LiveStreamDownloader:
                 for (i, fmt) in enumerate(info_dict['requested_formats']):
                     if fmt.get('acodec') != 'none':
                         args.extend(['-map', f'{i}:a:0'])
-                        aac_fixup = fmt['protocol'].startswith('m3u8') and self.get_audio_codec(fmt['filepath']) == 'aac'
+                        aac_fixup = fmt['protocol'].startswith('m3u8') and livestream_merger.get_audio_codec(fmt['filepath']) == 'aac'
                         if aac_fixup:
                             args.extend([f'-bsf:a:{audio_streams}', 'aac_adtstoasc'])
                         if fmt.get("format"):
