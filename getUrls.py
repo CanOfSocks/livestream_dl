@@ -46,7 +46,7 @@ class MyLogger:
             self.retry_message = msg_str
             # Only output "waiting for live stream" on first warning encounter
             if self.first_warning:
-                self.logger.warning(f"Waiting for live stream")
+                self.logger.info(f"Waiting for live stream")
                 self.first_warning = False
             # Reset backoff factor to use new jitter value on next retry
             self.current_backoff = 1.0
@@ -74,7 +74,7 @@ class MyLogger:
             self.retry_message = msg_str
             # Only output "waiting for live stream" on first warning encounter
             if self.first_warning:
-                self.logger.warning(f"Waiting for live stream")
+                self.logger.info(f"Waiting for live stream")
                 self.first_warning = False
             # Reset backoff factor
             self.current_backoff = 1.0
