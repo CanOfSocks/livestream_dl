@@ -187,6 +187,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--log-file` | `None` | Path to a file where log messages will be saved. |
 | `--stats-as-json` | `False` | Prints download statistics as a JSON string (bypasses log level). |
 | `--new-line` | `False` | Ensures console messages always print to a new line (useful for some terminals). |
+| `--redact-ips` | `False` | Redact IP addresses from logs. May be imperfect, so check logs if necessary. |
 
 ### Channel Monitoring
 

@@ -104,7 +104,7 @@ def httpx_proxy(proxy_string: str):
         return proxy_string
 
 def main(id, resolution='bv+ba/best', options={}, info_dict=None, thread_kill: threading.Event=kill_all):
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id)
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id, redact_ips=options.get("redact_ips", False))
 
     # Initialise yt-dlp logger
     #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
@@ -128,7 +128,7 @@ def main(id, resolution='bv+ba/best', options={}, info_dict=None, thread_kill: t
 
 def monitor_channel(options={}):
     import copy
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Monitor")
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Monitor", redact_ips=options.get("redact_ips", False))
     #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
     import monitor_channel
     from typing import Dict
@@ -288,6 +288,8 @@ if __name__ == "__main__":
     
     parser.add_argument("--log-file", type=str, help="Path to the log file where messages will be saved.")
 
+    parser.add_argument('--redact-ips', action='store_true', help="Remove IP addresses from logs. Warning: May be imperfect, so check logs to make sure IP information has been redacted.")
+
     parser.add_argument('--write-ffmpeg-command', action='store_true', help="Writes FFmpeg command to a txt file")
     
     parser.add_argument('--stats-as-json', action='store_true', help="Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level")
@@ -341,8 +343,16 @@ if __name__ == "__main__":
         
     id = options.get('ID')
     resolution = options.get('resolution')
-    
-    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True)
+
+    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True, redact_ips=options.get("redact_ips", False))
+
+    if options.get("redact_ips", False):
+        import logging
+        loggers = [logging.getLogger(), logging.getLogger("httpx")]
+        scrubber = download_Live.setup_logger.IPAddressScrubber()
+        for logger in loggers:
+            if not any(isinstance(f, download_Live.setup_logger.IPAddressScrubber) for f in logger.filters):
+                logger.addFilter(scrubber)
     # For testing
     
     #options['batch_size'] = 5

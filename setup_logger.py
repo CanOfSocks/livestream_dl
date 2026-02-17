@@ -3,7 +3,7 @@ import logging
 import logging.handlers
 
 from typing import Union, Optional
-
+import re
 import os
 
 import os
@@ -15,6 +15,64 @@ VERBOSE_LEVEL_NUM = 15
 VERBOSE_LEVEL_NAME = "VERBOSE"
 ENV_DISABLE_FLAG = "DISABLE_LIVESTREAM_DL_VERBOSE_LOGGING"
 
+import re
+import logging
+
+class IPAddressScrubber(logging.Filter):
+    # Aggressive IPv4: Matches 1-3 digits, dot, 1-3 digits, etc.
+    # Lookarounds (?<![0-9]) ensure we don't scrub "v1.2.3.4567" partially.
+    IPV4_REGEX = re.compile(r'(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])')
+    
+    # IPv6: Remains comprehensive as IPv6 patterns are very distinct.
+    IPV6_REGEX = re.compile(
+        r'(?:(?:[0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,7}:|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}|'
+        r'[0-9a-fA-F]{1,4}:(?:(?::[0-9a-fA-F]{1,4}){1,6})|'
+        r':(?:(?::[0-9a-fA-F]{1,4}){1,7}|:)|'
+        r'fe80:(?::[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|'
+        r'::(?:ffff(?::0{1,4}){0,1}:){0,1}'
+        r'(?:(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}'
+        r'(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9])|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,4}:'
+        r'(?:(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}'
+        r'(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9]))'
+    )
+
+    def _scrub(self, value):
+        # Convert to string in case it's an IP object, int, or None
+        val_str = str(value)
+        val_str = self.IPV6_REGEX.sub("::", val_str)
+        val_str = self.IPV4_REGEX.sub("0.0.0.0", val_str)
+        return val_str
+
+    def filter(self, record):
+        # 1. Scrub the main message
+        if record.msg:
+            record.msg = self._scrub(record.msg)
+
+        # 2. Scrub the arguments (logger.info("msg %s", ip))
+        if record.args:
+            if isinstance(record.args, dict):
+                record.args = {k: self._scrub(v) for k, v in record.args.items()}
+            else:
+                record.args = tuple(self._scrub(arg) for arg in record.args)
+
+        # 3. Scrub extra attributes (for LoggerAdapter metadata)
+        # We target common custom fields and skip internal logging ones
+        skip_keys = {'levelname', 'asctime', 'name', 'msg', 'args', 'levelno', 'pathname', 'filename', 'module', 'exc_info', 'exc_text', 'stack_info', 'lineno', 'funcName', 'created', 'msecs', 'relativeCreated', 'thread', 'threadName', 'processName', 'process'}
+        for key in list(record.__dict__.keys()):
+            if key not in skip_keys:
+                val = getattr(record, key)
+                if isinstance(val, (str, int, float)) or val is None:
+                    setattr(record, key, self._scrub(val))
+        
+        return True
+
 def setup_logging(
     log_level="INFO",
     console=True,
@@ -24,7 +82,8 @@ def setup_logging(
     logger: logging.Logger | None = None,
     logger_name: str | None = None,
     video_id: str | None = None,
-    metadata: dict | None = None  # New parameter for dynamic stages
+    metadata: dict | None = None,  # New parameter for dynamic stages
+    redact_ips: bool = False,
 ) -> Union[logging.Logger, logging.LoggerAdapter]:
     """
     Configure logging with dynamic stages based on metadata.
@@ -51,6 +110,11 @@ def setup_logging(
     if force:
         for h in list(logger.handlers):
             logger.removeHandler(h)
+
+    if redact_ips:
+        # Check if already added to avoid duplicates if force=False
+        if not any(isinstance(f, IPAddressScrubber) for f in logger.filters):
+            logger.addFilter(IPAddressScrubber())
     
     if not logger.handlers:
         level = getattr(logging, log_level.upper(), logging.INFO)
