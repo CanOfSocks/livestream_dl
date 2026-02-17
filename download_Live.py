@@ -849,13 +849,20 @@ class LiveStreamDownloader:
                 
             #thumbnails = ydl._write_thumbnails('video', info_dict, ydl.prepare_filename(info_dict, 'thumbnail'))
             try:
-                thumbnail = next((-i for i, t in enumerate(info['thumbnails'][::-1], 1) if t.get('filepath')), {})            
-                thumbnail_filename = info.get('thumbnails', [])[thumbnail].get('filepath', None)
-                if thumbnail is None or not os.path.exists(thumbnail_filename):
+                # 1. Safely find the last thumbnail that has a 'filepath'
+                # Using a generator expression with reversed() is cleaner than [::-1]
+                thumbnail_data = next((t for t in reversed(info.get('thumbnails', [])) if t.get('filepath')), None)
+
+                # 2. Extract the filename safely
+                thumbnail_filename = thumbnail_data.get('filepath') if thumbnail_data else None
+
+                # 3. Check if we actually have a valid file on disk
+                if not thumbnail_filename or not os.path.exists(thumbnail_filename):
                     if ydl_opts.get("writethumbnail", False):
                         self.logger.error("Unable to download thumbnail")
                 else:
-                    created_files['thumbnail'] = FileInfo(thumbnail_filename, file_type='thumbnail')       
+                    # Everything is good
+                    created_files['thumbnail'] = FileInfo(thumbnail_filename, file_type='thumbnail')     
             except Exception as e:
                 self.logger.exception("Unable to download thumbnail")
                                
@@ -1520,10 +1527,16 @@ class DownloadStream:
                     self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
                     break
 
+                temp_stream_url = self.stream_url
                 refresh = self.refresh_Check()
                 if refresh is True:
                     break
                 
+                if temp_stream_url != self.stream_url:
+                    self.logger.debug("Stream URL has been updated, reseting segment retry counts")
+                    segment_retries.clear()
+                del temp_stream_url
+
                 if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
                     self.livestream_coordinator.stats[self.type] = {}
 
@@ -1654,7 +1667,7 @@ class DownloadStream:
                                 self.logger.info("Video finished downloading via new manifest")
                                 break
                             elif temp_stream_url != self.stream_url:
-                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log".format(self.format))
                                 segment_retries.clear()
                         self.smart_sleep(10)
                         self.update_latest_segment(client=client)
@@ -1755,6 +1768,7 @@ class DownloadStream:
                             break
                         
                         else:
+                            self.logger.info("({0}) New stream URL detecting, resetting segment retry log".format(self.format))
                             segment_retries.clear()
                     else:
                         wait = 0
