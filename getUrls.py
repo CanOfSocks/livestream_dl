@@ -15,15 +15,19 @@ except ModuleNotFoundError:
     VERBOSE_LEVEL_NUM = 15
 
 extraction_event = threading.Event()
+# Add global lock to prevent concurrency conflicts
+refresh_lock = threading.Lock()
 
 class MyLogger:
-    def __init__(self, logger: logging.Logger, max_retries: int = 1, base_wait: int = 600):
+    def __init__(self, logger: logging.Logger, max_retries: int = 10, base_wait: int = 100):
         self.logger = logger
         self.retry_count = 0
         self.max_retries = max_retries
         self.base_wait = base_wait
         self.should_retry = False
         self.retry_message = None
+        self.current_backoff = 1.0  # Initial backoff factor
+        self.first_warning = True  # Flag for first warning
 
     def debug(self, msg):
         if not msg.startswith("[wait] Remaining time until next attempt:"):
@@ -40,7 +44,12 @@ class MyLogger:
             "release time of video is not known" in msg_str.lower()):
             self.should_retry = True
             self.retry_message = msg_str
-            self.logger.warning(f"Detected warning requiring retry: {msg_str}")
+            # Only output "waiting for live stream" on first warning encounter
+            if self.first_warning:
+                self.logger.warning(f"Waiting for live stream")
+                self.first_warning = False
+            # Reset backoff factor to use new jitter value on next retry
+            self.current_backoff = 1.0
         else:
             self.logger.log(VERBOSE_LEVEL_NUM, msg)
 
@@ -60,10 +69,15 @@ class MyLogger:
         elif "not available on this app" in msg_str:
             self.logger.error(msg)
             raise yt_dlp.utils.DownloadError(msg_str)
-        elif "should already be available" in msg_str:
+        elif "should already be available" in msg_str or "release time of video is not known" in msg_str:
             self.should_retry = True
             self.retry_message = msg_str
-            self.logger.warning(f"Live stream not fully available yet, will retry: {msg_str}")
+            # Only output "waiting for live stream" on first warning encounter
+            if self.first_warning:
+                self.logger.warning(f"Waiting for live stream")
+                self.first_warning = False
+            # Reset backoff factor
+            self.current_backoff = 1.0
         else:
             self.logger.warning(msg)
 
@@ -73,11 +87,35 @@ class MyLogger:
     def reset_retry_state(self):
         self.should_retry = False
         self.retry_message = None
+        # Reset first warning flag
+        self.first_warning = True
         
     def get_wait_time(self):
-        """Calculate wait time with jitter"""
-        jitter = random.uniform(-0.2, 0.2)  # ±20% jitter
-        wait_time = self.base_wait * (1 + jitter)
+        """
+        Calculate wait time using exponential backoff strategy
+        Base wait: 100 seconds
+        Jitter factors: 0% (1.0), 40% (1.4), 80% (1.8), 160% (2.6), 320% (4.2), 640% (6.4)
+        Minimum wait time per retry: 100 seconds
+        Random jitter: ±10% (starting from the second retry)
+        """
+        # Define incremental jitter factors (1 + jitter percentage)
+        jitter_factors = [1.0, 1.4, 1.8, 2.6, 4.2, 6.4]
+        
+        # Select the corresponding jitter factor based on retry count
+        # If retry count exceeds the list length, use the last factor
+        if self.retry_count < len(jitter_factors):
+            jitter_factor = jitter_factors[self.retry_count]
+        else:
+            jitter_factor = jitter_factors[-1]  # Use maximum jitter 6.4 (640%)
+        
+        # Random jitter ±10% to ensure not all threads retry simultaneously
+        if self.retry_count > 0:
+            random_jitter = random.uniform(-0.1, 0.1)  # Change to ±10%
+            jitter_factor *= (1 + random_jitter)
+        
+        # Ensure minimum 100 seconds
+        wait_time = max(self.base_wait, self.base_wait * jitter_factor)
+        
         return wait_time
 
 # --- Custom Exceptions ---
@@ -86,6 +124,7 @@ class VideoProcessedError(ValueError): pass
 class VideoUnavailableError(ValueError): pass
 class LivestreamError(TypeError): pass
 class MaxRetryExceededError(Exception): pass
+class StreamTimeoutError(TimeoutError): pass
 
 def parse_wait(string) -> Tuple[int, Optional[int]]:
     try:
@@ -99,21 +138,32 @@ def parse_wait(string) -> Tuple[int, Optional[int]]:
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{string}' must be an integer or 'min:max'")
 
-def _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event):
-    """Helper function to handle the sleep logic to avoid code duplication"""
+def _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event, start_time=None):
+    """
+    Handle retry wait logic with timeout check
+    Completely silent mode: only output error messages on timeout or when max retries reached
+    """
     wait_time = yt_dlpLogger.get_wait_time()
     
+    # Check timeout (1 hour = 3600 seconds)
+    if start_time and (time.time() - start_time) > 3600:
+        error_msg = "Live stream offline, please check"
+        logger.error(error_msg)
+        raise StreamTimeoutError(error_msg)
+    
     if current_try >= max_retries:
-        error_msg = f"[Live stream offline status] Maximum retry attempts {max_retries} exceeded."
+        error_msg = "Live stream offline, please check"
         logger.error(error_msg)
         raise MaxRetryExceededError(error_msg)
     
-    logger.warning(f"Live stream not ready. Waiting {wait_time:.2f}s. Attempt {current_try}/{max_retries}")
+    # Update retry count
+    yt_dlpLogger.retry_count = current_try + 1
     
-    # Segmented waiting
+    # Completely silent wait, output nothing
     end_time = time.time() + wait_time
     while time.time() < end_time:
         if extraction_event.is_set():
+            # Only output message when interrupted
             logger.warning("extraction_event was set, interrupting wait")
             break
         time.sleep(1)
@@ -130,18 +180,21 @@ def get_Video_Info(
     include_m3u8: bool = False, 
     logger: Optional[logging.Logger] = None, 
     clean_info_dict: bool = False,
-    max_retries: int = 1,  # Added argument
-    **kwargs               # Added kwargs
+    max_retries: int = 10,  # Changed to 10 attempts
+    **kwargs
 ):
     
     # Setup Logger
     if logger is None:
         logger = logging.getLogger()
         
-    url = str(id) # Assuming ID might be passed, usually complete URL or ID is handled by yt-dlp
+    url = str(id)
     
-    # Initialize custom logger with the passed retry limit
-    yt_dlpLogger = MyLogger(logger=logger, max_retries=max_retries)
+    # Initialize custom logger, set max retries to 10, base wait 100 seconds
+    yt_dlpLogger = MyLogger(logger=logger, max_retries=max_retries, base_wait=100)  # Changed to 100 seconds
+    
+    # Record start time for timeout check
+    start_time = time.time()
     
     # Base Options
     ydl_opts = {
@@ -192,57 +245,90 @@ def get_Video_Info(
     if not include_m3u8:
         skip_list.append("hls")
 
-    info_dict = {}    
+    info_dict = {}
+    current_try = 0
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            extraction_event.set()
-            # extract_info is main entry point
-            info_dict = ydl.extract_info(url, download=False)
-            extraction_event.clear()
-            
-            
-            # 2. Success Processing
-            info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
+    # Use lock to ensure retries don't conflict with other threads
+    with refresh_lock:
+        while current_try < max_retries:
+            try:
+                # Reset retry state
+                yt_dlpLogger.reset_retry_state()
+                
+                # If retried before, wait first
+                if current_try > 0:
+                    _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event, start_time)
+                
+                extraction_event.set()
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info_dict = ydl.extract_info(url, download=False)
+                    
+                extraction_event.clear()
+                
+                # Check if retry needed
+                if yt_dlpLogger.should_retry:
+                    current_try += 1
+                    continue
+                
+                # Successfully retrieved information
+                info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
 
-            # Cleanup fragments if present
-            for stream_format in info_dict.get('formats', []):
-                stream_format.pop('fragments', None)
-            
-            # Reset retry state
-            yt_dlpLogger.reset_retry_state()
-            
-            # Check live status
-            live_status = info_dict.get('live_status')
-            if live_status not in ['is_live', 'post_live']:
-                raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
-            
-            return info_dict, live_status
-            
-        except yt_dlp.utils.DownloadError as e:
-            extraction_event.clear()
-            err_str = str(e).lower()
-            
-            # Specific Error Handling
-            if 'video is private' in err_str or "sign in" in err_str:
-                raise VideoInaccessibleError(f"Video {id} is private")
-            elif 'will begin in' in err_str or 'premieres in' in err_str:
-                raise VideoUnavailableError("Video is not yet available")
-            elif "members" in err_str:
-                raise VideoInaccessibleError(f"Video {id} is a membership video")
-            elif "not available on this app" in err_str:
-                raise VideoInaccessibleError(f"Video {id} not available on this player")
-            elif "no longer live" in err_str:
-                raise LivestreamError("Livestream has ended")   
-            elif "terminated" in err_str:
-                raise VideoInaccessibleError(f"Video {id} has been terminated")
-            elif "country" in err_str and ("not available" in err_str or "uploader has not made" in err_str):
-                raise VideoInaccessibleError("Video is region-locked (Geo-restricted)")                
-            elif "sign in to confirm your age" in err_str or "age-restricted" in err_str:
-                raise VideoInaccessibleError("Video is age-restricted and requires valid cookies")
-            elif "video has been removed" in err_str:
-                raise VideoUnavailableError("Video has been removed/deleted")
-            else:
-                raise e
-        finally:
-            extraction_event.clear()
+                # Clean fragments
+                for stream_format in info_dict.get('formats', []):
+                    stream_format.pop('fragments', None)
+                
+                # Check live status
+                live_status = info_dict.get('live_status')
+                if live_status not in ['is_live', 'post_live']:
+                    raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
+                
+                return info_dict, live_status
+                
+            except yt_dlp.utils.DownloadError as e:
+                extraction_event.clear()
+                err_str = str(e).lower()
+                
+                # Specific error handling
+                if 'video is private' in err_str or "sign in" in err_str:
+                    raise VideoInaccessibleError(f"Video {id} is private")
+                elif 'will begin in' in err_str or 'premieres in' in err_str:
+                    raise VideoUnavailableError("Video is not yet available")
+                elif "members" in err_str:
+                    raise VideoInaccessibleError(f"Video {id} is a membership video")
+                elif "not available on this app" in err_str:
+                    raise VideoInaccessibleError(f"Video {id} not available on this player")
+                elif "no longer live" in err_str:
+                    raise LivestreamError("Livestream has ended")   
+                elif "terminated" in err_str:
+                    raise VideoInaccessibleError(f"Video {id} has been terminated")
+                elif "country" in err_str and ("not available" in err_str or "uploader has not made" in err_str):
+                    raise VideoInaccessibleError("Video is region-locked (Geo-restricted)")                
+                elif "sign in to confirm your age" in err_str or "age-restricted" in err_str:
+                    raise VideoInaccessibleError("Video is age-restricted and requires valid cookies")
+                elif "video has been removed" in err_str:
+                    raise VideoUnavailableError("Video has been removed/deleted")
+                else:
+                    # Check if retry needed
+                    if yt_dlpLogger.should_retry:
+                        current_try += 1
+                        continue
+                    
+                    # If not a retryable error, raise directly
+                    logger.error(f"Unhandled DownloadError: {e}")
+                    raise e
+                    
+            except (VideoInaccessibleError, VideoUnavailableError, LivestreamError) as e:
+                # These errors should not be retried
+                extraction_event.clear()
+                raise
+                
+            except Exception as e:
+                extraction_event.clear()
+                logger.exception(f"Unexpected error during info extraction: {e}")
+                current_try += 1
+                if current_try >= max_retries:
+                    raise MaxRetryExceededError("Live stream offline, please check")
+                
+        # If loop ends without returning, max retries reached
+        raise MaxRetryExceededError("Live stream offline, please check")
