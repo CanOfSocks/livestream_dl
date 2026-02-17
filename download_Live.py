@@ -1398,6 +1398,8 @@ class DownloadStream:
         self.max_workers = self.options.get('max_workers', 5)
         self.yt_dlp_options = self.options.get('yt_dlp_options')
 
+        self.needs_immediate_refresh = False
+
         self.include_dash = self.options.get('include_dash', False)
         self.include_m3u8 = self.options.get('include_m3u8', False)
         self.force_m3u8 = self.options.get('force_m3u8', False)
@@ -1514,13 +1516,16 @@ class DownloadStream:
         return url.expire
 
     def refresh_Check(self):    
-        
-        #print("Refresh check ({0})".format(self.format)) 
         filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) >= time.time()]
         self.stream_urls = filtered_array  
         
-        # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
-        if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403) or len(self.stream_urls) <= 0) and not self.is_private:
+        if self.needs_immediate_refresh:
+            self.needs_immediate_refresh = False
+            return self.refresh_url()
+        
+        if (time.time() - self.url_checked >= 3600.0 or 
+            (time.time() - self.url_checked >= 30.0 and self.is_403) or 
+            len(self.stream_urls) <= 0) and not self.is_private:
             return self.refresh_url()
     
     def live_dl(self):
@@ -2419,6 +2424,9 @@ class DownloadStream:
                                     include_m3u8=(self.include_m3u8 or self.force_m3u8)
                                 )
                                 state['result'] = (info_dict, live_status)
+                            except Exception as e:
+                                self.needs_immediate_refresh = True
+                                state['exc'] = e
                             finally:
                                 self.livestream_coordinator.lock.release()
                         else:
@@ -2432,6 +2440,7 @@ class DownloadStream:
                         )
                         state['result'] = (info_dict, live_status)
                 except Exception as e:
+                    self.needs_immediate_refresh = True
                     state['exc'] = e
                 # We don't need a 'finally' block to set DONE here, 
                 # because `is_alive()` handles the transition perfectly in step 2.
