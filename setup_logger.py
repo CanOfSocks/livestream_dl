@@ -45,6 +45,14 @@ class IPAddressScrubber(logging.Filter):
 
     def _scrub(self, value):
         # Convert to string in case it's an IP object, int, or None
+        if isinstance(value, list):
+            return [self._scrub(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._scrub(item) for item in value)
+        if isinstance(value, dict):
+            return {k: self._scrub(v) for k, v in value.items()}
+        if isinstance(value, (int, float)):
+            return value
         val_str = str(value)
         val_str = self.IPV6_REGEX.sub("::", val_str)
         val_str = self.IPV4_REGEX.sub("0.0.0.0", val_str)
