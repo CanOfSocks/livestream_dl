@@ -73,42 +73,6 @@ jobs:
           pip install -U --pre "yt-dlp[default]"
           pip install pyinstaller
 
-      # --- Universal Patching (Python) ---
-      # We use python here so it runs on both Windows and Linux
-      - name: Apply yt-dlp patches
-        shell: python
-        run: |
-          import yt_dlp
-          import os
-          import re
-          
-          # Locate the file
-          path = os.path.dirname(yt_dlp.__file__)
-          target_file = os.path.join(path, 'extractor', 'youtube', '_video.py')
-          
-          print(f"Patching file: {target_file}")
-          
-          if os.path.exists(target_file):
-              with open(target_file, 'r', encoding='utf-8') as f:
-                  content = f.read()
-              
-              # Regex to find and comment out the specific block
-              # Matches the exact indentation structure
-              pattern = r"(\s+)if fmt_stream\.get\('targetDurationSec'\):\s*\n(\s+)continue"
-              replacement = r"\1#if fmt_stream.get('targetDurationSec'):\n\2#continue"
-              
-              new_content, count = re.subn(pattern, replacement, content)
-              
-              if count > 0:
-                  with open(target_file, 'w', encoding='utf-8') as f:
-                      f.write(new_content)
-                  print("Patch applied successfully.")
-              else:
-                  print("Pattern not found. File may have changed or already be patched.")
-          else:
-              print(f"Error: Could not find yt-dlp video file at {target_file}")
-              exit(1)
-
       # --- Build Step ---
       - name: Build Executable
         run: |

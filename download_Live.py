@@ -1478,11 +1478,16 @@ class DownloadStream:
         
     def get_expire_time(self, url: YoutubeURL.YoutubeURL):
         return url.expire
+    
+    def unique_stream_urls(self, stream_urls: list) -> list:
+        return list({str(stream_url): stream_url for stream_url in stream_urls}.values())
 
     def refresh_Check(self, wait=True):    
         
         #print("Refresh check ({0})".format(self.format)) 
-        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) >= time.time()]
+
+        # Filter array into set to remove duplicates
+        filtered_array = [url for url in self.unique_stream_urls(self.stream_urls) if int(self.get_expire_time(url)) > time.time()]
         self.stream_urls = filtered_array  
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
@@ -2411,7 +2416,9 @@ class DownloadStream:
             def fetch_url_data():
                 try:
                     if self.livestream_coordinator:
-                        if self.livestream_coordinator.lock.acquire(timeout=5.0):
+                        timeout = -1 if wait is True else 5.0
+                            
+                        if self.livestream_coordinator.lock.acquire(timeout=timeout):
                             try:
                                 info_dict, live_status = self.livestream_coordinator.refresh_info_json(
                                     update_threshold=min(900.0, time.time() - self.url_checked), 
@@ -2473,7 +2480,8 @@ class DownloadStream:
                     self.stream_url = stream_url
                     self.stream_urls.append(stream_url)
                     
-                    filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) > time.time()]
+                    # Filter array using a set to remove duplicates
+                    filtered_array = [url for url in self.unique_stream_urls(self.stream_urls) if int(self.get_expire_time(url)) > time.time()]
                     self.stream_urls = filtered_array
                     self.refresh_retries = 0
                     self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Refreshed stream URL with {0} - {1}".format(stream_url.format_id, stream_url.fomat_note))
@@ -2485,17 +2493,35 @@ class DownloadStream:
                 
                 if info_dict:
                     self.info_dict = info_dict    
-                
+
             except getUrls.VideoInaccessibleError as e:
-                # ... (Rest of your original exception handling)
                 self.logger.warning("Video Inaccessible error: {0}".format(e))
-                self.is_private = True
+                if "membership" in str(e) and not self.is_403:
+                    self.logger.warning("{0} is now members only. Continuing until 403 errors")
+                else:
+                    self.is_private = True
+            except getUrls.VideoUnavailableError as e:
+                self.logger.critical("Video Unavailable error: {0}".format(e))
+                if self.get_expire_time(self.stream_url) < time.time():
+                    raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
+            except getUrls.VideoProcessedError as e:
+                # Livestream has been processed
+                self.logger.exception("Error refreshing URL: {0}".format(e))
+                self.logger.info("Livestream has ended and processed.")
+                self.live_status = "was_live"
+                self.url_checked = time.time()
+                return False
+            except getUrls.LivestreamError:
+                self.logger.debug("Livestream has ended.")
+                self.live_status = "post_live"
+                self.url_checked = time.time()
+                return False 
             except Exception as e:
-                self.logger.exception("Error: {0}".format(e))                    
+                self.logger.exception("Error: {0}".format(e))                 
                 
         self.url_checked = time.time()
 
-        if self.live_status != 'is_live':
+        if self.live_status not in ['is_live', 'is_upcoming']:
             self.logger.debug("Livestream has ended.")
             return False 
         
