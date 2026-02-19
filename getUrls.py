@@ -48,7 +48,7 @@ class MyLogger:
             if self.first_warning:
                 self.logger.info(f"Waiting for live stream")
                 self.first_warning = False
-            # Reset backoff factor to use new jitter value on next retry
+            # Reset backoff factor for next retry with new jitter
             self.current_backoff = 1.0
         else:
             self.logger.log(VERBOSE_LEVEL_NUM, msg)
@@ -95,22 +95,22 @@ class MyLogger:
         Calculate wait time using exponential backoff strategy
         Base wait: 100 seconds
         Jitter factors: 0% (1.0), 40% (1.4), 80% (1.8), 160% (2.6), 320% (4.2), 640% (6.4)
-        Minimum wait time per retry: 100 seconds
-        Random jitter: ±10% (starting from the second retry)
+        Minimum 100 seconds per retry
+        Random jitter: ±10% (starting from second retry)
         """
         # Define incremental jitter factors (1 + jitter percentage)
         jitter_factors = [1.0, 1.4, 1.8, 2.6, 4.2, 6.4]
         
-        # Select the corresponding jitter factor based on retry count
-        # If retry count exceeds the list length, use the last factor
+        # Select corresponding jitter factor based on retry count
+        # If retry count exceeds jitter factors list length, use last factor
         if self.retry_count < len(jitter_factors):
             jitter_factor = jitter_factors[self.retry_count]
         else:
-            jitter_factor = jitter_factors[-1]  # Use maximum jitter 6.4 (640%)
+            jitter_factor = jitter_factors[-1]  # Use max jitter 6.4 (640%)
         
         # Random jitter ±10% to ensure not all threads retry simultaneously
         if self.retry_count > 0:
-            random_jitter = random.uniform(-0.1, 0.1)  # Change to ±10%
+            random_jitter = random.uniform(-0.1, 0.1)  # Changed to ±10%
             jitter_factor *= (1 + random_jitter)
         
         # Ensure minimum 100 seconds
@@ -123,8 +123,9 @@ class VideoInaccessibleError(PermissionError): pass
 class VideoProcessedError(ValueError): pass
 class VideoUnavailableError(ValueError): pass
 class LivestreamError(TypeError): pass
-class MaxRetryExceededError(Exception): pass
-class StreamTimeoutError(TimeoutError): pass
+class StreamTimeoutError(Exception):  # Use this unified error type
+    """Live stream wait timeout error (max retries reached or exceeded 1 hour)"""
+    pass
 
 def parse_wait(string) -> Tuple[int, Optional[int]]:
     try:
@@ -141,31 +142,39 @@ def parse_wait(string) -> Tuple[int, Optional[int]]:
 def _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event, wait_start_time=None):
     """
     Handle retry wait logic with timeout check
-    Completely silent mode: only output error messages on timeout or when max retries reached
+    Completely silent mode: only output error messages on timeout or max retries reached
     """
-    wait_time = yt_dlpLogger.get_wait_time()
-    
-    # Check timeout (1 hour = 3600 seconds)
+    # First check if timeout exceeded (1 hour)
     if wait_start_time and (time.time() - wait_start_time) > 3600:
-        error_msg = "Live stream offline, please check"
+        error_msg = "Live stream wait timeout exceeded 1 hour"
         logger.error(error_msg)
         raise StreamTimeoutError(error_msg)
     
+    # Check if max retries reached
     if current_try >= max_retries:
-        error_msg = "Live stream offline, please check"
+        error_msg = f"Live stream wait timeout reached max retries {max_retries} times"
         logger.error(error_msg)
-        raise MaxRetryExceededError(error_msg)
+        raise StreamTimeoutError(error_msg)
+    
+    wait_time = yt_dlpLogger.get_wait_time()
     
     # Update retry count
     yt_dlpLogger.retry_count = current_try + 1
     
-    # Completely silent wait, output nothing
+    # Completely silent wait, no message output
     end_time = time.time() + wait_time
     while time.time() < end_time:
         if extraction_event.is_set():
             # Only output message when interrupted
             logger.warning("extraction_event was set, interrupting wait")
             break
+        
+        # Check timeout every second during wait
+        if wait_start_time and (time.time() - wait_start_time) > 3600:
+            error_msg = "Live stream wait timeout exceeded 1 hour"
+            logger.error(error_msg)
+            raise StreamTimeoutError(error_msg)
+            
         time.sleep(1)
 
 def get_Video_Info(
@@ -180,7 +189,7 @@ def get_Video_Info(
     include_m3u8: bool = False, 
     logger: Optional[logging.Logger] = None, 
     clean_info_dict: bool = False,
-    max_retries: int = 10,  # Changed to 10 attempts
+    max_retries: int = 10,  # 10 times
     **kwargs
 ):
     
@@ -191,9 +200,9 @@ def get_Video_Info(
     url = str(id)
     
     # Initialize custom logger, set max retries to 10, base wait 100 seconds
-    yt_dlpLogger = MyLogger(logger=logger, max_retries=max_retries, base_wait=100)  # Changed to 100 seconds
+    yt_dlpLogger = MyLogger(logger=logger, max_retries=max_retries, base_wait=100)  # 100 seconds
     
-    # Record start time for timeout check
+    # Record start time for timeout check (only start timing when retry is needed)
     wait_start_time = None
     
     # Base Options
@@ -248,15 +257,16 @@ def get_Video_Info(
     info_dict = {}
     current_try = 0
 
-    # Use lock to ensure retries don't conflict with other threads
+    # Use lock to prevent retry conflicts with other threads
     with refresh_lock:
         while current_try < max_retries:
             try:
                 # Reset retry state
                 yt_dlpLogger.reset_retry_state()
                 
-                # If retried before, wait first
+                # If already retried, wait first
                 if current_try > 0:
+                    # Only start timing on first retry encounter
                     if wait_start_time is None:
                         wait_start_time = time.time()
                     _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event, wait_start_time)
@@ -268,12 +278,12 @@ def get_Video_Info(
                     
                 extraction_event.clear()
                 
-                # Check if retry needed
+                # Check if retry is needed
                 if yt_dlpLogger.should_retry:
                     current_try += 1
                     continue
                 
-                # Successfully retrieved information
+                # Successfully retrieved info
                 info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
 
                 # Clean fragments
@@ -311,7 +321,7 @@ def get_Video_Info(
                 elif "video has been removed" in err_str:
                     raise VideoUnavailableError("Video has been removed/deleted")
                 else:
-                    # Check if retry needed
+                    # Check if retry is needed
                     if yt_dlpLogger.should_retry:
                         current_try += 1
                         continue
@@ -330,7 +340,7 @@ def get_Video_Info(
                 logger.exception(f"Unexpected error during info extraction: {e}")
                 current_try += 1
                 if current_try >= max_retries:
-                    raise MaxRetryExceededError("Live stream offline, please check")
+                    raise StreamTimeoutError(f"Live stream offline, please check")
                 
         # If loop ends without returning, max retries reached
-        raise MaxRetryExceededError("Live stream offline, please check")
+        raise StreamTimeoutError(f"Live stream offline, please check")
