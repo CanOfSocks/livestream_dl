@@ -138,7 +138,7 @@ def parse_wait(string) -> Tuple[int, Optional[int]]:
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{string}' must be an integer or 'min:max'")
 
-def _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event, start_time=None):
+def _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event, wait_start_time=None):
     """
     Handle retry wait logic with timeout check
     Completely silent mode: only output error messages on timeout or when max retries reached
@@ -146,7 +146,7 @@ def _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extractio
     wait_time = yt_dlpLogger.get_wait_time()
     
     # Check timeout (1 hour = 3600 seconds)
-    if start_time and (time.time() - start_time) > 3600:
+    if wait_start_time and (time.time() - wait_start_time) > 3600:
         error_msg = "Live stream offline, please check"
         logger.error(error_msg)
         raise StreamTimeoutError(error_msg)
@@ -194,7 +194,7 @@ def get_Video_Info(
     yt_dlpLogger = MyLogger(logger=logger, max_retries=max_retries, base_wait=100)  # Changed to 100 seconds
     
     # Record start time for timeout check
-    start_time = time.time()
+    wait_start_time = None
     
     # Base Options
     ydl_opts = {
@@ -257,7 +257,9 @@ def get_Video_Info(
                 
                 # If retried before, wait first
                 if current_try > 0:
-                    _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event, start_time)
+                    if wait_start_time is None:
+                        wait_start_time = time.time()
+                    _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extraction_event, wait_start_time)
                 
                 extraction_event.set()
                 
