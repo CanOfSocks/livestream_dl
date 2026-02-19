@@ -1487,7 +1487,7 @@ class DownloadStream:
         #print("Refresh check ({0})".format(self.format)) 
 
         # Filter array into set to remove duplicates
-        filtered_array = list({url for url in self.unique_stream_urls(self.stream_urls) if int(self.get_expire_time(url)) > time.time()})
+        filtered_array = [url for url in self.unique_stream_urls(self.stream_urls) if int(self.get_expire_time(url)) > time.time()]
         self.stream_urls = filtered_array  
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
@@ -2481,7 +2481,7 @@ class DownloadStream:
                     self.stream_urls.append(stream_url)
                     
                     # Filter array using a set to remove duplicates
-                    filtered_array = list({url for url in self.unique_stream_urls(self.stream_urls) if int(self.get_expire_time(url)) > time.time()})
+                    filtered_array = [url for url in self.unique_stream_urls(self.stream_urls) if int(self.get_expire_time(url)) > time.time()]
                     self.stream_urls = filtered_array
                     self.refresh_retries = 0
                     self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Refreshed stream URL with {0} - {1}".format(stream_url.format_id, stream_url.fomat_note))
