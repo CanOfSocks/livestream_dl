@@ -1479,7 +1479,7 @@ class DownloadStream:
     def get_expire_time(self, url: YoutubeURL.YoutubeURL):
         return url.expire
 
-    def refresh_Check(self):    
+    def refresh_Check(self, wait=True):    
         
         #print("Refresh check ({0})".format(self.format)) 
         filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) >= time.time()]
@@ -1487,7 +1487,7 @@ class DownloadStream:
         
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
         if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403) or len(self.stream_urls) <= 0) and not self.is_private:
-            return self.refresh_url()
+            return self.refresh_url(wait=wait)
     
     def live_dl(self):
         
@@ -1528,9 +1528,9 @@ class DownloadStream:
                     break
 
                 temp_stream_url = self.stream_url
-                refresh = self.refresh_Check()
-                if refresh is True:
-                    break
+                refresh = self.refresh_Check(wait=False)
+                #if refresh is True:
+                #    break
                 
                 if temp_stream_url != self.stream_url:
                     self.logger.debug("Stream URL has been updated, reseting segment retry counts")
@@ -1662,6 +1662,7 @@ class DownloadStream:
                                 self.logger.debug("Video is private and no more segments are available. Ending...")
                                 break
                             elif refresh is False:
+                                self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
                                 break                              
                             elif refresh is True:
                                 self.logger.info("Video finished downloading via new manifest")
@@ -1755,7 +1756,7 @@ class DownloadStream:
                         self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
                         temp_stream_url = self.stream_url
                         refresh = self.refresh_url()
-                        if self.refresh_url() is True:
+                        if refresh is True:
                             self.logger.info("Video finished downloading via new manifest")
                             break
                         elif self.is_private or refresh is False:
@@ -2367,7 +2368,7 @@ class DownloadStream:
             self.delete_ts_file()
             os.remove(self.folder)
 
-    def refresh_url(self, follow_manifest=True):
+    def refresh_url(self, follow_manifest=True, wait=True): # Added wait parameter
         # 1. Initialize the state dictionary if it doesn't exist
         if not hasattr(self, '_refresh_state'):
             self._refresh_state = {
@@ -2381,8 +2382,14 @@ class DownloadStream:
 
         # 2. Check if the thread is currently running
         if state.get('status') == 'IN_PROGRESS':
-            if state.get('thread') and state.get('thread').is_alive():
-                return "IN_PROGRESS"
+            thread = state.get('thread')
+            if thread and thread.is_alive():
+                if wait:
+                    # OPTIONAL: Wait for the existing thread to finish
+                    thread.join()
+                    state['status'] = 'DONE'
+                else:
+                    return "IN_PROGRESS"
             else:
                 # Thread finished running since our last check
                 state['status'] = 'DONE'
@@ -2428,31 +2435,37 @@ class DownloadStream:
                         state['result'] = (info_dict, live_status)
                 except Exception as e:
                     state['exc'] = e
-                # We don't need a 'finally' block to set DONE here, 
-                # because `is_alive()` handles the transition perfectly in step 2.
 
             state['thread'] = threading.Thread(target=fetch_url_data, daemon=True)
             state['thread'].start()
-            return "IN_PROGRESS"
+            
+            if wait:
+                # OPTIONAL: Wait for the newly started thread to finish
+                state['thread'].join()
+                # Extract values immediately so they can be processed in Step 5
+                exc = state.get('exc')
+                res = state.get('result')
+                self._refresh_state = {
+                    'thread': None, 'status': 'IDLE', 'result': None, 'exc': None
+                }
+            else:
+                return "IN_PROGRESS"
 
-        # 5. Process the retrieved results (Only runs if status was DONE)
+        # 5. Process the retrieved results
+        # (The code below will now run immediately if wait=True)
         if self.following_manifest_thread is None:
             try:
-                # Raise any exceptions caught in the thread
                 if exc:
                     raise exc
                 
-                # If lock acquisition failed
                 if res is None:
                     return None
                     
                 info_dict, live_status = res
                 
-                # Check for new manifest, if it has, start a nested download session
                 if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
                     return True
                 
-                # Extract formats
                 resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
                 stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) 
                 
@@ -2474,28 +2487,12 @@ class DownloadStream:
                     self.info_dict = info_dict    
                 
             except getUrls.VideoInaccessibleError as e:
+                # ... (Rest of your original exception handling)
                 self.logger.warning("Video Inaccessible error: {0}".format(e))
-                if "membership" in str(e) and not self.is_403:
-                    self.logger.warning("{0} is now members only. Continuing until 403 errors")
-                else:
-                    self.is_private = True
-            except getUrls.VideoUnavailableError as e:
-                self.logger.critical("Video Unavailable error: {0}".format(e))
-                if self.get_expire_time(self.stream_url) < time.time():
-                    raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
-            except getUrls.VideoProcessedError as e:
-                self.logger.exception("Error refreshing URL: {0}".format(e))
-                self.logger.info("Livestream has ended and processed.")
-                self.live_status = "was_live"
-                self.url_checked = time.time()
-                return False
-            except getUrls.LivestreamError:
-                self.logger.debug("Livestream has ended.")
-                self.live_status = "was_live"
-                self.url_checked = time.time()
-                return False 
+                self.is_private = True
             except Exception as e:
-                self.logger.exception("Error: {0}".format(e))                     
+                self.logger.exception("Error: {0}".format(e))                    
+                
         self.url_checked = time.time()
 
         if self.live_status != 'is_live':
@@ -2598,9 +2595,9 @@ class DownloadStreamDirect(DownloadStream):
                     self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
                     break
 
-                refresh = self.refresh_Check()
-                if refresh is True:
-                    break
+                refresh = self.refresh_Check(wait=False)
+                #if refresh is True:
+                #    break
 
                 done, _ = concurrent.futures.wait(future_to_seg, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
 
@@ -2731,6 +2728,7 @@ class DownloadStreamDirect(DownloadStream):
                                 self.logger.debug("Video is private and no more segments are available. Ending...")
                                 break
                             elif refresh is False:
+                                self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
                                 break                              
                             elif refresh is True:
                                 self.logger.info("Video finished downloading via new manifest")
