@@ -2378,6 +2378,7 @@ class DownloadStream:
             os.remove(self.folder)
 
     def refresh_url(self, follow_manifest=True, wait=True): # Added wait parameter
+        exc = res = None
         # 1. Initialize the state dictionary if it doesn't exist
         if not hasattr(self, '_refresh_state'):
             self._refresh_state = {
@@ -2412,7 +2413,9 @@ class DownloadStream:
             self._refresh_state = {
                 'thread': None, 'status': 'IDLE', 'result': None, 'exc': None
             }
-        else:
+
+        # Only start refresh if manifest thread isn't activated
+        elif self.following_manifest_thread is None:
             # 4. Otherwise, we are IDLE. Start the background thread!
             self.logger.info("Starting background URL refresh for {0}".format(self.format))
             state['status'] = 'IN_PROGRESS'
