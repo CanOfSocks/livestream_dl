@@ -1317,6 +1317,10 @@ class FileInfo(Path):
         # We must NOT pass file_type or format to super().__init__
         kwargs.pop("file_type", None)
         kwargs.pop("format", None)
+        kwargs.pop("acodec", None)
+        kwargs.pop("vcodec", None)
+        kwargs.pop("language", None)
+        kwargs.pop("protocol", None)
         super().__init__(*args, **kwargs)
 
     @property
@@ -1437,6 +1441,7 @@ class DownloadStream:
         
         self.is_403 = False
         self.is_private = False
+        self.is_members_error = False
         self.estimated_segment_duration = 0
         self.refresh_retries = 0
         
@@ -1666,6 +1671,9 @@ class DownloadStream:
                             if self.is_private:
                                 self.logger.debug("Video is private and no more segments are available. Ending...")
                                 break
+                            elif self.is_members_error:
+                                self.logger.debug("Video turned members only, not accessible and no more segments are available. Ending...")
+                                break
                             elif refresh is False:
                                 self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
                                 break                              
@@ -1764,13 +1772,13 @@ class DownloadStream:
                         if refresh is True:
                             self.logger.info("Video finished downloading via new manifest")
                             break
-                        elif self.is_private or refresh is False:
+                        elif self.is_private or refresh is False or self.is_members_error:
                             # If stream URL has changed, refresh retry count and continue
                             if temp_stream_url != self.stream_url:
                                 self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
                                 segment_retries.clear()
                                 continue
-                            self.logger.warning("Failed to refresh URL or stream is private, ending...")
+                            self.logger.warning("Failed to refresh URL or stream is private/members only, ending...")
                             break
                         
                         else:
@@ -2114,7 +2122,8 @@ class DownloadStream:
             conn.execute('PRAGMA journal_mode = WAL;')
             conn.execute('PRAGMA synchronous = NORMAL;')
             conn.execute('PRAGMA page_size = 32768;')
-            conn.execute('PRAGMA cache_size = -64000;')
+            conn.execute('PRAGMA mmap_size = 52428200;')
+            conn.execute('PRAGMA cache_size = -4000;')
             # Optionally commit immediately to persist the PRAGMA settings
             conn.commit()
 
@@ -2374,6 +2383,7 @@ class DownloadStream:
             os.remove(self.folder)
 
     def refresh_url(self, follow_manifest=True, wait=True): # Added wait parameter
+        exc = res = None
         # 1. Initialize the state dictionary if it doesn't exist
         if not hasattr(self, '_refresh_state'):
             self._refresh_state = {
@@ -2408,7 +2418,9 @@ class DownloadStream:
             self._refresh_state = {
                 'thread': None, 'status': 'IDLE', 'result': None, 'exc': None
             }
-        else:
+
+        # Only start refresh if manifest thread isn't activated
+        elif self.following_manifest_thread is None:
             # 4. Otherwise, we are IDLE. Start the background thread!
             self.logger.info("Starting background URL refresh for {0}".format(self.format))
             state['status'] = 'IN_PROGRESS'
@@ -2485,6 +2497,7 @@ class DownloadStream:
                     self.stream_urls = filtered_array
                     self.refresh_retries = 0
                     self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Refreshed stream URL with {0} - {1}".format(stream_url.format_id, stream_url.fomat_note))
+                    self.is_members_error = False
                 else:
                     self.logger.warning("Unable to refresh URLs for {0} on format {2} ({1})".format(self.id, self.format, resolution))
                     
@@ -2494,10 +2507,13 @@ class DownloadStream:
                 if info_dict:
                     self.info_dict = info_dict    
 
+                
+
             except getUrls.VideoInaccessibleError as e:
                 self.logger.warning("Video Inaccessible error: {0}".format(e))
                 if "membership" in str(e) and not self.is_403:
                     self.logger.warning("{0} is now members only. Continuing until 403 errors")
+                    self.is_members_error = True
                 else:
                     self.is_private = True
             except getUrls.VideoUnavailableError as e:
@@ -2753,6 +2769,9 @@ class DownloadStreamDirect(DownloadStream):
                             if self.is_private:
                                 self.logger.debug("Video is private and no more segments are available. Ending...")
                                 break
+                            elif self.is_members_error:
+                                self.logger.debug("Video turned members only, not accessible and no more segments are available. Ending...")
+                                break
                             elif refresh is False:
                                 self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
                                 break                              
@@ -2778,12 +2797,21 @@ class DownloadStreamDirect(DownloadStream):
                     """
                     elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
                         self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
-                        refresh = self.refresh_url(follow_manifest=False)
+                        temp_stream_url = self.stream_url
+                        refresh = self.refresh_url(follow_manifest=False)                        
                         if refresh is True:
                             self.logger.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
                             break
                         elif self.is_private or refresh is False:
                             self.logger.warning("Failed to refresh URL or stream is private, ending...")
+                            break
+                        elif self.is_private or refresh is False or self.is_members_error:
+                            # If stream URL has changed, refresh retry count and continue
+                            if temp_stream_url != self.stream_url:
+                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
+                                segment_retries.clear()
+                                continue
+                            self.logger.warning("Failed to refresh URL or stream is private/members only, ending...")
                             break
                         else:
                             segment_retries.clear()
