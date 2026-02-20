@@ -34,7 +34,7 @@ COPY . .
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install -U --no-cache-dir --pre yt-dlp[default]
 
-RUN (sed -i "s/socs.value.startswith('CAA')/str(socs).startswith('CAA')/g" /usr/local/lib/python*/site-packages/chat_downloader/sites/youtube.py)
+#RUN sed -i "s/socs.value.startswith('CAA')/str(socs).startswith('CAA')/g" /usr/local/lib/python*/site-packages/chat_downloader/sites/youtube.py
 
 RUN mkdir -p /app/temp /app/downloads && chmod +x *.py
 
