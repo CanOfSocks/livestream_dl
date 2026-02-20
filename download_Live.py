@@ -1317,6 +1317,10 @@ class FileInfo(Path):
         # We must NOT pass file_type or format to super().__init__
         kwargs.pop("file_type", None)
         kwargs.pop("format", None)
+        kwargs.pop("acodec", None)
+        kwargs.pop("vcodec", None)
+        kwargs.pop("language", None)
+        kwargs.pop("protocol", None)
         super().__init__(*args, **kwargs)
 
     @property
