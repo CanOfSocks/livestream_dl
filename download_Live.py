@@ -2122,7 +2122,8 @@ class DownloadStream:
             conn.execute('PRAGMA journal_mode = WAL;')
             conn.execute('PRAGMA synchronous = NORMAL;')
             conn.execute('PRAGMA page_size = 32768;')
-            conn.execute('PRAGMA cache_size = -64000;')
+            conn.execute('PRAGMA mmap_size = 52428200;')
+            conn.execute('PRAGMA cache_size = -4000;')
             # Optionally commit immediately to persist the PRAGMA settings
             conn.commit()
 
