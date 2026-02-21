@@ -36,12 +36,13 @@ class MyLogger:
             else:
                 self.info(msg)
 
-    def info(self, msg):
-        msg_str = str(msg)
+	def info(self, msg):
+		msg_str = str(msg)
 		
+		# Detection of Member Messages (Member Videos Should Not Retry)
 		if "join this channel" in msg_str.lower() or "members-only" in msg_str.lower():
-            self.logger.error(f"Video is members-only: {msg_str}")
-            raise yt_dlp.utils.DownloadError("This video is for channel members only")
+			self.logger.error(f"Video is members-only: {msg_str}")
+			raise yt_dlp.utils.DownloadError("This video is for channel members only")
          
         # Check for specific warnings that require retry
         if ("should already be available" in msg_str.lower() or 
