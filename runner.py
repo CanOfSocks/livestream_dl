@@ -3,9 +3,11 @@ import argparse
 try:
     import getUrls
     import download_Live
+    import YoutubeURL
 except ModuleNotFoundError as e:
     from . import getUrls
     from . import download_Live
+    from . import YoutubeURL
 import ast
 import json
 
@@ -339,10 +341,18 @@ if __name__ == "__main__":
         options['ID'] = str(input("Please enter a video URL: ")).strip()
 
     if options.get('resolution', None) is None and (options.get('video_format', None) is None or options.get('audio_format', None) is None):
-        options['resolution'] = str(input("Please enter resolution: ")).strip()
+        resolution_input = str(input("Please enter resolution (default: bv+ba/best): ")).strip()
+        options['resolution'] = resolution_input or "bv+ba/best"
         
     id = options.get('ID')
     resolution = options.get('resolution')
+
+    alias: dict = YoutubeURL.quality_aliases.get(resolution, None)
+    if alias:
+        options['resolution'] = alias.get("format")
+        resolution = options.get('resolution')
+        if alias.get("sort"):
+            options['custom_sort'] = f"{options.get('custom_sort')},{alias.get("sort")}" if options.get('custom_sort') else alias.get("sort")
 
     download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True, redact_ips=options.get("redact_ips", False))
 

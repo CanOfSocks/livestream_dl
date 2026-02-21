@@ -441,3 +441,20 @@ class Formats:
                     urls.append(yt_url)
 
         return urls
+
+quality_aliases = {
+    "audio_only": {"format": "ba", "sort": None},
+    "144p": {"format": "bv+ba/best", "sort": "res:144"},
+    "240p": {"format": "bv+ba/best", "sort": "res:240"},
+    "360p": {"format": "bv+ba/best", "sort": "res:360"},
+    "480p": {"format": "bv+ba/best", "sort": "res:480"},
+    "720p": {"format": "bv+ba/best", "sort": "res:720"},
+    "720p60": {"format": "bv+ba/best", "sort": "res:720,fps:60"},
+    "1080p": {"format": "bv+ba/best", "sort": "res:1080"},
+    "1080p60": {"format": "bv+ba/best", "sort": "res:1080,fps:60"},
+    "1440p": {"format": "bv+ba/best", "sort": "res:1440"},
+    "1440p60": {"format": "bv+ba/best", "sort": "res:1440,fps:60"},
+    "2160p": {"format": "bv+ba/best", "sort": "res:2160"},
+    "2160p60": {"format": "bv+ba/best", "sort": "res:2160,fps:60"},
+    "best": {"format": "bv+ba/best", "sort": None},
+}

@@ -985,7 +985,7 @@ class LiveStreamDownloader:
 
                     # 1. Update info_dict
                     info_dict["requested_formats"].append({
-                        "file_path": str(file_info.absolute()),
+                        "filepath": str(file_info.absolute()),
                         "format": file_info._format,
                         "acodec": file_info._acodec or 'none',
                         "vcodec": file_info._vcodec or 'none',
@@ -1011,9 +1011,12 @@ class LiveStreamDownloader:
                 for (i, fmt) in enumerate(info_dict['requested_formats']):
                     if fmt.get('acodec') != 'none':
                         args.extend(['-map', f'{i}:a:0'])
-                        aac_fixup = fmt['protocol'].startswith('m3u8') and livestream_merger.get_audio_codec(fmt['filepath']) == 'aac'
-                        if aac_fixup:
-                            args.extend([f'-bsf:a:{audio_streams}', 'aac_adtstoasc'])
+                        try:
+                            aac_fixup = fmt['protocol'].startswith('m3u8') and livestream_merger.get_audio_codec(fmt['filepath']) == 'aac'
+                            if aac_fixup:
+                                args.extend([f'-bsf:a:{audio_streams}', 'aac_adtstoasc'])
+                        except Exception as e:
+                            self.logger.warning("Unable to fix aac: {0}: {1}".format(type(e).__name__, e))
                         if fmt.get("format"):
                             args.extend([f'-metadata:s:a:{audio_streams}', f'comment={fmt.get("format")}'])
                         audio_streams += 1
@@ -1376,7 +1379,7 @@ class DownloadStream:
         self.force_m3u8 = self.options.get('force_m3u8', False)
         
         self.resolution = options.get("resolution", "best")
-        self.yt_dlp_sort = self.options.get('yt_dlp_sort')
+        self.yt_dlp_sort = self.options.get('custom_sort')
         
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
@@ -2032,9 +2035,10 @@ class DownloadStream:
             self.logger.warning("Unable to find stream of same format ({0}) for {1}".format(resolution, self.id))
             
         try:
-            if YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) is not None:
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type, sort=self.options.get("format_sort"))
+            if temp_stream_url is not None:
                 self.logger.debug("Searching for new manifest of same resolution {0}".format(resolution))
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
+                
                 if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
                     self.logger.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
                     self.commit_batch(self.conn)
@@ -2073,43 +2077,45 @@ class DownloadStream:
             self.logger.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
 
         try:
-            if self.resolution != "audio_only" and YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="bv+ba/best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) is not None:
-                self.logger.debug("Searching for new best stream")
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="bv+ba/best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
-                if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
-                    self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
-                    self.commit_batch(self.conn)
-                    if follow_manifest:
-                        #new_params = copy.copy(self.params)
-                        new_options = copy.copy(self.options)
-                        new_options.update({
-                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                            "resolution": "bv+ba/best",
-                        })
-                        new_params.update({
-                            "info_dict": info_json,
-                            "stream_url": temp_stream_url,                            
-                            "options": new_options,
-                            "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
-                        })
-                        if new_params.get("download_function", None) is not None: 
-                            self.following_manifest_thread = threading.Thread(
-                                target=new_params.get("download_function"),
-                                kwargs=new_params,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        else:
-                            download_Instance = self.__class__(**new_params)
-                            self.following_manifest_thread = threading.Thread(
-                                target=download_Instance.live_dl,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        new_options = None
-                    return True
-                else:
-                    return False
+            if self.resolution != "audio_only":
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="bv+ba/best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type, sort=self.options.get("format_sort"))
+                if temp_stream_url is not None:
+                    self.logger.debug("Searching for new best stream")
+                    
+                    if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
+                        self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
+                        self.commit_batch(self.conn)
+                        if follow_manifest:
+                            #new_params = copy.copy(self.params)
+                            new_options = copy.copy(self.options)
+                            new_options.update({
+                                "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
+                                "resolution": "bv+ba/best",
+                            })
+                            new_params.update({
+                                "info_dict": info_json,
+                                "stream_url": temp_stream_url,                            
+                                "options": new_options,
+                                "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
+                            })
+                            if new_params.get("download_function", None) is not None: 
+                                self.following_manifest_thread = threading.Thread(
+                                    target=new_params.get("download_function"),
+                                    kwargs=new_params,
+                                    daemon=True
+                                )
+                                self.following_manifest_thread.start()
+                            else:
+                                download_Instance = self.__class__(**new_params)
+                                self.following_manifest_thread = threading.Thread(
+                                    target=download_Instance.live_dl,
+                                    daemon=True
+                                )
+                                self.following_manifest_thread.start()
+                            new_options = None
+                        return True
+                    else:
+                        return False
         except yt_dlp.utils.ExtractorError as e:
             self.logger.warning("Unable to find any stream for {1} when attempting to find 'best' stream".format(self.resolution, self.id))
         return False
@@ -2927,7 +2933,7 @@ class StreamRecovery(DownloadStream):
         self.proxies, self.mounts = self.process_proxies_for_httpx(proxies=self.options.get('proxies'))
         
         self.resolution = options.get("resolution", "best")
-        self.yt_dlp_sort = self.options.get('yt_dlp_sort')
+        self.yt_dlp_sort = self.options.get('custom_sort')
 
         if stream_urls:
             self.logger.debug("{0} stream urls available".format(len(stream_urls)))
