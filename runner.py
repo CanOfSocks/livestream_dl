@@ -339,7 +339,8 @@ if __name__ == "__main__":
         options['ID'] = str(input("Please enter a video URL: ")).strip()
 
     if options.get('resolution', None) is None and (options.get('video_format', None) is None or options.get('audio_format', None) is None):
-        options['resolution'] = str(input("Please enter resolution: ")).strip()
+        resolution_input = str(input("Please enter resolution (default: bv+ba/best): ")).strip()
+        options['resolution'] = resolution_input or "bv+ba/best"
         
     id = options.get('ID')
     resolution = options.get('resolution')
