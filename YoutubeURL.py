@@ -443,6 +443,7 @@ class Formats:
         return urls
 
 quality_aliases = {
+    "audio_only": {"format": "ba", "sort": None},
     "144p": {"format": "bv+ba/best", "sort": "res:144"},
     "240p": {"format": "bv+ba/best", "sort": "res:240"},
     "360p": {"format": "bv+ba/best", "sort": "res:360"},
@@ -455,5 +456,5 @@ quality_aliases = {
     "1440p60": {"format": "bv+ba/best", "sort": "res:1440,fps:60"},
     "2160p": {"format": "bv+ba/best", "sort": "res:2160"},
     "2160p60": {"format": "bv+ba/best", "sort": "res:2160,fps:60"},
-    "best": {"format": "bv+ba/best", "sort": None}
+    "best": {"format": "bv+ba/best", "sort": None},
 }
