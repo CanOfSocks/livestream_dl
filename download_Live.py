@@ -1379,7 +1379,7 @@ class DownloadStream:
         self.force_m3u8 = self.options.get('force_m3u8', False)
         
         self.resolution = options.get("resolution", "best")
-        self.yt_dlp_sort = self.options.get('yt_dlp_sort')
+        self.yt_dlp_sort = self.options.get('custom_sort')
         
         self.id = info_dict.get('id')
         self.live_status = info_dict.get('live_status')
@@ -2933,7 +2933,7 @@ class StreamRecovery(DownloadStream):
         self.proxies, self.mounts = self.process_proxies_for_httpx(proxies=self.options.get('proxies'))
         
         self.resolution = options.get("resolution", "best")
-        self.yt_dlp_sort = self.options.get('yt_dlp_sort')
+        self.yt_dlp_sort = self.options.get('custom_sort')
 
         if stream_urls:
             self.logger.debug("{0} stream urls available".format(len(stream_urls)))
