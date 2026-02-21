@@ -164,7 +164,7 @@ def _handle_retry_wait(logger, yt_dlpLogger, current_try, max_retries, extractio
     wait_time = yt_dlpLogger.get_wait_time()
     
     # Update retry count
-    yt_dlpLogger.retry_count = current_try + 1
+    yt_dlpLogger.retry_count = current_try
     
     # Completely silent wait, no message output
     end_time = time.time() + wait_time
