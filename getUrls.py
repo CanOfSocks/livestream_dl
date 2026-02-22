@@ -184,7 +184,7 @@ def get_Video_Info(
             ydl_opts['proxy'] = next(iter(proxy.values()), None)
 
     # Handle Formats
-    ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": ["live_adaptive","incomplete","duplicate"]})
+    ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).update({"formats": ["incomplete","duplicate"]})
     
     skip_list = ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {}).setdefault("skip", [])
     if not include_dash:
