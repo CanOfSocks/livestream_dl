@@ -53,9 +53,7 @@ Refer to [Usage](https://github.com/CanOfSocks/livestream_dl#usage) for options.
 
 ---
 
-## Important: Modification of yt-dlp
-
-### **This step is no longer required for (nightly releases) of yt-dlp after 19/02/2026 as this was fixed in core yt-dlp**. This section will be removed once it is moved into a release version.
+## Important: Modification of yt-dlp (No longer required with yt-dlp releases after 2026.2.21
 
 **Note:** This step is required **only** if you want to use the default adaptive stream URLs which support private stream recovery. If you prefer not to modify files, you can use the `--dash` or `--m3u8` flags (see Options below), though these have limitations regarding recovery.
 
