@@ -1472,7 +1472,9 @@ class DownloadStream:
         self.update_latest_segment()
         self.url_checked = time.time()
         
-        self.conn = self.create_db(self.temp_db_file)   
+        self.conn = self.create_db(self.temp_db_file)  
+
+        self._refresh_state = {} 
         
         if self.livestream_coordinator:
             self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
@@ -3062,6 +3064,7 @@ class StreamRecovery(DownloadStream):
         self.count_403s = {}        
         self.user_agent_403s = {}
         self.user_agent_full_403s = {}
+        self._refresh_state = {} 
         
         # Ensure stats are set for the correct type
         if self.type and self.livestream_coordinator:
