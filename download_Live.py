@@ -1071,6 +1071,8 @@ class LiveStreamDownloader:
                                 self.logger.debug("Replacing thumbnail with .png version")
                                 file_names.pop('thumbnail').unlink(missing_ok=True)                
                                 file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
+                                if not file_names.get('thumbnail', None):
+                                    self.logger.error("Unable to find converted thumbnail")
                                 del result
                             except subprocess.CalledProcessError as e:
                                 self.logger.error(e.stderr)
@@ -1107,14 +1109,17 @@ class LiveStreamDownloader:
                             self.logger.error("Unable to find info.json file {0}".format(file_names.get("info_json")))               
                 
                 if thumbnail is not None:
-                    if ext.lower() == ".mkv": # If file will be mkv, attach file instead
-                        # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
-                        guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
-                        mime_type, _ = guess(file_names.get('thumbnail'))  
-                        args.extend(['-attach', str(file_names.get('thumbnail').absolute()), f"-metadata:s:t:{attachments}", "filename=cover{0}".format(file_names.get('thumbnail').suffix), f"-metadata:s:t:{attachments}", "mimetype={0}".format(mime_type or "application/octet-stream")])
-                        attachments += 1
-                    else: # For other formats, attach using disposition instead
-                        args.extend(['-disposition:{0}'.format(thumbnail), 'attached_pic'])
+                    if file_names.get('thumbnail', None) is not None:
+                        if ext.lower() == ".mkv": # If file will be mkv, attach file instead
+                            # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
+                            guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
+                            mime_type, _ = guess(file_names.get('thumbnail'))  
+                            args.extend(['-attach', str(file_names.get('thumbnail').absolute()), f"-metadata:s:t:{attachments}", "filename=cover{0}".format(file_names.get('thumbnail').suffix), f"-metadata:s:t:{attachments}", "mimetype={0}".format(mime_type or "application/octet-stream")])
+                            attachments += 1
+                        else: # For other formats, attach using disposition instead
+                            args.extend(['-disposition:{0}'.format(thumbnail), 'attached_pic'])
+                    else:
+                        self.logger.error("Thumbnail assigned by not in dictionary, index: {0}".format(thumbnail))
                     
                 merged_file = FileInfo(base_output, file_type='merged')
                 try:                    
