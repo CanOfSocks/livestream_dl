@@ -189,6 +189,9 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--stats-as-json` | `False` | Prints download statistics as a JSON string (bypasses log level). |
 | `--new-line` | `False` | Ensures console messages always print to a new line (useful for some terminals). |
 | `--redact-ips` | `False` | Redact IP addresses from logs. May be imperfect, so check logs if necessary. |
+| `--log-rotate-when` | `None` | Type of interval for log rotation (S, M, H, D, midnight, W0-W6). If not set, rotation is disabled. |
+| `--log-rotate-interval` | `1` | Interval for log rotation. |
+| `--log-backup-count` | `30` | Number of rotated log files to keep. |
 
 ### Channel Monitoring
 

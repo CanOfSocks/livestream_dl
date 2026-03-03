@@ -309,7 +309,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--log-rotate-when", type=str, default=None, help="Type of interval for log rotation (S, M, H, D, midnight, W0-W6). If not set, rotation is disabled.")
     parser.add_argument("--log-rotate-interval", type=int, default=1, help="Interval for log rotation. Default: 1")
-    parser.add_argument("--log-backup-count", type=int, default=30, help="Number of log files to keep. Default: 30")
+    parser.add_argument("--log-backup-count", type=int, default=30, help="Number of rotated log files to keep. Default: 30")
 
     parser.add_argument('--redact-ips', action='store_true', help="Remove IP addresses from logs. Warning: May be imperfect, so check logs to make sure IP information has been redacted.")
 
