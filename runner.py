@@ -106,7 +106,7 @@ def httpx_proxy(proxy_string: str):
         return proxy_string
 
 def main(id, resolution='bv+ba/best', options: dict={}, info_dict=None, thread_kill: threading.Event=kill_all):
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id, redact_ips=options.get("redact_ips", False))
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id, redact_ips=options.get("redact_ips", False), file_options={"when": "midnight", "backupCount": 30, "interval": 1})
 
     # Initialise yt-dlp logger
     #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
@@ -134,7 +134,7 @@ def main(id, resolution='bv+ba/best', options: dict={}, info_dict=None, thread_k
 
 def monitor_channel(options={}):
     import copy
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Monitor", redact_ips=options.get("redact_ips", False))
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Monitor", redact_ips=options.get("redact_ips", False), file_options={"when": "midnight", "backupCount": 30, "interval": 1})
     #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
     import monitor_channel
     from typing import Dict
@@ -361,7 +361,7 @@ if __name__ == "__main__":
         if alias.get("sort"):
             options['custom_sort'] = f"{options.get('custom_sort')},{alias.get("sort")}" if options.get('custom_sort') else alias.get("sort")
 
-    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True, redact_ips=options.get("redact_ips", False))
+    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True, redact_ips=options.get("redact_ips", False), file_options={"when": "midnight", "backupCount": 30, "interval": 1})
 
     if options.get("redact_ips", False):
         import logging
