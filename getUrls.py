@@ -70,24 +70,24 @@ class ExtractionLogger:
         # 1. Check Info-Level Keywords
         if any(k in msg_str for k in self.INFO_IGNORE_KEYWORDS):
             self.logger.info(msg)
-            return # Don't raise, just log
+            
         
-        if any(k in msg_str for k in self.INFO_RAISE_KEYWORDS):
+        elif any(k in msg_str for k in self.INFO_RAISE_KEYWORDS):
             self.logger.info(msg)
             raise yt_dlp.utils.DownloadError(msg_str)
 
         # 2. Check Warning-Level Keywords
-        if any(k in msg_str for k in self.WARNING_RAISE_KEYWORDS):
+        elif any(k in msg_str for k in self.WARNING_RAISE_KEYWORDS):
             self.logger.warning(msg)
             raise yt_dlp.utils.DownloadError(msg_str)
 
         # 3. Check Error-Level Keywords
-        if any(k in msg_str for k in self.ERROR_RAISE_KEYWORDS):
+        elif any(k in msg_str for k in self.ERROR_RAISE_KEYWORDS):
             self.logger.error(msg)
             raise yt_dlp.utils.DownloadError(msg_str)
 
-        # Fallback
-        self.logger.warning(msg)
+        else:
+            self.logger.warning(msg)
 
         # Loop protection
         if (not self.wait) and len(self.warning_history) >= self.repeat_threshold and len(set(self.warning_history)) == 1:
