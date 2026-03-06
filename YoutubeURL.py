@@ -238,7 +238,7 @@ class Formats:
         self.protocol = None
         self.logger = logger
         
-    def getFormats(self, info_json, resolution, sort=None, raw=False, include_dash=True, include_m3u8=False, force_m3u8=False, logger: logging = logging.getLogger(), base_path=None, ydl_options: dict={}, **kwargs) -> dict[str, Any]: 
+    def getFormats(self, info_json: dict, resolution, sort=None, raw=False, include_dash=True, include_m3u8=False, force_m3u8=False, logger: logging = logging.getLogger(), base_path=None, ydl_options: dict={}, **kwargs) -> dict[str, Any]: 
         self.logger = logger    
         resolution = str(resolution).strip()               
                     
@@ -283,6 +283,7 @@ class Formats:
         #print("Searching for resolution: {0}".format(resolution))
 
         #try:
+        info_json.pop("requested_formats", None)
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.process_ie_result(info_json)
             return info

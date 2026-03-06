@@ -337,12 +337,13 @@ class LiveStreamDownloader:
                 format_extractor_options = {}
                 if options.get("ext", None):
                     format_extractor_options.update({"merge_output_format": options.get("ext", "").strip(" .")})
+                
                 formats_info = format_handler.getFormats(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None), include_dash=(options.get("dash", False) and not options.get('recovery', False)), include_m3u8=options.get("m3u8", False), force_m3u8=options.get("force_m3u8", False), base_path=base_output, ydl_options=format_extractor_options)
 
                 stream_urls = []
                 #with open("data.json", "w", encoding="utf-8") as json_file:
                 #    json.dump(formats_info, json_file, indent=4)
-                
+
                 for format_info in formats_info.get('requested_formats') or [formats_info]:
                     format_obj: YoutubeURL.YoutubeURL = None
                     if format_info.get('protocol', "") == "http_dash_segments":
@@ -890,7 +891,7 @@ class LiveStreamDownloader:
             def run(self, info):
                 super().run(info)           
 
-            def real_run_ffmpeg(self, input_path_opts, output_path_opts, *, expected_retcodes=(0,)):
+            def real_run_ffmpeg(self, input_path_opts, output_path_opts, *, merge=True, expected_retcodes=(0,)):
                 self.check_version()
 
                 oldest_mtime = min(
@@ -923,6 +924,9 @@ class LiveStreamDownloader:
                 self.write_debug(f'ffmpeg command line: {command_string}')
                 with open(self.ffmpeg_command_file, 'w', encoding="utf-8") as f:
                     f.write(command_string + "\n")
+
+                if not merge:
+                    return None
                 _, stderr, returncode = Popen.run(
                     cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
                 
@@ -1118,11 +1122,15 @@ class LiveStreamDownloader:
 
                     
                 merged_file = FileInfo(base_output, file_type='merged')
-                try:                    
-                    self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Merging streams into {merged_file}")
+                do_merge = options.get("merge", True)
+                try:            
+                    if do_merge:        
+                        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Merging streams into {merged_file}")
+                    else:
+                        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Writing ffmpeg command instead of merging")
                     livestream_merger.real_run_ffmpeg(
                         [(path, input_args) for path in files],
-                        [(str(merged_file.absolute()), args)])
+                        [(str(merged_file.absolute()), args)], merge=do_merge)
                 except subprocess.CalledProcessError as e:
                     self.logger.error(e.stderr)
                     self.logger.critical(e)
@@ -1131,13 +1139,14 @@ class LiveStreamDownloader:
                 except FFmpegPostProcessorError as e:
                     self.logger.exception(e)
                     raise e
-            
-                file_names["streams"][manifest]['merged'] = merged_file
-                self.logger.info("Successfully merged files into: {0}".format(file_names["streams"][manifest].get('merged').absolute()))
+
+                if do_merge:
+                    file_names["streams"][manifest]['merged'] = merged_file
+                    self.logger.info("Successfully merged files into: {0}".format(file_names["streams"][manifest].get('merged').absolute()))
                 
                 
                 # Remove temp video and audio files
-                if not (options.get('keep_ts_files') or options.get('keep_temp_files')):
+                if not (options.get('keep_ts_files') or options.get('keep_temp_files') or do_merge):
                     if file_names["streams"][manifest].get('video'): 
                         self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('video').absolute()))
                         file_names["streams"][manifest].get('video').unlink(missing_ok=True)

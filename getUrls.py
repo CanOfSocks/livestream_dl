@@ -105,7 +105,6 @@ class VideoUnavailableError(ValueError): pass
 class LivestreamError(TypeError): pass
 class MaxRetryExceededError(Exception): pass
 class RateLimitException(HTTPStatusError): pass
-class RateLimitException(HTTPStatusError): pass
 
 class RepeatedWarningError(Exception):
     """Exception raised when a log message is repeated beyond the allowed threshold."""
