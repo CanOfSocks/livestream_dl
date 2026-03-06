@@ -811,6 +811,7 @@ class LiveStreamDownloader:
             'outtmpl': base_output,
             'retries': 10,
             'logger': YTDLP_Auxiliary_logger(logger=logger),
+            'format': options.get("resolution", "bv+ba/best")
         }
         if options.get('proxy', None) is not None:
             ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
@@ -1315,7 +1316,7 @@ class LiveStreamDownloader:
 
                     # Set last attempt time before and after to ensure that a time is captured on an error
                     self.last_refresh_attempt = time.monotonic()
-                    self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True, ignore_no_formats=ignore_no_formats, logger=logger)
+                    self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True, ignore_no_formats=ignore_no_formats, logger=logger,)
                     self.last_refresh_attempt = time.monotonic()
 
                     # Remove unnecessary items for info.json used purely for url refresh
@@ -1428,7 +1429,7 @@ class DownloadStream:
         self.include_m3u8 = self.options.get('include_m3u8', False)
         self.force_m3u8 = self.options.get('force_m3u8', False)
         
-        self.resolution = options.get("resolution", "best")
+        self.resolution = options.get("resolution", "bv+ba/best")
         self.yt_dlp_sort = self.options.get('custom_sort')
         
         self.id = info_dict.get('id')
