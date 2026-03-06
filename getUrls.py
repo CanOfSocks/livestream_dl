@@ -254,9 +254,9 @@ def get_Video_Info(
             elif "sign in to confirm your age" in err_str or "age-restricted" in err_str:
                 raise VideoInaccessibleError("Video is age-restricted and requires valid cookies")
             elif "copyright claim" in err_str:
-                raise VideoUnavailableError("Video removed due to a copyright claim")
+                raise VideoInaccessibleError("Video removed due to a copyright claim")
             elif "video has been removed" in err_str or "incomplete youtube id" in err_str or "invalid video id" in err_str:
-                raise VideoUnavailableError("Video has been removed or ID is invalid")
+                raise VideoInaccessibleError("Video has been removed or ID is invalid")
             else:
                 raise e
         except RepeatedWarningError as e:

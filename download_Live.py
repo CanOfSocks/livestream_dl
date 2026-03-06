@@ -2576,8 +2576,7 @@ class DownloadStream:
                     self.live_status = "post_live"
             except getUrls.VideoUnavailableError as e:
                 self.logger.critical("Video Unavailable error: {0}".format(e))
-                if self.get_expire_time(self.stream_url) < time.time():
-                    raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
+                
             except getUrls.VideoProcessedError as e:
                 # Livestream has been processed
                 self.logger.exception("Error refreshing URL: {0}".format(e))
@@ -2590,6 +2589,9 @@ class DownloadStream:
                 self.logger.exception("Error: {0}".format(e))                 
                 
         self.url_checked = time.time()
+
+        if self.get_expire_time(self.stream_url) < time.time():
+            raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
 
         if self.live_status not in ['is_live', 'is_upcoming']:
             self.logger.debug("Livestream has ended.")
