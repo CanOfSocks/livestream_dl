@@ -1,0 +1,20 @@
+# Git metadata
+.git
+*.gitignore
+*.gitattributes
+*.gitmodules
+.github/
+
+# Optional: CI/CD & local IDE config
+.vscode/
+.idea/
+.env
+.DS_Store
+
+# Build artifacts and dependencies (Standard examples)
+node_modules/
+dist/
+build/
+target/
+__pycache__/
+*.log
