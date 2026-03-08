@@ -1149,12 +1149,18 @@ class LiveStreamDownloader:
                 # Remove temp video and audio files
                 if do_merge and not (options.get('keep_ts_files') or options.get('keep_temp_files')):
                     if file_names["streams"][manifest].get('video'): 
-                        self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('video').absolute()))
-                        file_names["streams"][manifest].get('video').unlink(missing_ok=True)
+                        try:
+                            self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('video').absolute()))
+                            file_names["streams"][manifest].get('video').unlink(missing_ok=True)
+                        except Exception as e:
+                            self.logger.exception("Unable to remove video .ts file")
                         file_names["streams"][manifest].pop('video',None)
                     if file_names["streams"][manifest].get('audio'): 
-                        self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('audio').absolute()))
-                        file_names["streams"][manifest].get('audio').unlink(missing_ok=True)
+                        try:
+                            self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('audio').absolute()))
+                            file_names["streams"][manifest].get('audio').unlink(missing_ok=True)
+                        except Exception as e:
+                            self.logger.exception("Unable to remove video .ts file")
                         file_names["streams"][manifest].pop('audio',None)       
             del ydl
         return file_names
