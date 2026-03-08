@@ -1147,7 +1147,7 @@ class LiveStreamDownloader:
                 
                 
                 # Remove temp video and audio files
-                if not (options.get('keep_ts_files') or options.get('keep_temp_files') or do_merge):
+                if do_merge and not (options.get('keep_ts_files') or options.get('keep_temp_files')):
                     if file_names["streams"][manifest].get('video'): 
                         self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('video').absolute()))
                         file_names["streams"][manifest].get('video').unlink(missing_ok=True)
