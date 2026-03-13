@@ -11,11 +11,8 @@ ARG PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-# Define the commit hash for the build argument
-ARG COMMIT_HASH
-
 # Only create the file if COMMIT_HASH is not empty
-RUN if [ -n "$COMMIT_HASH" ]; then echo "$COMMIT_HASH" > /app/commit_hash; fi
+RUN [ -n "$COMMIT_HASH" ] && echo "Commit: $COMMIT_HASH" && echo "$COMMIT_HASH" > /app/commit_hash || echo "[Debug] No hash provided."
 
 # 1. Install Alpine-native tools (FFmpeg and Python use these)
 RUN apk add --no-cache ffmpeg
