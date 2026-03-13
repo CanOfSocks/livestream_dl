@@ -1035,6 +1035,8 @@ class LiveStreamDownloader:
                 args = ['-c', 'copy']
                 audio_streams = 0
                 video_streams = 0
+                attachments = 0
+
                 for (i, fmt) in enumerate(info_dict['requested_formats']):
                     if fmt.get('acodec') != 'none':
                         args.extend(['-map', f'{i}:a:0'])
@@ -1082,9 +1084,16 @@ class LiveStreamDownloader:
                                 self.logger.critical(e)
                     
                         thumbnail = index    
-                        if not ext.lower() == ".mkv": # Don't add input file for mkv, use attach later
+                        if ext.lower() == ".mkv": # Don't add input file for mkv, use attach later
+                            # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
+                            guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
+                            mime_type, _ = guess(file_names.get('thumbnail'))  
+                            args.extend(['-attach', str(file_names.get('thumbnail').absolute()), f"-metadata:s:t:{attachments}", "filename=cover{0}".format(file_names.get('thumbnail').suffix), f"-metadata:s:t:{attachments}", "mimetype={0}".format(mime_type or "application/octet-stream")])
+                            attachments += 1
+                        else:
                             files.append(str(file_names.get('thumbnail').absolute()))  
-                            args.extend(['-map', f'{index}'])                 
+                            args.extend(['-map', f'{index}:v:0', '-disposition:v:{0}'.format(video_streams), 'attached_pic'])     
+                            video_streams += 1           
                             index += 1
                     else:
                         self.logger.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
@@ -1094,10 +1103,7 @@ class LiveStreamDownloader:
 
                 # From FFmpegMetadataPP
                 if livestream_merger._add_metadata:
-                    args.extend(item for pair in livestream_merger._get_metadata_opts(info_dict) for item in pair)
-
-
-                attachments = 0
+                    args.extend(item for pair in livestream_merger._get_metadata_opts(info_dict) for item in pair)                
                 
                 if livestream_merger._add_infojson:
                     if info_dict['ext'] in ('mkv', 'mka') and file_names.get("info_json"):
@@ -1109,19 +1115,8 @@ class LiveStreamDownloader:
                                 ])                        
                             attachments += 1
                         else:
-                            self.logger.error("Unable to find info.json file {0}".format(file_names.get("info_json")))               
-                
-                if thumbnail is not None:
-                    if ext.lower() == ".mkv": # If file will be mkv, attach file instead
-                        # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
-                        guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
-                        mime_type, _ = guess(file_names.get('thumbnail'))  
-                        args.extend(['-attach', str(file_names.get('thumbnail').absolute()), f"-metadata:s:t:{attachments}", "filename=cover{0}".format(file_names.get('thumbnail').suffix), f"-metadata:s:t:{attachments}", "mimetype={0}".format(mime_type or "application/octet-stream")])
-                        attachments += 1
-                    else: # For other formats, attach using disposition instead
-                        args.extend(['-disposition:{0}'.format(thumbnail), 'attached_pic'])
+                            self.logger.error("Unable to find info.json file {0}".format(file_names.get("info_json")))             
 
-                    
                 merged_file = FileInfo(base_output, file_type='merged')
                 do_merge = options.get("merge", True)
                 try:            
