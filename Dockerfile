@@ -12,7 +12,9 @@ ARG PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 
 ARG COMMIT_HASH
-ENV APP_COMMIT=${COMMIT_HASH}
+ENV COMMIT_HASH=${COMMIT_HASH}
+
+RUN echo "${COMMIT_HASH}"
 
 # 1. Install Alpine-native tools (FFmpeg and Python use these)
 RUN apk add --no-cache ffmpeg
