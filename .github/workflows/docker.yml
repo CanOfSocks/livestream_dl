@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
 
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
       - name: Determine git sha to checkout
         uses: haya14busa/action-cond@v1
         id: gitsha
@@ -25,9 +28,6 @@ jobs:
           cond: ${{ github.event_name == 'pull_request' }}
           if_true: ${{ github.event.pull_request.head.sha }}
           if_false: ${{ github.sha }}
-
-      - name: Checkout repo
-        uses: actions/checkout@v3
 
       # --- NEW STEPS FOR MULTI-ARCH SUPPORT ---
       - name: Set up QEMU
