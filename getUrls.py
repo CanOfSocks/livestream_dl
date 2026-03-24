@@ -6,7 +6,7 @@ import time
 import argparse
 import threading
 from typing import Optional, Union, Dict, Any, Tuple
-from httpx import HTTPStatusError
+#from httpx import HTTPStatusError
 from collections import deque
 
 try:
@@ -104,7 +104,7 @@ class VideoProcessedError(ValueError): pass
 class VideoUnavailableError(ValueError): pass
 class LivestreamError(TypeError): pass
 class MaxRetryExceededError(Exception): pass
-class RateLimitException(HTTPStatusError): pass
+class RateLimitException(ConnectionRefusedError): pass
 
 class RepeatedWarningError(Exception):
     """Exception raised when a log message is repeated beyond the allowed threshold."""
