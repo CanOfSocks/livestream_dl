@@ -349,9 +349,9 @@ if __name__ == "__main__":
 
     parser.add_argument('--ytdlp-command-line-options', type=str, default=None, help='Pass yt-dlp command line options. This must be passed as a single string, recommended --ytdlp-command-line-options="options..." e.g. --ytdlp-command-line-options="--cookies-from-browser firefox" . Only currently works for yt-dlp extractor. Requires https://github.com/yt-dlp/yt-dlp/blob/master/devscripts/cli_to_api.py to be available. (EXPERIMENTAL)')
 
-    parser.add_argument('--start-time', type=parse_time_to_seconds, default=None, help="Start time of the recording in hh:mm:ss format (based on stream duration).")
+    parser.add_argument('--start-time', type=parse_time_to_seconds, default=None, help="Start time of the recording in hh:mm:ss format (based on stream duration) (EXPERIMENTAL).")
     
-    parser.add_argument('--end-time', type=parse_time_to_seconds, default=None, help="End time of the recording in hh:mm:ss format (based on stream duration).")
+    parser.add_argument('--end-time', type=parse_time_to_seconds, default=None, help="End time of the recording in hh:mm:ss format (based on stream duration) (EXPERIMENTAL).")
 
     monitor_group = parser.add_argument_group('Channel Monitor Options')
 
