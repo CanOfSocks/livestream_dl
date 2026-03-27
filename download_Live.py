@@ -1587,6 +1587,21 @@ class DownloadStream:
 
             thread_windows_size = self.max_workers*2
 
+            start_time = self.options.get('start_time')
+            end_time = self.options.get('end_time')
+            start_seg = 0
+            end_seg = float('inf')
+
+            # We only care about duration if start or end times are actually provided
+            needs_segment_calc = start_time is not None or end_time is not None
+
+            if needs_segment_calc and self.estimated_segment_duration > 0:
+                if start_time is not None:
+                    start_seg = int(start_time // self.estimated_segment_duration)
+                if end_time is not None:
+                    end_seg = -int(-end_time // self.estimated_segment_duration)
+                needs_segment_calc = False
+
             while True:     
                 self.check_kill(executor)
 
@@ -1602,7 +1617,35 @@ class DownloadStream:
                 if temp_stream_url != self.stream_url:
                     self.logger.debug("Stream URL has been updated, reseting segment retry counts")
                     segment_retries.clear()
-                del temp_stream_url
+                del temp_stream_url                
+
+                if needs_segment_calc and self.estimated_segment_duration <= 0:
+                    try:
+                        headers = self.get_Headers(url=self.stream_url, client=client)
+                        # Calculating duration once
+                        h_time = int(headers.get("X-Head-Time-Sec", 0))
+                        h_seq = int(headers.get("X-Head-Seqnum", 0))
+                        
+                        if h_seq > 0:
+                            self.estimated_segment_duration = h_time / h_seq
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Unable to determine segment duration: {e}")
+
+                    # Check if we succeeded in getting a duration
+                    if self.estimated_segment_duration > 0:
+                        if start_time is not None:
+                            start_seg = int(start_time // self.estimated_segment_duration)
+                        if end_time is not None:
+                            end_seg = -int(-end_time // self.estimated_segment_duration)
+                        
+                        # Stop checking this block for the rest of the loop's life
+                        needs_segment_calc = False 
+                        self.logger.debug(f"Segments calculated: Start={start_seg}, End={end_seg}")
+                    else:
+                        self.logger.debug("Unable to determine segment duration, retrying...")
+                        self.smart_sleep(2)
+                        continue
 
                 if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
                     self.livestream_coordinator.stats[self.type] = {}
@@ -1633,10 +1676,17 @@ class DownloadStream:
                             self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
                             self.latest_sequence = head_seg_num
                             if self.livestream_coordinator:
-                                self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
+                                if start_seg != 0 or end_seg != float('inf'):
+                                    self.livestream_coordinator.stats[self.type]["latest_sequence"] = max(0, min(self.latest_sequence, end_seg) - start_seg)
+                                else:
+                                    self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
                             
                         if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
                             self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
+                            if start_time is not None:
+                                start_seg = int(start_time // self.estimated_segment_duration)
+                            if end_time is not None:
+                                end_seg = -(int(-end_time // self.estimated_segment_duration))
                         
                         #if headers and headers.get('X-Bandwidth-Est', None):
                         #    stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
@@ -1677,12 +1727,14 @@ class DownloadStream:
                 optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1
 
                 # Check if optimistic segment has already downloaded or not
-                if optimistic_seg not in self.already_downloaded and self.segment_exists(optimistic_seg):
+                if start_seg <= optimistic_seg <= end_seg and optimistic_seg not in self.already_downloaded and self.segment_exists(optimistic_seg):
                     self.already_downloaded.add(optimistic_seg)
                     
                 segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(self.pending_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
 
-                  
+                # Check if range has been limited
+                if start_seg != 0 or end_seg != float('inf'):
+                    segments_to_download = {x for x in segments_to_download if start_seg <= x <= end_seg}
                                         
                 # If segments remain to download, don't bother updating and wait for segment download to refresh values.
                 """
@@ -1698,7 +1750,7 @@ class DownloadStream:
 
                 # Add optimistic segment if conditions are right
                 # Only attempt to grab optimistic segment a number of times to ensure it does not cause a loop at the end of a stream
-                if (self.max_workers > 1 or not segments_to_download) and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in self.pending_segments and optimistic_seg not in submitted_segments:
+                if (self.max_workers > 1 or not segments_to_download) and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in self.pending_segments and optimistic_seg not in submitted_segments and start_seg <= optimistic_seg <= end_seg:
                     # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s if no segments are to be submitted
                     if not segments_to_download:
                         self.smart_sleep(max(self.estimated_segment_duration, 2) + 0.1)
@@ -1714,6 +1766,10 @@ class DownloadStream:
                 if refresh != "IN_PROGRESS":
                     # If update has no segments and no segments are currently running, wait                              
                     if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
+
+                        if max(self.latest_sequence, latest_downloaded_segment) >= end_seg:
+                            self.logger.info("All segments in range downloaded, ending...")
+                            break
                         
                         self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
                             

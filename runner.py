@@ -202,6 +202,16 @@ def monitor_channel(options={}):
         sleep(time_to_next)
         last_check=time()
 
+def parse_time_to_seconds(time_str):
+    if not time_str:
+        return None
+    try:
+        parts = time_str.split(':')
+        parts.reverse()
+        return sum(int(part) * (60 ** i) for i, part in enumerate(parts))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid time format: '{time_str}'. Expected format is hh:mm:ss, mm:ss, or ss.")
+
 
 
 import argparse
@@ -338,6 +348,10 @@ if __name__ == "__main__":
     parser.add_argument('--new-line', action='store_true', help="Console messages always print to new line. (Currently only ensured for stats output)")
 
     parser.add_argument('--ytdlp-command-line-options', type=str, default=None, help='Pass yt-dlp command line options. This must be passed as a single string, recommended --ytdlp-command-line-options="options..." e.g. --ytdlp-command-line-options="--cookies-from-browser firefox" . Only currently works for yt-dlp extractor. Requires https://github.com/yt-dlp/yt-dlp/blob/master/devscripts/cli_to_api.py to be available. (EXPERIMENTAL)')
+
+    parser.add_argument('--start-time', type=parse_time_to_seconds, default=None, help="Start time of the recording in hh:mm:ss format (based on stream duration).")
+    
+    parser.add_argument('--end-time', type=parse_time_to_seconds, default=None, help="End time of the recording in hh:mm:ss format (based on stream duration).")
 
     monitor_group = parser.add_argument_group('Channel Monitor Options')
 
