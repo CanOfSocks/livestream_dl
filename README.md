@@ -200,6 +200,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--monitor-channel` | `False` | Enables channel monitoring mode. Use the Channel ID in the `ID` argument. This can be found from the "Copy Channel ID" button:    <img width="300" alt="image" src="https://github.com/user-attachments/assets/9b4f3b2b-5947-45ff-8ca7-49126442fb41" />    <img width=300 alt="image" src="https://github.com/user-attachments/assets/64801bfe-3e59-4570-8953-b4c7742e1f6c" /> |
 | `--members-only` | `False` | Monitor the 'Members Only' playlist instead of public streams. Requires cookies. |
 | `--upcoming-lookahead` | `24` | Maximum time (in hours) to look ahead for upcoming videos to schedule. |
+| `--use-stream-tab` | `False` | Use "Streams" tab instead of user upload playlist. |
 | `--playlist-items` | `50` | Maximum number of playlist items to check when monitoring. |
 
 ### Metadata Privacy
@@ -214,11 +215,12 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 
 ```
 
-usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--ext EXT] [--temp-folder TEMP_FOLDER] [--write-thumbnail]
-                 [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--force-recover-merge] [--recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE] [--wait-limit WAIT_LIMIT]       
-                 [--database-in-memory] [--direct-to-ts] [--wait-for-video WAIT_FOR_VIDEO] [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--clean-info-json] [--log-level {DEBUG,VERBOSE,INFO,WARNING,ERROR,CRITICAL}] [--no-console] [--log-file LOG_FILE]
-                 [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS] [--ytdlp-log-level {DEBUG,VERBOSE,INFO,WARNING,ERROR,CRITICAL}] [--dash] [--m3u8] [--force-m3u8] [--proxy PROXY] [--ipv4 | --ipv6] [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line]  
-                 [--monitor-channel] [--members-only] [--upcoming-lookahead UPCOMING_LOOKAHEAD] [--playlist-items PLAYLIST_ITEMS]
+usage: runner.py [-h] [--resolution RESOLUTION] [--custom-sort CUSTOM_SORT] [--threads THREADS] [--batch-size BATCH_SIZE] [--segment-retries SEGMENT_RETRIES] [--disable-graceful-shutdown] [--no-merge] [--merge] [--cookies COOKIES] [--output OUTPUT] [--ext EXT] [--temp-folder TEMP_FOLDER]
+                 [--write-thumbnail] [--embed-thumbnail] [--write-info-json] [--write-description] [--keep-temp-files] [--keep-ts-files] [--live-chat] [--keep-database-file] [--recovery] [--force-recover-merge] [--recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE]
+                 [--wait-limit WAIT_LIMIT] [--database-in-memory] [--direct-to-ts] [--wait-for-video WAIT_FOR_VIDEO] [--json-file JSON_FILE] [--remove-ip-from-json] [--clean-urls] [--clean-info-json] [--log-level {DEBUG,VERBOSE,INFO,WARNING,ERROR,CRITICAL}] [--no-console]
+                 [--log-file LOG_FILE] [--log-rotate-when LOG_ROTATE_WHEN] [--log-rotate-interval LOG_ROTATE_INTERVAL] [--log-backup-count LOG_BACKUP_COUNT] [--redact-ips] [--write-ffmpeg-command] [--stats-as-json] [--ytdlp-options YTDLP_OPTIONS]
+                 [--ytdlp-log-level {DEBUG,VERBOSE,INFO,WARNING,ERROR,CRITICAL}] [--dash] [--m3u8] [--force-m3u8] [--proxy PROXY] [--ipv4 | --ipv6] [--stop-chat-when-done STOP_CHAT_WHEN_DONE] [--new-line] [--ytdlp-command-line-options YTDLP_COMMAND_LINE_OPTIONS] [--start-time START_TIME]
+                 [--end-time END_TIME] [--monitor-channel] [--members-only] [--use-stream-tab] [--upcoming-lookahead UPCOMING_LOOKAHEAD] [--playlist-items PLAYLIST_ITEMS]
                  [ID]
 
 Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)
@@ -229,7 +231,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --resolution RESOLUTION
-                        Desired resolution. Based off yt-dlp's format selection: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection. A value of "bv+ba/best" is recommended for most people. (type: str)
+                        Resolution selection criteria. Based off yt-dlp's format selection: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection. A value of "bv+ba/best" is recommended for most people. (type: str)
   --custom-sort CUSTOM_SORT
                         Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats (type: str)
   --threads THREADS     Number of download threads per format. This will be 2x for an video and audio download. (type: int) (default: 2)
@@ -237,6 +239,8 @@ options:
                         Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances. (type: int) (default: 5)
   --segment-retries SEGMENT_RETRIES
                         Number of times to retry grabbing a segment. (type: int) (default: 10)
+  --disable-graceful-shutdown
+                        Disable graceful shutdown for downloader. Useful for testing when you don't want merging to be triggered on a keyboard interrupt. (default: False)
   --no-merge            Don't merge video using ffmpeg (default: True)
   --merge               Merge video using ffmpeg, overrides --no-merge (default: False)
   --cookies COOKIES     Path to cookies file (type: str)
@@ -258,8 +262,8 @@ options:
   --recovery-failure-tolerance RECOVERY_FAILURE_TOLERANCE
                         Maximum number of fragments that fail to download (exceed the retry limit) and not throw an error. May cause unexpected issues when merging to .ts file and remuxing. (type: int) (default: 0)
   --wait-limit WAIT_LIMIT
-                        Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into        
-                        'was_live' or 'post_live' status. (type: int) (default: 0)
+                        Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or
+                        'post_live' status. (type: int) (default: 1800)
   --database-in-memory  Keep stream segments database in memory. Requires a lot of RAM (Not recommended) (default: False)
   --direct-to-ts        Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options (default: False)
   --wait-for-video WAIT_FOR_VIDEO
@@ -274,29 +278,43 @@ options:
                         Set the logging level. Default is INFO. Verbose logging is a custom level that includes the INFO logs of yt-dlp. (type: str) (default: INFO)
   --no-console          Do not log messages to the console. (default: True)
   --log-file LOG_FILE   Path to the log file where messages will be saved. (type: str)
+  --log-rotate-when LOG_ROTATE_WHEN
+                        Type of interval for log rotation (S, M, H, D, midnight, W0-W6). If not set, rotation is disabled. (type: str)
+  --log-rotate-interval LOG_ROTATE_INTERVAL
+                        Interval for log rotation. Default: 1 (type: int) (default: 1)
+  --log-backup-count LOG_BACKUP_COUNT
+                        Number of rotated log files to keep. Default: 30 (type: int) (default: 30)
+  --redact-ips          Remove IP addresses from logs. Warning: May be imperfect, so check logs to make sure IP information has been redacted. (default: False)
   --write-ffmpeg-command
                         Writes FFmpeg command to a txt file (default: False)
   --stats-as-json       Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level (default: False)
   --ytdlp-options YTDLP_OPTIONS
-                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client":   
+                        Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client":
                         ["web_creator"]}, "youtubepot-bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin (type: str)
   --ytdlp-log-level {DEBUG,VERBOSE,INFO,WARNING,ERROR,CRITICAL}
                         ### NOT IMPLEMENTED ### Optional alternative log level for yt-dlp module tasks (such as video extraction or format selection). Uses main logger if not set (type: str)
-  --dash                Gets any available DASH urls as a fallback to adaptive URLs. Dash URLs do not require yt-dlp modification to be used, but can't be used for stream recovery and can cause large info.json files when a stream is in the 'post_live' status (default: False)      
-  --m3u8                Gets any available m3u8 urls as a fallback to adaptive URLs. m3u8 URLs do not require yt-dlp modification to be used, but can't be used for stream recovery. m3u8 URLs provide both video and audio in each fragment and could allow for the amount of segment   
-                        download requests to be halved (default: False)
+  --dash                Gets any available DASH urls as a fallback to adaptive URLs. Dash URLs do not require yt-dlp modification to be used, but can't be used for stream recovery and can cause large info.json files when a stream is in the 'post_live' status (default: False)
+  --m3u8                Gets any available m3u8 urls as a fallback to adaptive URLs. m3u8 URLs do not require yt-dlp modification to be used, but can't be used for stream recovery. m3u8 URLs provide both video and audio in each fragment and could allow for the amount of segment download
+                        requests to be halved (default: False)
   --force-m3u8          Forces use of m3u8 stream URLs (default: False)
-  --proxy PROXY         (ALPHA) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://www.python-httpx.org/advanced/proxies. The first proxy specified will be used    
-                        for yt-dlp and live chat functions. Not all functions have proxy compatibility enabled at this time. (type: str)
+  --proxy PROXY         (ALPHA) Specify proxy to use for web requests. Can be a string for a single proxy or a JSON formatted string to specify multiple methods. For multiple, refer to format https://www.python-httpx.org/advanced/proxies. The first proxy specified will be used for yt-dlp
+                        and live chat functions. Not all functions have proxy compatibility enabled at this time. (type: str)
   --ipv4                Force IPv4 only (default: False)
   --ipv6                Force IPv6 only (default: False)
   --stop-chat-when-done STOP_CHAT_WHEN_DONE
                         Wait a maximum of X seconds after a stream is finished to download live chat. This is useful if waiting for chat to end causes hanging. Onl works with chat-downloader live chat downloads. (type: int) (default: 300)
   --new-line            Console messages always print to new line. (Currently only ensured for stats output) (default: False)
+  --ytdlp-command-line-options YTDLP_COMMAND_LINE_OPTIONS
+                        Pass yt-dlp command line options. This must be passed as a single string, recommended --ytdlp-command-line-options="options..." e.g. --ytdlp-command-line-options="--cookies-from-browser firefox" . Only currently works for yt-dlp extractor. Requires
+                        https://github.com/yt-dlp/yt-dlp/blob/master/devscripts/cli_to_api.py to be available. (EXPERIMENTAL) (type: str)
+  --start-time START_TIME
+                        Start time of the recording in hh:mm:ss format (based on stream duration) (EXPERIMENTAL). (type: parse_time_to_seconds)
+  --end-time END_TIME   End time of the recording in hh:mm:ss format (based on stream duration) (EXPERIMENTAL). (type: parse_time_to_seconds)
 
 Channel Monitor Options:
   --monitor-channel     Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument (e.g. UCxsZ6NCzjU_t4YSxQLBcM5A). Not using the channel ID will attempt to resolve the channel ID. (default: False)
   --members-only        Monitor 'Members Only' playlist for streams instead of 'Streams' playlist. Requires cookies. (default: False)
+  --use-stream-tab      Use "Streams" tab instead of user upload playlist. (default: False)
   --upcoming-lookahead UPCOMING_LOOKAHEAD
                         Maximum time (in hours) to start a downloader instance for a video. (type: int) (default: 24)
   --playlist-items PLAYLIST_ITEMS
