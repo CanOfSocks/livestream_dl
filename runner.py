@@ -167,7 +167,7 @@ def monitor_channel(options={}):
     tab = "membership" if options.get("members_only", False) else "streams"
     if not options.get("wait_for_video", None):
         options["wait_for_video"] = (60, None)
-    wait = max((num for num in options.get("wait_for_video", []) if isinstance(num, (int, float))), default=60)
+    wait = max((num for num in options.get("wait_for_video", []) if isinstance(num, (int, float))), default=300)
     while not channel_id.startswith("UC"):
         new_channel_id = monitor_channel.resolve_channel(channel_id) or ""
         # Break if resolved and start search
