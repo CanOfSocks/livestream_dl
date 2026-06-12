@@ -22,13 +22,13 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options={}, logger: loggin
     #channel_id = str(channel_id)
     ydl_opts = {
         'quiet': True,
-        'extract_flat': True,
+        #'extract_flat': True, 
         #'force_generic_extractor': True,
         'sleep_interval': 1,
         'sleep_interval_requests': 1,
         'no_warnings': True,
         'cookiefile': options.get("cookies", None),
-        'playlist_items': '1-{0}'.format(options.get("playlist_items", 50)),
+        'playlist_items': '1-{0}'.format(options.get("playlist_items", 3)),
         #'verbose': True
         #'match_filter': filters
         "logger": YTDLPLogger(logger=logger),
@@ -62,7 +62,11 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options={}, logger: loggin
             info = ydl.extract_info(url, download=False)
             #logging.debug(json.dumps(info))
             upcoming_or_live_videos = []
+            printed_first=False
             for video in info['entries']:
+                if not printed_first:
+                    print(json.dumps(video, indent=4))
+                    printed_first = True
                 if (video.get('live_status') == 'is_live' or video.get('live_status') == 'post_live' 
                     or (video.get('live_status') == 'is_upcoming' and withinFuture(video.get('release_timestamp', None), **({"lookahead": options["monitor_lookahead"]} if "monitor_lookahead" in options else {})))):
 
