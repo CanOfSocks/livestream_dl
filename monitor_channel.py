@@ -22,7 +22,7 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options={}, logger: loggin
     #channel_id = str(channel_id)
     ydl_opts = {
         'quiet': True,
-        'extract_flat': True, 
+        #'extract_flat': True, 
         #'force_generic_extractor': True,
         'sleep_interval': 1,
         'sleep_interval_requests': 1,
