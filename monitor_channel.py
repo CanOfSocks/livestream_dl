@@ -117,6 +117,15 @@ def get_channel(channel_url: str, logger: logging = None):
     
     with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(channel_url, download=False)
+
+        # Fallback if there is info extracted, but no channel ID (e.g. the live tab)        
+        if info.get('channel_id', None) is None and info.get('url'):
+            try:
+                info = ydl.extract_info(info.get('url'), download=False)
+                
+            except Exception as e:
+                logger.error("Unable to find availability information for video {0}: {1}".format(info.get('url'), str(e)))
+
         return ydl.sanitize_info(info).get("channel_id", None)
         
 
