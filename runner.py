@@ -372,7 +372,7 @@ if __name__ == "__main__":
 
     monitor_group.add_argument('--upcoming-lookahead', type=int, default=24, help="Maximum time (in hours) to start a downloader instance for a video.")
 
-    monitor_group.add_argument('--playlist-items', type=int, default=3, help="Maximum number of playlist items to check.")
+    monitor_group.add_argument('--playlist-items', type=int, default=10, help="Maximum number of playlist items to check.")
     
     # Parse the arguments
     args = parser.parse_args()

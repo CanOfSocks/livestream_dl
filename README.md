@@ -201,7 +201,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--members-only` | `False` | Monitor the 'Members Only' playlist instead of public streams. Requires cookies. |
 | `--upcoming-lookahead` | `24` | Maximum time (in hours) to look ahead for upcoming videos to schedule. |
 | `--use-stream-tab` | `False` | Use "Streams" tab instead of user upload playlist. |
-| `--playlist-items` | `3` | Maximum number of playlist items to check when monitoring. |
+| `--playlist-items` | `10` | Maximum number of playlist items to check when monitoring. |
 
 ### Metadata Privacy
 
