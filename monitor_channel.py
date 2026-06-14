@@ -98,7 +98,7 @@ def resolve_channel(url: str, logger: logging = None):
         if "not currently live" in str(e):
             logger.log(VERBOSE_LEVEL_NUM, "Channel found, but not live: {0}. Waiting until a live stream is found to resolve channel ID".format(e))
             return None
-        logger.warning("Unable to find channel ID with URL search using '{0}'. Attemptiong to use youtube search.")
+        logger.warning("Unable to find channel ID with URL search using '{0}'. Attempting to use youtube search.".format(url))
         channel_id = get_by_name(channel_name=url, logger=logger)
         if channel_id and str(channel_id).startswith("UC"):
             return channel_id
