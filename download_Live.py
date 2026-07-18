@@ -2620,10 +2620,10 @@ class DownloadStream:
                 error_msg = str(e).lower()
                 self.logger.warning("Video Inaccessible error: {0}".format(e))
                 if "private" in error_msg or self.is_403:
-                    self.logger.warning("{0} is Inaccessible and is either private or experiencing 403 errors. Marking as private.")
+                    self.logger.warning("{0} is Inaccessible and is either private or experiencing 403 errors. Marking as private.".format(self.id))
                     self.is_private = True
                 elif "membership" in error_msg or "premium" in error_msg:
-                    self.logger.warning("{0} is now members only or premium. Continuing until 403 errors")
+                    self.logger.warning("{0} is now members only or premium. Continuing until 403 errors".format(self.id))
                     self.is_members_error = True
                 else:
                     if "recording is not available" in error_msg:
