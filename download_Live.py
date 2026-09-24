@@ -2632,7 +2632,8 @@ class DownloadStream:
                         self.logger.warning("Stream is inaccessible but not encountering 403 errors. Marking as post-live.")
                     self.live_status = "post_live"
             except getUrls.VideoUnavailableError as e:
-                self.logger.critical("Video Unavailable error: {0}".format(e))
+                self.logger.warning("Video unavailable; treating the active recording as post-live: {0}".format(e))
+                self.live_status = "post_live"
                 
             except getUrls.VideoProcessedError as e:
                 # Livestream has been processed
@@ -2647,12 +2648,12 @@ class DownloadStream:
                 
         self.url_checked = time.time()
 
-        if self.get_expire_time(self.stream_url) < time.time():
-            raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
-
         if self.live_status not in ['is_live', 'is_upcoming']:
             self.logger.debug("Livestream has ended.")
-            return False 
+            return False
+
+        if self.get_expire_time(self.stream_url) < time.time():
+            raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
         
         return None
 

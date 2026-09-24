@@ -257,6 +257,8 @@ def get_Video_Info(
                 raise VideoInaccessibleError("Video removed due to a copyright claim")
             elif "video has been removed" in err_str or "incomplete youtube id" in err_str or "invalid video id" in err_str:
                 raise VideoInaccessibleError("Video has been removed or ID is invalid")
+            elif "video unavailable" in err_str:
+                raise VideoUnavailableError(f"Video {id} is unavailable") from e
             else:
                 raise e
         except RepeatedWarningError as e:
