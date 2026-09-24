@@ -235,7 +235,7 @@ def get_Video_Info(
             err_str = str(e).lower()
             
             # Specific Error Handling
-            if 'video is private' in err_str or "sign in" in err_str:
+            if 'video is private' in err_str or "sign in" in err_str or "private video" in err_str:
                 raise VideoInaccessibleError(f"Video {id} is private")
             elif "http error 429" in err_str or "confirm you're not a bot" in err_str or "captcha" in err_str:
                 raise RateLimitException("Rate limited or blocked by YouTube anti-bot measures")
