@@ -28,6 +28,8 @@ except ModuleNotFoundError as e:
 
 import os
 
+import headers as customheaders
+
 import shutil
 
 import logging
@@ -1571,7 +1573,7 @@ class DownloadStream:
         # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
+            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header())) as client):
             submitted_segments = set()
             future_to_seg = {}
             
@@ -1948,7 +1950,7 @@ class DownloadStream:
                 return -1, None, segment_order, None, None
             if client is None or client.is_closed:
                 # Set a base timeout of 30s for connect/read as well
-                httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None))
+                httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header()))
             
             start_time = time.time()
             try:
@@ -2062,7 +2064,7 @@ class DownloadStream:
     
     def get_Headers(self, url, client: httpx.Client=None):
         if client is None or client.is_closed:
-            client = httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None))
+            client = httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header()))
         try:
             # Send a GET request to a URL
             #response = requests.get(url, timeout=30, proxies=self.proxies)
@@ -2734,7 +2736,7 @@ class DownloadStreamDirect(DownloadStream):
         
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"{self.id}-{self.format}") as executor,
-            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
+            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header())) as client):
             
             # Trackers for optimistic segment downloads 
             optimistic_fails_max = 10
@@ -3200,7 +3202,7 @@ class StreamRecovery(DownloadStream):
         last_print = time.time()
         limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
         with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-              httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", None)) as client):
+              httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header())) as client):
             submitted_segments = set()
             future_to_seg = {}
             
