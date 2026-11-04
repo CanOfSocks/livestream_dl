@@ -19,16 +19,18 @@ try:
     import getUrls
     import YoutubeURL
     import setup_logger
+    import headers as customheaders
     #from headers import user_agents
 except ModuleNotFoundError as e:
     from . import getUrls
     from . import YoutubeURL
     from . import setup_logger
+    from . import headers as customheaders
     #from .headers import user_agents
 
 import os
 
-import headers as customheaders
+
 
 import shutil
 
