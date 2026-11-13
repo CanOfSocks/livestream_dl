@@ -4,13 +4,10 @@ import logging
 import sqlite3
 from pathlib import Path
 
-import download_Live
-
-
-class SegmentExtractor(download_Live.DownloadStream):
-    """Minimal dummy class to inherit atom-cleaning byte-manipulation methods."""
-    def __init__(self):
-        pass
+try:
+    import download_Live
+except ModuleNotFoundError:
+    from . import download_Live
 
 
 def is_sqlite_db(filepath):
@@ -29,22 +26,19 @@ def is_sqlite_db(filepath):
 def extract_segments_to_ts(db_path, ts_path, logger):
     """Extracts BLOBs sequentially from the SQLite database and strips redundant atoms."""
     logger.info(f"Extracting segments from database: {db_path} -> {ts_path}")
-    extractor = SegmentExtractor()
-    
-    # Optimize SQLite reading for high I/O
+
     conn = sqlite3.connect(db_path)
-    conn.execute('PRAGMA mmap_size = 52428200;')
-    cursor = conn.execute('SELECT segment_data FROM segments ORDER BY id')
-    
-    # Large buffer to reduce syscalls during writing
-    with open(ts_path, 'wb', buffering=1048576) as f:
-        is_first = True
-        for (segment_data,) in cursor:
-            cleaned_data = extractor.clean_segments(segment_data, first=is_first)
-            f.write(cleaned_data)
-            is_first = False
-            
-    conn.close()
+    try:
+        cursor = conn.execute('SELECT segment_data FROM segments ORDER BY id')
+        # Large buffer to reduce syscalls during writing
+        with open(ts_path, 'wb', buffering=download_Live.WRITE_BUFFER_SIZE) as f:
+            is_first = True
+            for (segment_data,) in cursor:
+                # Atom cleaning writes zero-copy slices of each segment
+                download_Live.write_segment(f, segment_data or b"", clean=True, first=is_first)
+                is_first = False
+    finally:
+        conn.close()
     logger.info(f"Finished extracting: {ts_path}")
 
 

@@ -1,96 +1,2404 @@
+"""
+Core livestream downloader.
+
+Overview
+--------
+``LiveStreamDownloader`` (the coordinator) selects formats, starts one stream downloader per
+selected format (video / audio) plus auxiliary/live-chat tasks, then muxes and moves the results.
+
+Stream downloaders (one per format) share a common lifecycle defined in ``StreamDownloaderBase``:
+
+    StreamDownloaderBase            shared lifecycle + template main loop (live_dl)
+    ├── DownloadStream              live edge download into an SQLite temp database
+    │   └── DownloadStreamDirect    live edge download written directly (in order) to a .ts file
+    └── StreamRecovery              re-download of missing segments from (possibly expired) URLs
+
+Segments are numbered by YouTube's sequence number ("sq"). The server reports the newest
+available segment via the ``X-Head-Seqnum`` header and the stream duration at that segment via
+``X-Head-Time-Sec``, which together are used to estimate the segment duration.
+
+Downloaded segment data is buffered and persisted by a ``SegmentStore``:
+
+    SegmentStore
+    ├── SQLiteSegmentStore          batched + verified commits, merged to .ts at the end
+    └── DirectTSStore               appends segments in order to the .ts file with a resumable state file
+"""
 from __future__ import annotations
 
-import yt_dlp.YoutubeDL
-import yt_dlp.utils
-import sqlite3
-#import requests
-#from requests.adapters import HTTPAdapter, Retry
-import random
-import time
 import concurrent.futures
-import json
-from pathlib import Path
+import contextlib
 import copy
+import enum
+import functools
+import heapq
+import json
+import logging
+import math
+import os
+import random
+import shutil
+import signal
+import sqlite3
+import struct
+import threading
+import time
+from pathlib import Path
+from typing import Any, BinaryIO, Callable, Iterable, Optional, Union
+from urllib.parse import urlparse
 
-
-from urllib.parse import urlparse #, parse_qs, urlencode, urlunparse
+import httpx
+import yt_dlp.utils
+import yt_dlp.YoutubeDL
 
 try:
     import getUrls
     import YoutubeURL
     import setup_logger
     import headers as customheaders
-    #from headers import user_agents
-except ModuleNotFoundError as e:
+except ModuleNotFoundError:
     from . import getUrls
     from . import YoutubeURL
     from . import setup_logger
     from . import headers as customheaders
-    #from .headers import user_agents
-
-import os
-
-
-
-import shutil
-
-import logging
-
-from typing import Optional
-#import re
-
-import threading
-
-import httpx
-
-import struct
-
-import signal
-import contextlib
-
-#import setup_logger
 
 # Backward compatibility
 setup_logging = setup_logger.setup_logging
 
+LoggerLike = Union[logging.Logger, logging.LoggerAdapter]
+# Result tuple returned by download_segment: (head sequence, data, segment number, HTTP status, headers)
+SegmentResult = tuple[int, Optional[bytes], int, Optional[int], Optional[httpx.Headers]]
+
+# --- Tunables ---------------------------------------------------------------------------------
+# Seconds before a URL's "expire" time at which it is refreshed (default refresh mode)
+URL_REFRESH_EXPIRY_MARGIN: float = 1800.0
+# Refresh interval used when a URL has no expire parameter
+URL_REFRESH_FALLBACK_INTERVAL: float = 3600.0
+# Never schedule periodic refreshes closer together than this
+URL_REFRESH_MIN_INTERVAL: float = 60.0
+DEFAULT_URL_REFRESH_JITTER: float = 300.0
+# Upper bound for the back-off between yt-dlp refresh attempts after rate limiting
+MAX_MINIMUM_REFRESH_TIME: float = 1800.0
+
+# Number of wait intervals (WAIT_INTERVAL_SECONDS each) with no new segments between URL refreshes
+REFRESH_EVERY_N_WAITS: int = 10
+WAIT_INTERVAL_SECONDS: float = 10.0
+# Optimistic (live edge) segment requests use this many retries at most. Segment retries used to
+# be fixed at 5 regardless of --segment-retries; keeping the optimistic requests at that value
+# keeps the end-of-stream detection time unchanged now that --segment-retries is honoured.
+OPTIMISTIC_SEGMENT_RETRIES: int = 5
+OPTIMISTIC_FAILS_MAX: int = 10
+# Minimum wait before requesting the next (optimistic) segment at the live edge
+OPTIMISTIC_MIN_WAIT: float = 2.0
+# Refresh the URL once 403 errors have persisted this long since the last refresh
+REFRESH_403_AFTER_SECONDS: float = 30.0
+# Wait before handing a stream that turned private over to stream recovery (improves success)
+RECOVERY_HANDOFF_DELAY: float = 300.0
+# Wait for in-flight requests before handing a private stream over to recovery
+PRIVATE_DRAIN_WAIT: float = 5.0
+# How long the live chat thread gets to stop after its timeout before it is abandoned
+LIVE_CHAT_STOP_GRACE: float = 10.0
+# Pause in stream recovery when 401 errors are received
+RECOVERY_401_SLEEP: float = 60.0
+# Minimum seconds since the last URL refresh before segments that exhausted their retries trigger another one
+EXHAUSTED_REFRESH_MIN_INTERVAL: float = 300.0
+
+# SQLite page sizes. Large pages mean fewer overflow pages for large segment BLOBs and align better
+# with ZFS' default 128K recordsize; audio segments are small so a smaller page limits the
+# partially filled final overflow page of each BLOB.
+SQLITE_VIDEO_PAGE_SIZE: int = 65536
+SQLITE_AUDIO_PAGE_SIZE: int = 16384
+# Checkpoint / truncate the WAL after roughly this many bytes
+SQLITE_WAL_TARGET_BYTES: int = 64 * 1024 * 1024
+# Max host parameters per statement (SQLite's lowest historical default limit is 999)
+SQLITE_MAX_VARIABLES: int = 900
+# Number of pending segments after which no new downloads are submitted (e.g. disk full)
+STORE_BACKLOG_FACTOR: int = 10
+
+WRITE_BUFFER_SIZE: int = 1024 * 1024
+ATOM_BASED_EXTENSIONS = frozenset({".mp4", ".m4a", ".mov", ".m4v", ".f4v", ".3gp"})
+
+
+# ==============================================================================================
+# Generic helpers
+# ==============================================================================================
+
+def _opt(options: dict, *keys: str, default: Any = None) -> Any:
+    """Return the first non-None value of `keys` in options (supports internal + CLI key names)."""
+    for key in keys:
+        value = options.get(key)
+        if value is not None:
+            return value
+    return default
+
+
+@functools.lru_cache(maxsize=1)
+def http2_available() -> bool:
+    try:
+        import h2  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def proxy_for_httpx(proxies: Optional[Union[str, dict]]) -> tuple[Optional[str], Optional[dict[str, httpx.HTTPTransport]]]:
+    """
+    Convert the --proxy option into httpx's (proxy, mounts) arguments.
+    A string is a single proxy; a dict maps URL patterns to proxies (https://www.python-httpx.org/advanced/proxies).
+    requests-style keys ("http"/"https") are converted to httpx patterns ("http://"/"https://").
+    """
+    if not proxies:
+        return None, None
+    if isinstance(proxies, str):
+        return proxies.strip() or None, None
+    if isinstance(proxies, dict):
+        mounts = {}
+        for pattern, url in proxies.items():
+            pattern = str(pattern)
+            if "://" not in pattern:
+                pattern = f"{pattern}://"
+            mounts[pattern] = httpx.HTTPTransport(proxy=url) if url else None
+        return None, mounts
+    return None, None
+
+
+def create_http_client(proxies=None, headers: Optional[dict] = None, max_connections: int = 10,
+                       timeout: Optional[httpx.Timeout] = None) -> httpx.Client:
+    proxy, mounts = proxy_for_httpx(proxies)
+    limits = httpx.Limits(max_keepalive_connections=max_connections, max_connections=max_connections, keepalive_expiry=30)
+    return httpx.Client(timeout=timeout or StreamDownloaderBase.timeout_config, limits=limits, proxy=proxy, mounts=mounts,
+                        http1=True, http2=http2_available(), follow_redirects=True,
+                        headers=headers or customheaders.get_httpx_header())
+
+
+_httpx_logging_lock = threading.Lock()
+
+
+def _quiet_httpx_logging(logger: LoggerLike) -> None:
+    """Set httpx/httpcore loggers one level above our logger so request lines don't flood output."""
+    current_level = logger.getEffectiveLevel()
+    target_level = logging.WARNING if current_level == logging.NOTSET else min(current_level + 10, logging.ERROR)
+    with _httpx_logging_lock:
+        logging.getLogger("httpx").setLevel(target_level)
+        logging.getLogger("httpcore").setLevel(target_level)
+
+
+def parse_content_type(value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Split e.g. 'video/mp4; codecs=...' into ('video', 'mp4'). Returns (None, None) if malformed."""
+    if not value or "/" not in str(value):
+        return None, None
+    major, _, minor = str(value).partition("/")
+    minor = minor.split(";", 1)[0].strip()
+    return major.strip().lower() or None, minor or None
+
+
+def _int_header(headers: Optional[httpx.Headers], name: str) -> Optional[int]:
+    if headers is None:
+        return None
+    value = headers.get(name)
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def estimate_segment_duration(head_time_sec: Optional[float], head_seq: Optional[int]) -> Optional[float]:
+    """Average segment duration from X-Head-Time-Sec / X-Head-Seqnum. None if it can't be known yet."""
+    if head_time_sec is None or head_seq is None or head_seq <= 0 or head_time_sec <= 0:
+        return None
+    return head_time_sec / head_seq
+
+
+def is_relative_time(value: Optional[float]) -> bool:
+    """
+    True if a --start-time/--end-time value is relative to the live edge (negative).
+    Uses the sign bit so that -0.0 ("-00:00", i.e. exactly the live edge) also counts as relative.
+    """
+    return value is not None and math.copysign(1.0, value) < 0
+
+
+def resolve_window_seconds(start_time: Optional[float], end_time: Optional[float],
+                           reference: Optional[float]) -> tuple[float, Optional[float]]:
+    """
+    Resolve --start-time/--end-time into absolute stream seconds.
+    Negative values are relative to `reference` (the live edge's stream time when recording began).
+    Returns (start, end) where end may be None (no end limit).
+    """
+    def absolute(value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return None
+        if is_relative_time(value):
+            if reference is None:
+                raise ValueError("A live edge reference time is required for negative start/end times")
+            return max(0.0, reference + value)
+        return float(value)
+
+    start = absolute(start_time) or 0.0
+    end = absolute(end_time)
+    if end is not None and end <= start:
+        raise ValueError("End time ({0:.0f}s) must be after start time ({1:.0f}s) of the stream".format(end, start))
+    return start, end
+
+
+def seconds_to_segment_window(start_seconds: float, end_seconds: Optional[float], segment_duration: float) -> tuple[int, float]:
+    """Convert absolute seconds into an inclusive (start_seg, end_seg) range. end_seg may be inf."""
+    start_seg = int(start_seconds // segment_duration)
+    end_seg: float = float('inf') if end_seconds is None else -int(-end_seconds // segment_duration)
+    return start_seg, end_seg
+
+
+def next_refresh_time(now: float, expire: Optional[float], interval_override: Optional[float],
+                      jitter: float, margin: float = URL_REFRESH_EXPIRY_MARGIN) -> float:
+    """
+    When the next periodic URL refresh is due.
+    - With an interval override: now + interval - random jitter.
+    - Otherwise refresh `margin` seconds before the URL expires, minus random jitter, so that many
+      processes started together don't all run yt-dlp at the same moment.
+    - Without an expire time: fall back to an hourly refresh.
+    """
+    jitter_value = random.uniform(0.0, max(0.0, jitter or 0.0))
+    if interval_override and interval_override > 0:
+        return now + max(URL_REFRESH_MIN_INTERVAL, interval_override - jitter_value)
+    if expire:
+        return max(now + URL_REFRESH_MIN_INTERVAL, float(expire) - margin - jitter_value)
+    return now + max(URL_REFRESH_MIN_INTERVAL, URL_REFRESH_FALLBACK_INTERVAL - jitter_value)
+
+
+def base_output_path(options: dict, info_dict: dict) -> str:
+    """Temp path prefix (without extension) for files of this video: <temp_folder>/<filename>."""
+    filename = options.get('filename') or info_dict.get('id')
+    temp_folder = options.get("temp_folder")
+    return os.path.join(temp_folder, filename) if temp_folder else filename
+
+
+def _remove_file(path: Optional[str], logger: Optional[LoggerLike] = None) -> None:
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        if logger:
+            logger.warning("Unable to remove {0}: {1}".format(path, e))
+
+
+# ==============================================================================================
+# MP4 atom cleaning (via ytarchive)
+# ==============================================================================================
+# Each fragmented MP4 segment carries its own ftyp/moov header atoms and a sidx index. When
+# segments are concatenated, only the first segment's headers are kept and every sidx is dropped.
+
+def get_atoms(data) -> dict[str, dict[str, int]]:
+    """Parse top level atoms -> {name: {"ofs", "len"}} (last occurrence wins, as before)."""
+    return {name: {"ofs": ofs, "len": length} for name, ofs, length in iter_atoms(data)}
+
+
+def iter_atoms(data) -> Iterable[tuple[str, int, int]]:
+    """Yield (name, offset, length) for each top level atom until the data stops looking like MP4."""
+    ofs = 0
+    data_len = len(data)
+    view = memoryview(data)
+    while ofs + 8 <= data_len:
+        # '>I' reads 4 bytes as a Big-Endian Unsigned Int (the standard MP4 length format)
+        alen = struct.unpack_from('>I', view, ofs)[0]
+        # Length can't be smaller than the 8 byte header (this also stops at size 0 "to end of file"
+        # and size 1 "64-bit size" atoms, which are left untouched).
+        if alen < 8 or ofs + alen > data_len:
+            break
+        aname = view[ofs + 4:ofs + 8].tobytes().decode(errors='ignore')
+        yield aname, ofs, alen
+        ofs += alen
+
+
+def clean_segment_parts(data, first: bool = True) -> list[memoryview]:
+    """
+    Return zero-copy slices of `data` with the unwanted atoms removed.
+    sidx is always removed; ftyp and moov are only kept for the first segment.
+    """
+    bad_atoms = {"sidx"} if first else {"sidx", "ftyp", "moov"}
+    view = memoryview(data)
+    parts: list[memoryview] = []
+    cursor = 0
+    for name, ofs, length in iter_atoms(data):
+        if name in bad_atoms:
+            if ofs > cursor:
+                parts.append(view[cursor:ofs])
+            cursor = ofs + length
+    if cursor == 0:
+        return [view]
+    if cursor < len(data):
+        parts.append(view[cursor:])
+    return parts
+
+
+def clean_segment(data, first: bool = True) -> bytes:
+    """Cleaned copy of a segment (prefer write_segment for writing to files, which avoids the copy)."""
+    return b"".join(clean_segment_parts(data, first=first))
+
+
+def write_segment(f: BinaryIO, data, clean: bool, first: bool) -> int:
+    """Write a segment to f, optionally cleaning atoms. Returns the number of bytes written."""
+    if not clean:
+        return f.write(data)
+    return sum(f.write(part) for part in clean_segment_parts(data, first=first))
+
+
+def should_clean(ext: Optional[str]) -> bool:
+    """Atom cleaning only applies to MP4 style containers (unknown extensions are assumed MP4)."""
+    if not ext:
+        return True
+    ext = str(ext).lower()
+    if not ext.startswith("."):
+        ext = f".{ext}"
+    return ext in ATOM_BASED_EXTENSIONS
+
+
+# ==============================================================================================
+# FileInfo
+# ==============================================================================================
+
+class FileInfo(Path):
+    _file_type: str = None
+    _format: str = None
+    _acodec: str = None
+    _vcodec: str = None
+    _language: str = None
+    _protocol: str = None
+
+    def __new__(cls, *args, **kwargs):
+        # 1. Pop custom arguments so they don't go to Path.__new__
+        file_type = kwargs.pop("file_type", None)
+        format = kwargs.pop("format", None)
+        acodec = kwargs.pop("acodec", None)
+        vcodec = kwargs.pop("vcodec", None)
+        language = kwargs.pop("language", None)
+        protocol = kwargs.pop("protocol", None)
+        # 2. Create the instance using Path's machinery
+        instance = super().__new__(cls, *args, **kwargs)
+
+        # 3. Store the values on the instance
+        instance._file_type = file_type
+        instance._format = format
+        instance._acodec = acodec
+        instance._vcodec = vcodec
+        instance._language = language
+        instance._protocol = protocol
+        return instance
+
+    def __init__(self, *args, **kwargs):
+        # 4. Overriding __init__ is CRITICAL.
+        # We must NOT pass file_type or format to super().__init__
+        for key in ("file_type", "format", "acodec", "vcodec", "language", "protocol"):
+            kwargs.pop(key, None)
+        super().__init__(*args, **kwargs)
+
+    @property
+    def file_type(self):
+        return self._file_type
+
+    @file_type.setter
+    def file_type(self, value):
+        self._file_type = value
+
+    def __repr__(self):
+        return f"{super().__repr__()} (file_type={self._file_type})"
+
+    def to_dict(self):
+        return {
+            "filename": str(self),
+            "filetype": str(self._file_type),
+            "format": str(self._format)
+        }
+
+
+# ==============================================================================================
+# Segment stores
+# ==============================================================================================
+
+class SegmentStore:
+    """
+    Buffers downloaded segments and persists them. `downloaded` contains only segments confirmed
+    to be on disk; `pending` holds downloaded segments not yet confirmed.
+    """
+    def __init__(self, logger: LoggerLike, batch_size: int = 5):
+        self.logger = logger
+        self.batch_size: int = max(1, int(batch_size or 1))
+        self.downloaded: set[int] = set()
+        self.pending: dict[int, bytes] = {}
+
+    def add(self, seg: int, data: bytes) -> None:
+        """Buffer a segment, keeping the larger copy if it was downloaded more than once."""
+        existing = self.pending.get(seg)
+        if existing is None or len(data) > len(existing):
+            self.pending[seg] = data
+
+    def has(self, seg: int) -> bool:
+        return seg in self.downloaded or seg in self.pending
+
+    def count(self) -> int:
+        return len(self.downloaded) + sum(1 for seg in self.pending if seg not in self.downloaded)
+
+    def is_backlogged(self) -> bool:
+        """True if persisting is failing (e.g. disk full) and new downloads should pause."""
+        return len(self.pending) >= max(self.batch_size * STORE_BACKLOG_FACTOR, 50)
+
+    def first_needed(self) -> int:
+        """Lowest segment number that may still need downloading."""
+        return 0
+
+    def flush(self, force: bool = False) -> None:
+        raise NotImplementedError
+
+    def size_on_disk(self) -> int:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        pass
+
+
+class SQLiteSegmentStore(SegmentStore):
+    """
+    Segments stored as BLOBs in an SQLite database (one row per segment, keyed by sequence number).
+
+    Commits are batched (--batch-size) and every commit is verified by reading back the IDs and
+    BLOB lengths of the batch; only verified segments leave the in-memory buffer.
+    """
+    UPSERT_SQL = '''
+        INSERT INTO segments (id, segment_data)
+        VALUES (?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            segment_data = excluded.segment_data
+        WHERE LENGTH(excluded.segment_data) > LENGTH(segments.segment_data);
+    '''
+
+    def __init__(self, path: str, logger: LoggerLike, batch_size: int = 5, page_size: int = SQLITE_VIDEO_PAGE_SIZE,
+                 journal_mode: str = "wal"):
+        super().__init__(logger=logger, batch_size=batch_size)
+        self.path: str = path
+        self.in_memory: bool = path == ':memory:'
+        self.page_size: int = page_size
+        self.journal_mode: str = str(journal_mode or "wal").lower()
+        if self.journal_mode not in ("wal", "truncate"):
+            raise ValueError("Unsupported journal mode: {0}".format(journal_mode))
+        self._failed_flushes: int = 0
+        self.conn: Optional[sqlite3.Connection] = None
+        self.open()
+
+    def open(self) -> None:
+        # isolation_level=None: autocommit mode, transactions are managed explicitly in flush()
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        if not self.in_memory:
+            # page_size only takes effect before the database is initialised, so it MUST be set before
+            # journal_mode (switching to WAL initialises the file). Ignored for existing databases.
+            conn.execute(f'PRAGMA page_size = {int(self.page_size)};')
+            conn.execute(f'PRAGMA journal_mode = {self.journal_mode.upper()};')
+            conn.execute('PRAGMA synchronous = NORMAL;')
+            conn.execute('PRAGMA temp_store = MEMORY;')
+            # No memory mapping: on ZFS mmap'd files are cached twice (ARC + page cache), and the only
+            # large read (the final merge) is sequential so it gains nothing from mmap elsewhere.
+            conn.execute('PRAGMA mmap_size = 0;')
+            conn.execute('PRAGMA cache_size = -4000;')
+            if self.journal_mode == "wal":
+                actual_page_size = conn.execute('PRAGMA page_size;').fetchone()[0] or self.page_size
+                conn.execute(f'PRAGMA wal_autocheckpoint = {max(1000, SQLITE_WAL_TARGET_BYTES // actual_page_size)};')
+            # Keep the WAL / journal file from staying at its peak size after a checkpoint
+            conn.execute(f'PRAGMA journal_size_limit = {SQLITE_WAL_TARGET_BYTES};')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS segments (
+                id INTEGER PRIMARY KEY,
+                segment_data BLOB
+            )
+        ''')
+        self.conn = conn
+        self.downloaded = {row[0] for row in conn.execute("SELECT id FROM segments")}
+
+    def flush(self, force: bool = False) -> None:
+        if not self.pending or self.conn is None:
+            return
+        if len(self.pending) < self.batch_size and not force:
+            return
+
+        self.logger.debug(f"Writing {len(self.pending)} segments to file...")
+        # Sort by ID for linear B-Tree insertion (avoids page splitting)
+        batch = sorted(self.pending.items())
+        try:
+            self.conn.execute('BEGIN')
+            self.conn.executemany(self.UPSERT_SQL, batch)
+            self.conn.execute('COMMIT')
+        except Exception:
+            self._failed_flushes += 1
+            # Log the full trace once, then only briefly so a persistent failure (disk full) doesn't flood logs
+            if self._failed_flushes <= 1 or self._failed_flushes % 50 == 0:
+                self.logger.exception("Batch insert failed ({0} consecutive failures), segments kept in memory for retry".format(self._failed_flushes))
+            with contextlib.suppress(Exception):
+                self.conn.execute('ROLLBACK')
+            return
+
+        self._failed_flushes = 0
+        verified = self._verify(batch)
+        for seg, _ in batch:
+            if seg in verified:
+                self.pending.pop(seg, None)
+                self.downloaded.add(seg)
+        unverified = len(batch) - len(verified)
+        if unverified:
+            self.logger.warning("{0} segment(s) could not be verified in {1} after commit, they will be written again".format(unverified, self.path))
+
+    def _verify(self, batch: list[tuple[int, bytes]]) -> set[int]:
+        """Return the segment IDs from batch that are present with at least the inserted length."""
+        expected = {seg: len(data) for seg, data in batch}
+        verified: set[int] = set()
+        ids = list(expected.keys())
+        try:
+            for i in range(0, len(ids), SQLITE_MAX_VARIABLES):
+                chunk = ids[i:i + SQLITE_MAX_VARIABLES]
+                placeholders = ",".join("?" * len(chunk))
+                rows = self.conn.execute(
+                    f"SELECT id, length(segment_data) FROM segments WHERE id IN ({placeholders})", chunk)
+                for seg, stored_len in rows:
+                    # The upsert keeps the longer copy, so a longer stored BLOB is also valid
+                    if (stored_len or 0) >= expected[seg]:
+                        verified.add(seg)
+        except Exception:
+            self.logger.exception("Unable to verify committed segments")
+        return verified
+
+    def size_on_disk(self) -> int:
+        if self.in_memory:
+            return 0
+        total = 0
+        for path in (self.path, f"{self.path}-wal"):
+            with contextlib.suppress(OSError):
+                total += os.path.getsize(path)
+        return total
+
+    def merge_to_file(self, output_file: str, clean: bool) -> str:
+        """
+        Write all segments in order into output_file. Segments that could not be committed are
+        merged from memory so that nothing that was downloaded is lost.
+        """
+        self.flush(force=True)
+        if self.pending:
+            self.logger.error("{0} segment(s) could not be written to {1}, merging them from memory".format(len(self.pending), self.path))
+        if not self.in_memory and self.journal_mode == "wal":
+            # Fold the WAL into the main file first so the merge read is a plain sequential read
+            with contextlib.suppress(Exception):
+                self.conn.execute('PRAGMA wal_checkpoint(TRUNCATE);')
+
+        leftovers = sorted((seg, data) for seg, data in self.pending.items() if seg not in self.downloaded)
+        leftover_idx = 0
+        is_first = True
+        with open(output_file, 'wb', buffering=WRITE_BUFFER_SIZE) as f:
+            # Iterating the cursor directly streams rows instead of loading everything into memory
+            for seg, segment_data in self.conn.execute('SELECT id, segment_data FROM segments ORDER BY id'):
+                # Interleave in-memory leftovers that belong before this row
+                while leftover_idx < len(leftovers) and leftovers[leftover_idx][0] < seg:
+                    write_segment(f, leftovers[leftover_idx][1], clean, is_first)
+                    is_first = False
+                    leftover_idx += 1
+                pending_copy = self.pending.get(seg)
+                if pending_copy is not None and len(pending_copy) > len(segment_data or b""):
+                    segment_data = pending_copy
+                write_segment(f, segment_data or b"", clean, is_first)
+                is_first = False
+            for _, data in leftovers[leftover_idx:]:
+                write_segment(f, data, clean, is_first)
+                is_first = False
+        return output_file
+
+    def close(self) -> None:
+        if self.conn is not None:
+            try:
+                self.flush(force=True)
+            except Exception:
+                self.logger.exception("Unable to flush segments while closing database")
+            with contextlib.suppress(Exception):
+                self.conn.close()
+            self.conn = None
+
+    def delete(self) -> None:
+        self.close()
+        if not self.in_memory:
+            for path in (self.path, f"{self.path}-wal", f"{self.path}-shm", f"{self.path}-journal"):
+                _remove_file(path, self.logger)
+
+
+class DirectTSStore(SegmentStore):
+    """
+    Writes segments straight to the .ts file in sequence order. Out-of-order segments wait in
+    memory until the gap before them is filled (or skipped after exceeding retries).
+    Progress is recorded in a JSON state file (with a backup copy) so a restart can resume.
+    """
+    def __init__(self, ts_path: str, state_path: str, backup_path: str, logger: LoggerLike, clean: bool,
+                 batch_size: int = 1):
+        super().__init__(logger=logger, batch_size=batch_size)
+        self.ts_path: str = ts_path
+        self.state_path: str = state_path
+        self.backup_path: str = backup_path
+        self.clean: bool = clean
+        self.state: dict[str, int] = {'last_written': -1, 'file_size': 0}
+        # Truncate once after resuming, as the file may contain data written after the last state save
+        self._needs_truncate: bool = True
+        self._load_existing_state()
+
+    @property
+    def last_written(self) -> int:
+        return int(self.state.get('last_written', -1))
+
+    def _load_existing_state(self) -> None:
+        """Restore download progress if a state file exists and agrees with the .ts file."""
+        if not os.path.exists(self.ts_path):
+            return
+        ts_size = os.path.getsize(self.ts_path)
+        # The newest state file is tried first. It is only valid if the .ts file is at least as
+        # large as the recorded size (it may not be after an OS crash), otherwise the backup is used.
+        for path in (self.state_path, self.backup_path):
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r") as file:
+                    loaded = json.load(file)
+                if ts_size >= loaded.get('file_size', 0) and loaded.get('last_written', None) is not None:
+                    self.state = {'last_written': int(loaded['last_written']), 'file_size': int(loaded.get('file_size', 0))}
+                    self.logger.debug(f"Resumed state: {self.state}")
+                    return
+            except Exception as e:
+                self.logger.warning(f"Failed to load state file {path}: {e}")
+
+    def _save_state(self) -> None:
+        """Atomically write the state file, keeping the previous one as a backup."""
+        tmp_path = f"{self.state_path}.tmp"
+        try:
+            with open(tmp_path, "w") as f:
+                json.dump(self.state, f, indent=4)
+            if os.path.exists(self.state_path):
+                os.replace(self.state_path, self.backup_path)
+            os.replace(tmp_path, self.state_path)
+        except Exception as e:
+            self.logger.warning(f"Failed to save state file: {e}")
+
+    def is_fresh(self) -> bool:
+        return self.state.get('file_size', 0) == 0 and self.last_written < 0
+
+    def set_start(self, start_seg: int) -> None:
+        """Begin writing at start_seg (used for --start-time) if nothing has been written yet."""
+        if self.is_fresh() and start_seg > 0:
+            self.state['last_written'] = start_seg - 1
+
+    def has(self, seg: int) -> bool:
+        return seg <= self.last_written or seg in self.pending
+
+    def count(self) -> int:
+        return max(0, self.last_written + 1) + len(self.pending)
+
+    def first_needed(self) -> int:
+        return self.last_written + 1
+
+    def add(self, seg: int, data: bytes) -> None:
+        if seg > self.last_written:
+            super().add(seg, data)
+
+    def skip_to(self, seg: int) -> None:
+        """Give up on segment `seg` (exceeded retries) so later segments can be written."""
+        if seg == self.last_written + 1:
+            self.state['last_written'] = seg
+            self.flush()
+
+    def flush(self, force: bool = False) -> None:
+        if self.pending.get(self.last_written + 1) is None:
+            return
+        mode = 'wb' if self.state.get('file_size', 0) == 0 else 'r+b'
+        is_first = self.state.get('file_size', 0) == 0
+        written_any = False
+        with open(self.ts_path, mode, buffering=WRITE_BUFFER_SIZE) as f:
+            if mode != 'wb':
+                f.seek(self.state['file_size'])
+                if self._needs_truncate:
+                    f.truncate()
+            self._needs_truncate = False
+            # Write all available consecutive segments
+            while self.pending.get(self.last_written + 1) is not None:
+                seg = self.last_written + 1
+                write_segment(f, self.pending.pop(seg), self.clean, is_first)
+                is_first = False
+                written_any = True
+                self.state['last_written'] = seg
+                self.state['file_size'] = f.tell()
+                self.logger.debug(f"Written segment {seg}, file size: {self.state['file_size']} bytes")
+        if written_any:
+            self._save_state()
+        # Drop anything that can no longer be written (at or before last_written)
+        for seg in [s for s in self.pending if s <= self.last_written]:
+            self.pending.pop(seg, None)
+
+    def write_remaining(self) -> None:
+        """At the end of a download, write buffered segments after gaps in order (gaps are skipped)."""
+        self.flush(force=True)
+        if not self.pending:
+            return
+        self.logger.warning("Writing {0} buffered segment(s) after missing segment(s) {1}".format(
+            len(self.pending), self.last_written + 1))
+        for seg in sorted(self.pending):
+            if seg > self.last_written + 1:
+                self.state['last_written'] = seg - 1
+            self.flush(force=True)
+
+    def size_on_disk(self) -> int:
+        return int(self.state.get('file_size', 0))
+
+    def delete_state_files(self) -> None:
+        for path in (self.state_path, self.backup_path, f"{self.state_path}.tmp"):
+            _remove_file(path, self.logger)
+
+
+# ==============================================================================================
+# Stream downloaders
+# ==============================================================================================
+
+class LoopAction(enum.Enum):
+    PROCEED = 0    # carry on to submitting downloads this iteration
+    CONTINUE = 1   # skip submitting this iteration
+    BREAK = 2      # leave the download loop
+
+
+class StreamPaths:
+    """All file paths used for one format of one stream."""
+    def __init__(self, options: dict, video_id: str, format_id: str, in_memory: bool):
+        # 'file_name' and 'folder' are legacy keys that were used inconsistently by older code paths
+        self.filename: str = str(_opt(options, 'filename', 'file_name', default=video_id))
+        self.folder: Optional[str] = _opt(options, 'download_folder', 'folder', default=None) or None
+        if self.folder:
+            os.makedirs(self.folder, exist_ok=True)
+
+        def in_folder(name: str) -> str:
+            return os.path.join(self.folder, name) if self.folder else name
+
+        self.file_base_name: str = in_folder(self.filename)
+        self.merged_file_name: str = in_folder("{0}.{1}.ts".format(self.filename, format_id))
+        self.temp_db_file: str = ':memory:' if in_memory else in_folder('{0}.{1}.temp'.format(self.filename, format_id))
+        self.state_file: str = in_folder(f"{self.filename}.{format_id}.state")
+        self.state_backup: str = in_folder(f"{self.filename}.{format_id}.state.bkup")
+
+
+class StreamDownloaderBase:
+    """
+    Shared lifecycle for downloading the segments of a single format.
+
+    Subclasses provide the storage (`_make_store`), the scheduling of segments (`_next_segments`),
+    handling of results (`_on_segment_result`) and the decision logic run on every iteration
+    (`_evaluate`). The main loop itself (`live_dl`) is shared.
+    """
+    timeout_config = httpx.Timeout(10.0, connect=5.0)
+    ATOM_BASED_EXTENSIONS = ATOM_BASED_EXTENSIONS
+    # 30-second hard limit for the entire download of one segment per attempt
+    MAX_SEGMENT_DURATION: float = 30.0
+    STATUS_FORCELIST = frozenset({204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504})
+    # Per segment request retry back-off: min(BACKOFF_MAX, BACKOFF_FACTOR * 2**attempt) seconds
+    BACKOFF_FACTOR: float = 1.0
+    BACKOFF_MAX: float = 4.0
+    # Poll interval while waiting for futures
+    POLL_INTERVAL: float = 1.0
+    mode_name: str = "stream"
+
+    def __init__(self, info_dict: dict, stream_url: Optional[YoutubeURL.YoutubeURL], options: Optional[dict] = None,
+                 livestream_coordinator: Optional["LiveStreamDownloader"] = None, **kwargs):
+        self.livestream_coordinator = livestream_coordinator
+        if self.livestream_coordinator:
+            self.logger: LoggerLike = self.livestream_coordinator.logger
+            self.kill_all: threading.Event = self.livestream_coordinator.kill_all
+            self.kill_this: threading.Event = self.livestream_coordinator.kill_this
+        else:
+            self.logger = logging.getLogger()
+            self.kill_all = threading.Event()
+            self.kill_this = threading.Event()
+        self._local_stats: dict = {}
+
+        self.options: dict = dict(options or {})
+        self.info_dict: dict = info_dict
+        self.live_status: Optional[str] = info_dict.get('live_status') or kwargs.get('live_status')
+
+        # --- Options (internal key names first, then the CLI key names) ---
+        self.batch_size: int = int(_opt(self.options, 'batch_size', default=10))
+        self.max_workers: int = max(1, int(_opt(self.options, 'max_workers', 'threads', default=2)))
+        self.fragment_retries: int = int(_opt(self.options, 'fragment_retries', 'segment_retries', default=10))
+        self.yt_dlp_options: Optional[dict] = _opt(self.options, 'ytdlp_options', 'yt_dlp_options')
+        self.include_dash: bool = bool(_opt(self.options, 'include_dash', 'dash', default=False))
+        self.include_m3u8: bool = bool(_opt(self.options, 'include_m3u8', 'm3u8', default=False))
+        self.force_m3u8: bool = bool(self.options.get('force_m3u8', False))
+        self.resolution: str = self.options.get("resolution") or "bv+ba/best"
+        self.yt_dlp_sort: Optional[str] = _opt(self.options, 'custom_sort', 'yt_dlp_sort')
+        self.wait_limit: int = int(self.options.get("wait_limit") or 0)
+        self.cookies: Optional[str] = self.options.get('cookies')
+        self.proxies = _opt(self.options, 'proxies', 'proxy')
+        self.database_in_memory: bool = bool(self.options.get('database_in_memory', False))
+        self.url_refresh_interval: Optional[float] = self.options.get('url_refresh_interval')
+        self.url_refresh_jitter: float = float(_opt(self.options, 'url_refresh_jitter', default=DEFAULT_URL_REFRESH_JITTER))
+        self.recovery_thread_multiplier: int = int(self.options.get('recovery_thread_multiplier', 2))
+
+        # --- Stream URL(s) ---
+        self.stream_urls: list[YoutubeURL.YoutubeURL] = self._initial_stream_urls(stream_url, kwargs)
+        if not self.stream_urls:
+            raise ValueError("Stream URL not found for {0}, unable to continue".format(self.resolution))
+        self.stream_url: YoutubeURL.YoutubeURL = self._choose_initial_url()
+        self.id: str = info_dict.get('id') or self.stream_url.id
+        # A stream with a video codec is video, everything else is audio
+        self.type: str = "video" if (stream_url or self.stream_url).vcodec else "audio"
+        self.format = self.stream_url.format_id
+        self.ext: Optional[str] = self.stream_url.ext
+        self.logger.debug("{0} stream URL parameters: {1}".format(self.id, json.dumps(self.stream_url.url_parameters)))
+        self._validate_urls()
+
+        # --- Paths ---
+        self.paths = StreamPaths(self.options, self.id, self.format, self.database_in_memory)
+        self.folder = self.paths.folder
+        self.file_base_name = self.paths.file_base_name
+        self.merged_file_name = self.paths.merged_file_name
+        self.temp_db_file = self.paths.temp_db_file
+
+        # --- State ---
+        self.latest_sequence: int = -1
+        self.estimated_segment_duration: float = 0
+        self.is_403: bool = False
+        self.is_401: bool = False
+        self.is_private: bool = False
+        self.is_members_error: bool = False
+        self.refresh_retries: int = 0
+        self.following_manifest_thread: Optional[threading.Thread] = None
+        self._refresh_state: dict = {}
+        self._last_head_time: Optional[float] = None
+        self.sqlite_thread = threading.get_ident()
+
+        # --- Requested time window (--start-time / --end-time) ---
+        self.start_time: Optional[float] = self.options.get('start_time')
+        self.end_time: Optional[float] = self.options.get('end_time')
+        self.start_seg: int = 0
+        self.end_seg: float = float('inf')
+        self._window_seconds: Optional[tuple[float, Optional[float]]] = None
+        self._window_resolved: bool = self.start_time is None and self.end_time is None
+
+        _quiet_httpx_logging(self.logger)
+        self.client: httpx.Client = self._create_client()
+        self.store: SegmentStore = self._make_store()
+        self.already_downloaded: set[int] = self.store.downloaded
+
+        try:
+            self.update_latest_segment()
+        except BaseException:
+            # Don't leak the open database / HTTP client if construction fails
+            self.close()
+            raise
+        self.url_checked: float = time.time()
+        self._schedule_next_refresh()
+        self._stats()["latest_sequence"] = self.latest_sequence
+
+    # --- Hooks with default implementations ---
+
+    def _initial_stream_urls(self, stream_url: Optional[YoutubeURL.YoutubeURL], kwargs: dict) -> list[YoutubeURL.YoutubeURL]:
+        return [stream_url] if stream_url is not None else []
+
+    def _choose_initial_url(self) -> YoutubeURL.YoutubeURL:
+        return self.stream_urls[0]
+
+    def _validate_urls(self) -> None:
+        pass
+
+    def _make_store(self) -> SegmentStore:
+        raise NotImplementedError
+
+    # --- Context management ---
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def close(self) -> None:
+        self.close_connection()
+        with contextlib.suppress(Exception):
+            self.client.close()
+
+    def close_connection(self) -> None:
+        """Close the segment store (flushing buffered segments). Kept under its historical name."""
+        store = getattr(self, "store", None)
+        if store is not None and threading.get_ident() == self.sqlite_thread:
+            store.close()
+
+    # --- Small helpers ---
+
+    def _create_client(self) -> httpx.Client:
+        return create_http_client(proxies=self.proxies, headers=self.info_dict.get("http_headers"),
+                                  max_connections=self.max_workers + 2, timeout=self.timeout_config)
+
+    def _ensure_client(self) -> httpx.Client:
+        if self.client is None or self.client.is_closed:
+            self.client = self._create_client()
+        return self.client
+
+    def _stats(self) -> dict:
+        """Stats dictionary of this format (shared with the coordinator for printing)."""
+        if self.livestream_coordinator:
+            return self.livestream_coordinator.stats.setdefault(self.type, {})
+        return self._local_stats.setdefault(self.type, {})
+
+    def _graceful_stop_requested(self) -> bool:
+        return bool(self.livestream_coordinator and self.livestream_coordinator.graceful_stop.is_set())
+
+    def get_expire_time(self, url: YoutubeURL.YoutubeURL) -> Optional[int]:
+        return url.expire
+
+    def _url_is_valid(self, url: YoutubeURL.YoutubeURL, now: Optional[float] = None) -> bool:
+        """URLs without an expire parameter are assumed to stay valid."""
+        expire = self.get_expire_time(url)
+        return expire is None or expire > (now or time.time())
+
+    def unique_stream_urls(self, stream_urls: list) -> list:
+        return list({str(stream_url): stream_url for stream_url in stream_urls}.values())
+
+    def should_clean(self, ext=None) -> bool:
+        return should_clean(ext)
+
+    def get_atoms(self, data):
+        return get_atoms(data)
+
+    def clean_segments(self, data, first=True):
+        return clean_segment(data, first=first)
+
+    def smart_sleep(self, timeout: float) -> None:
+        """Sleep, but wake up early if a graceful stop or kill is requested."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        graceful = self.livestream_coordinator.graceful_stop if self.livestream_coordinator else None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or self.kill_all.is_set() or self.kill_this.is_set():
+                return
+            if graceful is not None:
+                if graceful.wait(min(remaining, 0.5)):
+                    return
+            else:
+                time.sleep(min(remaining, 0.5))
+
+    def check_kill(self, executor: Optional[concurrent.futures.ThreadPoolExecutor] = None, tasks=None) -> None:
+        """Checks kill flags. If set, cancels outstanding work and raises KeyboardInterrupt."""
+        if self.kill_all.is_set() or self.kill_this.is_set():
+            try:
+                self.logger.debug("Kill command detected, ending...")
+                if executor is not None:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                if tasks is not None:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                self.close_connection()
+            except Exception:
+                self.logger.exception("Unable to perform cleanup")
+            raise KeyboardInterrupt("Kill command executed")
+
+    # --- HTTP ---
+
+    def get_Headers(self, url, client: Optional[httpx.Client] = None) -> Optional[httpx.Headers]:
+        """
+        Request `url` and return the response headers without downloading the body.
+        The body (a full media segment) is not needed; closing the streamed response early saves
+        downloading a whole segment every time the live edge is probed.
+        """
+        client = client if (client is not None and not client.is_closed) else self._ensure_client()
+        try:
+            with client.stream("GET", str(url)) as response:
+                # 200 and 204 responses appear to have valid headers so far
+                if response.status_code in (200, 204):
+                    self.is_403 = self.is_401 = False
+                elif response.status_code == 403:
+                    self.logger.warning("Received 403 error, marking for URL refresh...")
+                    self.is_403 = True
+                elif response.status_code == 401:
+                    self.is_401 = True
+                else:
+                    self.logger.debug("Error retrieving headers: {0}".format(response.status_code))
+                    self.logger.debug(json.dumps(dict(response.headers), indent=4))
+                return response.headers
+        except httpx.TimeoutException as e:
+            self.logger.info("Timed out updating fragments: {0}".format(e))
+        except Exception as e:
+            self.logger.exception("\033[31m{0}\033[0m".format(e))
+        return None
+
+    def download_segment(self, segment_url: str, segment_order: int, client: Optional[httpx.Client] = None,
+                         immediate_403s: bool = False, max_retries: Optional[int] = None) -> SegmentResult:
+        total_retries = self.fragment_retries if max_retries is None else max_retries
+        backoff_factor = self.BACKOFF_FACTOR
+        backoff_max = self.BACKOFF_MAX
+
+        for attempt in range(total_retries + 1):
+            if self._graceful_stop_requested():
+                return -1, None, segment_order, None, None
+            if client is None or client.is_closed:
+                # Previously a new client was created here but never assigned
+                client = self._ensure_client()
+
+            start_time = time.monotonic()
+            try:
+                self.check_kill()
+
+                with client.stream("GET", segment_url) as response:
+                    status = response.status_code
+                    headers = response.headers
+                    head_seq = _int_header(headers, "X-Head-Seqnum")
+                    head_seq = -1 if head_seq is None else head_seq
+
+                    if status == 403 and immediate_403s:
+                        self.is_403 = True
+
+                    if status in self.STATUS_FORCELIST and attempt < total_retries:
+                        raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
+
+                    # Handle auth flags
+                    if status == 403:
+                        self.is_403 = True
+                        self.logger.warning("({0}) Encountered 403 status when downloading segment {1}".format(self.format, segment_order))
+                    elif status == 401:
+                        self.is_401 = True
+                        self.logger.warning("({0}) Encountered 401 status when downloading segment {1}. This can be cause by using too many threads.".format(self.format, segment_order))
+                    elif status in (200, 204):
+                        self.is_403 = self.is_401 = False
+
+                    if status == 200:
+                        chunks: list[bytes] = []
+                        # Use 64kb chunks to regularly check progress against the hard time limit
+                        for chunk in response.iter_bytes(chunk_size=(64 * 1024)):
+                            if (time.monotonic() - start_time) > self.MAX_SEGMENT_DURATION:
+                                raise httpx.TimeoutException("Download exceeded hard limit of {0}".format(self.MAX_SEGMENT_DURATION))
+                            chunks.append(chunk)
+                        # A single join is the only copy of the data
+                        return head_seq, b"".join(chunks), int(segment_order), status, headers
+                    elif status == 204:
+                        return head_seq, bytes(), int(segment_order), status, headers
+                    else:
+                        self.logger.warning("({0}) Unexpected status returned {1}".format(self.format, status))
+                        return head_seq, None, int(segment_order), status, headers
+
+            except httpx.ConnectTimeout:
+                if attempt >= total_retries:
+                    raise
+            except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException) as e:
+                if attempt >= total_retries:
+                    self.logger.warning("({0}) Unexpected error downloading segment {1} file after {2} attempts {3}".format(self.format, segment_order, attempt, e))
+                    response = getattr(e, 'response', None) if isinstance(e, httpx.HTTPStatusError) else None
+                    return -1, None, segment_order, getattr(response, 'status_code', None), None
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                self.logger.exception(f"Unknown error: {e}")
+                if attempt >= total_retries:
+                    return -1, None, segment_order, None, None
+
+            # Exponential backoff with jitter so parallel workers don't retry in lock-step
+            sleep_time = min(backoff_max, backoff_factor * (2 ** attempt)) * random.uniform(0.75, 1.0)
+            self.smart_sleep(sleep_time)
+        return -1, None, segment_order, None, None
+
+    def _apply_head_headers(self, headers: Optional[httpx.Headers], set_type_from_content: bool = False) -> None:
+        """Update latest sequence, segment duration and extension from response headers."""
+        if headers is None:
+            return
+        head_seq = _int_header(headers, "X-Head-Seqnum")
+        if head_seq is not None and head_seq > self.latest_sequence:
+            self._on_head_advanced(self.latest_sequence, head_seq)
+            self.latest_sequence = head_seq
+            self.logger.debug("Latest sequence: {0}".format(self.latest_sequence))
+
+        head_time = _int_header(headers, "X-Head-Time-Sec")
+        if head_time is not None:
+            self._last_head_time = float(head_time)
+            # Prefer the response's own head sequence; guards against dividing by a zero sequence
+            duration = estimate_segment_duration(head_time, head_seq if head_seq else self.latest_sequence)
+            if duration:
+                self.estimated_segment_duration = duration
+                self._recalculate_window()
+
+        file_type, ext = parse_content_type(headers.get('Content-Type'))
+        if file_type in ("video", "audio"):
+            if set_type_from_content:
+                self.type, self.ext = file_type, ext
+            elif not self.ext:
+                self.ext = ext
+
+    def _on_head_advanced(self, old_head: int, new_head: int) -> None:
+        """Called before latest_sequence moves from old_head to new_head."""
+        pass
+
+    def update_latest_segment(self, client: Optional[httpx.Client] = None, url=None) -> None:
+        # Kill if keyboard interrupt is detected
+        self.check_kill()
+        headers = self.get_Headers(url=url or self.stream_url, client=client)
+        self._apply_head_headers(headers)
+        self._stats()["latest_sequence"] = self._window_latest()
+
+    # --- Time window (--start-time / --end-time) ---
+
+    def _time_reference(self, head_time: float) -> float:
+        """Shared live-edge reference so video and audio resolve negative times identically."""
+        if self.livestream_coordinator:
+            return self.livestream_coordinator.resolve_time_reference(head_time)
+        if not hasattr(self, "_own_time_reference"):
+            self._own_time_reference = head_time
+        return self._own_time_reference
+
+    def _try_resolve_window(self) -> bool:
+        """Resolve the requested time window into segment numbers. Returns True once resolved."""
+        if self._window_resolved:
+            return True
+        if self.estimated_segment_duration <= 0:
+            headers = self.get_Headers(url=self.stream_url)
+            self._apply_head_headers(headers)
+            if self.estimated_segment_duration <= 0:
+                return False
+        reference = None
+        if is_relative_time(self.start_time) or is_relative_time(self.end_time):
+            if self._last_head_time is None:
+                return False
+            reference = self._time_reference(self._last_head_time)
+        self._window_seconds = resolve_window_seconds(self.start_time, self.end_time, reference)
+        self._window_resolved = True
+        self._recalculate_window()
+        self.logger.debug(f"Segments calculated: Start={self.start_seg}, End={self.end_seg}")
+        self._on_window_resolved()
+        return True
+
+    def _recalculate_window(self) -> None:
+        # The estimate is refined as more segments arrive, so the segment window is recalculated
+        if self._window_seconds is None or self.estimated_segment_duration <= 0:
+            return
+        self.start_seg, self.end_seg = seconds_to_segment_window(*self._window_seconds, self.estimated_segment_duration)
+
+    def _on_window_resolved(self) -> None:
+        pass
+
+    def _window_limited(self) -> bool:
+        return self.start_seg != 0 or self.end_seg != float('inf')
+
+    def _in_window(self, seg: int) -> bool:
+        return self.start_seg <= seg <= self.end_seg
+
+    def _window_latest(self) -> int:
+        """Latest sequence number expressed relative to the window (for stats)."""
+        if self._window_limited():
+            return int(max(0, min(self.latest_sequence, self.end_seg) - self.start_seg))
+        return self.latest_sequence
+
+    # --- URL refresh ---
+
+    def _schedule_next_refresh(self) -> None:
+        self.next_refresh_at: float = next_refresh_time(time.time(), self.get_expire_time(self.stream_url),
+                                                        self.url_refresh_interval, self.url_refresh_jitter)
+
+    def refresh_Check(self, wait: bool = True):
+        """Refresh URLs if a periodic refresh is due, 403s persist, or no unexpired URL remains."""
+        now = time.time()
+        self.stream_urls = [url for url in self.unique_stream_urls(self.stream_urls) if self._url_is_valid(url, now)]
+
+        # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership
+        due = now >= self.next_refresh_at
+        recent_403 = (now - self.url_checked >= REFRESH_403_AFTER_SECONDS and self.is_403)
+        if (due or recent_403 or len(self.stream_urls) <= 0) and not self.is_private:
+            return self.refresh_url(wait=wait)
+        return None
+
+    def _fetch_refreshed_info(self, ignore_no_formats: bool) -> tuple[dict, str]:
+        common = dict(cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash,
+                      include_m3u8=(self.include_m3u8 or self.force_m3u8), ignore_no_formats=ignore_no_formats,
+                      logger=self.logger)
+        if self.livestream_coordinator:
+            # The coordinator shares one extraction between all formats (and rate limits them)
+            return self.livestream_coordinator.refresh_info_json(
+                update_threshold=min(900.0, time.time() - self.url_checked), id=self.id, proxy=self.proxies, **common)
+        return getUrls.get_Video_Info(self.id, wait=False, proxy=self.proxies, **common)
+
+    def refresh_url(self, follow_manifest: bool = True, wait: bool = True, ignore_no_formats: bool = False):
+        """
+        Refresh the stream URL (yt-dlp extraction), possibly in a background thread.
+
+        Returns:
+            "IN_PROGRESS" - a background refresh is running (only when wait=False)
+            True          - a new manifest was detected and is being followed by another thread
+            False         - the stream is no longer live
+            None          - refreshed (or failed to refresh) and the stream is still live
+        """
+        exc = res = None
+        state = self._refresh_state
+        if not state:
+            state.update({'thread': None, 'status': 'IDLE', 'result': None, 'exc': None})
+
+        # 1. Check if the background thread is currently running
+        if state.get('status') == 'IN_PROGRESS':
+            thread = state.get('thread')
+            if thread and thread.is_alive():
+                if wait:
+                    thread.join()
+                    state['status'] = 'DONE'
+                else:
+                    return "IN_PROGRESS"
+            else:
+                state['status'] = 'DONE'
+
+        # 2. If the thread finished, grab the results and reset the state
+        if state.get('status') == 'DONE':
+            exc, res = state.get('exc'), state.get('result')
+            state.update({'thread': None, 'status': 'IDLE', 'result': None, 'exc': None})
+
+        # Only start a refresh if a manifest-follow thread isn't active
+        elif self.following_manifest_thread is None and not self._graceful_stop_requested():
+            # 3. Otherwise we are IDLE: start the background thread
+            self.logger.info("Starting background URL refresh for {0}".format(self.format))
+            state['status'] = 'IN_PROGRESS'
+
+            def fetch_url_data():
+                try:
+                    state['result'] = self._fetch_refreshed_info(ignore_no_formats)
+                except BaseException as e:  # KeyboardInterrupt from an interrupted wait is also stored
+                    state['exc'] = e
+
+            state['thread'] = threading.Thread(target=fetch_url_data, daemon=True)
+            state['thread'].start()
+
+            if not wait:
+                return "IN_PROGRESS"
+            state['thread'].join()
+            exc, res = state.get('exc'), state.get('result')
+            state.update({'thread': None, 'status': 'IDLE', 'result': None, 'exc': None})
+
+        # 4. Process the retrieved results
+        if self.following_manifest_thread is None and (exc is not None or res is not None):
+            if self._process_refresh_result(res, exc, follow_manifest):
+                return True
+
+        self.url_checked = time.time()
+        self._schedule_next_refresh()
+
+        if self.live_status not in ['is_live', 'is_upcoming']:
+            self.logger.debug("Livestream has ended.")
+            return False
+
+        expire = self.get_expire_time(self.stream_url)
+        if expire is not None and expire < time.time():
+            raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
+
+        return None
+
+    def _process_refresh_result(self, res, exc, follow_manifest: bool) -> bool:
+        """Apply a refresh result. Returns True if a new manifest was detected."""
+        try:
+            if exc:
+                raise exc
+            info_dict, live_status = res
+
+            if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
+                return True
+
+            if live_status:
+                self.live_status = live_status
+
+            resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
+            stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort,
+                                                           include_dash=self.include_dash, include_m3u8=self.include_m3u8,
+                                                           force_m3u8=self.force_m3u8, stream_type=self.type, logger=self.logger)
+            if stream_url is not None:
+                self.stream_url = stream_url
+                self.stream_urls.append(stream_url)
+                now = time.time()
+                self.stream_urls = [url for url in self.unique_stream_urls(self.stream_urls) if self._url_is_valid(url, now)]
+                self.refresh_retries = 0
+                self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Refreshed stream URL with {0} - {1}".format(stream_url.format_id, stream_url.format_note))
+                self.is_members_error = False
+            else:
+                self.logger.warning("Unable to refresh URLs for {0} on format {2} ({1})".format(self.id, self.format, resolution))
+
+            if info_dict:
+                self.info_dict = info_dict
+
+        except getUrls.VideoInaccessibleError as e:
+            error_msg = str(e).lower()
+            self.logger.warning("Video Inaccessible error: {0}".format(e))
+            if "private" in error_msg or self.is_403:
+                self.logger.warning("{0} is Inaccessible and is either private or experiencing 403 errors. Marking as private.".format(self.id))
+                self.is_private = True
+            elif "membership" in error_msg or "premium" in error_msg:
+                self.logger.warning("{0} is now members only or premium. Continuing until 403 errors".format(self.id))
+                self.is_members_error = True
+            else:
+                if "recording is not available" in error_msg:
+                    self.logger.warning("Recording is not available, marking as post-live")
+                else:
+                    self.logger.warning("Stream is inaccessible but not encountering 403 errors. Marking as post-live.")
+                self.live_status = "post_live"
+        except getUrls.VideoUnavailableError as e:
+            self.logger.warning("Video unavailable; treating the active recording as post-live: {0}".format(e))
+            self.live_status = "post_live"
+        except getUrls.VideoProcessedError as e:
+            # Livestream has been processed
+            self.logger.exception("Error refreshing URL: {0}".format(e))
+            self.logger.info("Livestream has ended and processed.")
+            self.live_status = "was_live"
+        except getUrls.LivestreamError:
+            self.logger.debug("Livestream has ended.")
+            self.live_status = "post_live"
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            self.logger.exception("Error: {0}".format(e))
+        return False
+
+    # --- New manifest handling ---
+
+    def _follow_new_manifest(self, info_json: dict, new_url: YoutubeURL.YoutubeURL, manifest_key, extra_options: Optional[dict] = None) -> None:
+        """Start a thread downloading `new_url` into its own files, registered under manifest_key."""
+        self.store.flush(force=True)
+        new_options = copy.copy(self.options)
+        new_options.update(extra_options or {})
+        # Distinct file name (without folder; the folder is applied separately) so the new manifest
+        # never shares a temp database / state file with this one
+        new_options.update({
+            "filename": f"{self.paths.filename}.{new_url.manifest}",
+            "download_folder": self.paths.folder,
+        })
+        new_options.pop("file_name", None)
+        new_params = {
+            "info_dict": info_json,
+            "stream_url": new_url,
+            "manifest": manifest_key,
+            "options": new_options,
+        }
+        download_function: Optional[Callable] = new_options.get("download_function")
+        if download_function is not None:
+            target, kwargs = download_function, new_params
+        else:
+            stream_cls = self.__class__
+            coordinator = self.livestream_coordinator
+
+            def run_standalone():
+                # The instance must be created inside the thread: its SQLite connection can only be
+                # used by the thread that created it
+                with stream_cls(info_dict=info_json, stream_url=new_url, options=new_options,
+                                livestream_coordinator=coordinator) as instance:
+                    instance.live_dl()
+                    instance.finalize()
+
+            target, kwargs = run_standalone, {}
+        self.following_manifest_thread = threading.Thread(target=target, kwargs=kwargs, daemon=True)
+        self.following_manifest_thread.start()
+
+    def detect_manifest_change(self, info_json, follow_manifest: bool = True) -> bool:
+        """
+        A restarted stream gets a new manifest number in its URLs and restarts sequence numbers.
+        Detect that and download the new manifest in a separate thread (and separate files).
+        """
+        resolution = "bv+ba/best"
+        try:
+            resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
+            self.logger.debug("Searching for new manifest of same format {0}".format(resolution))
+            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash,
+                                                                include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
+            if temp_stream_url is not None:
+                if (temp_stream_url.itag is not None and temp_stream_url.protocol == self.stream_url.protocol
+                        and temp_stream_url.itag == self.stream_url.itag and temp_stream_url.manifest != self.stream_url.manifest):
+                    self.logger.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
+                    if follow_manifest:
+                        self._follow_new_manifest(info_json, temp_stream_url, manifest_key=temp_stream_url.manifest)
+                    else:
+                        self.store.flush(force=True)
+                    return True
+                return False
+        except (yt_dlp.utils.ExtractorError, ValueError):
+            self.logger.warning("Unable to find stream of same format ({0}) for {1}".format(resolution, self.id))
+
+        # The same format is no longer available. Try the same resolution, then the best stream.
+        for search_resolution, description, extra in ((self.resolution, "resolution", {}),
+                                                      ("bv+ba/best", "best", {"resolution": "bv+ba/best"})):
+            if description == "best" and self.resolution == "audio_only":
+                continue
+            try:
+                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=search_resolution, include_dash=self.include_dash,
+                                                                    include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type,
+                                                                    sort=self.yt_dlp_sort)
+                if temp_stream_url is None:
+                    continue
+                self.logger.debug("Searching for new manifest of same {0} {1}".format(description, search_resolution))
+                if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
+                    self.logger.warning("({2}) New manifest for {3} {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(
+                        search_resolution, self.format, self.id, description))
+                    if follow_manifest:
+                        # Register under the new manifest number. If the manifest number is unchanged
+                        # (only the format changed) use the old itag so this format's files aren't replaced.
+                        manifest_key = self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else temp_stream_url.manifest
+                        self._follow_new_manifest(info_json, temp_stream_url, manifest_key=manifest_key, extra_options=extra)
+                    else:
+                        self.store.flush(force=True)
+                    return True
+                return False
+            except (yt_dlp.utils.ExtractorError, ValueError):
+                self.logger.warning("Unable to find any stream for {0} when searching {1} {2}".format(self.id, description, search_resolution))
+        return False
+
+    # --- Main loop ---
+
+    def _on_start(self) -> None:
+        self._stats()['status'] = "recording"
+
+    def _pre_iteration(self) -> None:
+        pass
+
+    def _on_segment_result(self, seg: Optional[int], result: Optional[SegmentResult], error: Optional[BaseException]) -> None:
+        raise NotImplementedError
+
+    def _evaluate(self) -> LoopAction:
+        raise NotImplementedError
+
+    def _next_segments(self, capacity: int) -> list[int]:
+        raise NotImplementedError
+
+    def _url_for_segment(self, seg: int) -> str:
+        return self.stream_url.segment(seg)
+
+    def _download_args(self, seg: int) -> tuple:
+        return (self._url_for_segment(seg), seg, self.client)
+
+    def _on_finish(self) -> None:
+        if self.following_manifest_thread is not None:
+            self.following_manifest_thread.join()
+
+    def _loop_result(self):
+        return True
+
+    def _collect_results(self) -> tuple[int, int]:
+        """Wait for finished downloads (or sleep if none are running) and process them."""
+        if not self.future_to_seg:
+            # concurrent.futures.wait returns immediately for an empty set, which would busy-loop
+            self.smart_sleep(self.POLL_INTERVAL)
+            return 0, 0
+        done, not_done = concurrent.futures.wait(self.future_to_seg, timeout=self.POLL_INTERVAL,
+                                                 return_when=concurrent.futures.FIRST_COMPLETED)
+        for future in done:
+            seg = self.future_to_seg.pop(future, None)
+            result = error = None
+            try:
+                result = future.result()
+            except BaseException as e:
+                error = e
+            try:
+                if result is not None:
+                    self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
+                        result[2], result[3], "None" if result[1] is None else f"{len(result[1])} bytes", self.format))
+                    self._apply_head_headers(result[4])
+                    if result[0] is not None and result[0] > self.latest_sequence:
+                        self.logger.debug("More segments available: {0}, previously {1}".format(result[0], self.latest_sequence))
+                        self._on_head_advanced(self.latest_sequence, result[0])
+                        self.latest_sequence = result[0]
+                elif isinstance(error, httpx.ConnectTimeout):
+                    self.logger.warning('({0}) Experienced connection timeout while fetching segment {1}'.format(self.format, seg))
+                elif isinstance(error, KeyboardInterrupt):
+                    pass
+                elif error is not None:
+                    self.logger.error("An unknown error occurred downloading segment {0}: {1}".format(seg, error), exc_info=error)
+                self._on_segment_result(result[2] if result is not None else seg, result, error)
+            except Exception:
+                self.logger.exception("An unknown error occurred processing segment {0}".format(seg))
+            finally:
+                self.submitted_segments.discard(seg)
+                if result is not None:
+                    self.submitted_segments.discard(result[2])
+        return len(done), len(not_done)
+
+    def _submit_segments(self, executor: concurrent.futures.ThreadPoolExecutor, done_count: int, not_done_count: int) -> None:
+        # Grow the submission window while all submitted work completes quickly, shrink otherwise
+        if not_done_count <= 0 and done_count > 0:
+            self.thread_window_size = min(3 * self.thread_window_size, max(10, 20 * self.max_workers))
+        else:
+            self.thread_window_size = max(self.thread_window_size // 2, 2 * self.max_workers)
+        limit = max(10, 2 * self.max_workers, self.thread_window_size)
+        if self.store.is_backlogged():
+            # Segments can't be persisted (e.g. disk full); don't download more into memory
+            return
+        capacity = limit - len(self.future_to_seg) + 1
+        if capacity <= 0:
+            return
+        for seg in self._next_segments(capacity):
+            self._submit(executor, seg)
+
+    def _submit(self, executor: concurrent.futures.ThreadPoolExecutor, seg: int, max_retries: Optional[int] = None) -> None:
+        args = self._download_args(seg)
+        future = executor.submit(self.download_segment, *args, max_retries=max_retries) if max_retries is not None \
+            else executor.submit(self.download_segment, *args)
+        self.future_to_seg[future] = seg
+        self.submitted_segments.add(seg)
+
+    def live_dl(self):
+        self.logger.info("\033[33mStarting download of live fragments ({0} - {1}) [{2}]\033[0m".format(
+            self.format, self.stream_url.format_note, self.mode_name))
+        self.future_to_seg: dict[concurrent.futures.Future, int] = {}
+        self.submitted_segments: set[int] = set()
+        self.thread_window_size: int = 2 * self.max_workers
+        self._on_start()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers,
+                                                   thread_name_prefix="{0}-{1}".format(self.id, self.format)) as executor:
+            self._executor = executor
+            try:
+                while True:
+                    self.check_kill(executor)
+                    if self._graceful_stop_requested():
+                        self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
+                        break
+
+                    self._pre_iteration()
+                    done_count, not_done_count = self._collect_results()
+                    self.store.flush()
+                    self._update_progress_stats()
+
+                    action = self._evaluate()
+                    if action is LoopAction.BREAK:
+                        break
+                    if action is LoopAction.CONTINUE:
+                        continue
+                    self._submit_segments(executor, done_count, not_done_count)
+            finally:
+                self._executor = None
+            self.store.flush(force=True)
+        self._update_progress_stats()
+        self._on_finish()
+        return self._loop_result()
+
+    def _update_progress_stats(self) -> None:
+        stats = self._stats()
+        stats["latest_sequence"] = self._window_latest()
+        stats["downloaded_segments"] = self.store.count()
+        stats["current_filesize"] = self.store.size_on_disk()
+
+    # --- Finalisation ---
+
+    def finalize(self) -> FileInfo:
+        raise NotImplementedError
+
+    def _file_info(self, file_name: str) -> FileInfo:
+        return FileInfo(file_name, file_type=self.type, format=self.format, vcodec=self.stream_url.vcodec,
+                        acodec=self.stream_url.acodec, language=self.stream_url.language, protocol=self.stream_url.protocol)
+
+
+class DownloadStream(StreamDownloaderBase):
+    """Downloads a live stream from the live edge (and any available DVR history) into SQLite."""
+    mode_name = "Database"
+    # Whether this mode can hand over to StreamRecovery when the stream turns private
+    supports_recovery_handoff: bool = True
+    new_manifest_message: str = "Video finished downloading via new manifest"
+
+    def _make_store(self) -> SegmentStore:
+        if self.database_in_memory:
+            return SQLiteSegmentStore(':memory:', logger=self.logger, batch_size=self.batch_size)
+        page_size = SQLITE_VIDEO_PAGE_SIZE if self.type == "video" else SQLITE_AUDIO_PAGE_SIZE
+        journal_mode = self.options.get("temp_db_journal") or "wal"
+        return SQLiteSegmentStore(self.paths.temp_db_file, logger=self.logger, batch_size=self.batch_size,
+                                  page_size=page_size, journal_mode=journal_mode)
+
+    # Compatibility wrappers
+    @property
+    def conn(self):
+        return getattr(self.store, "conn", None)
+
+    def commit_segments(self, force: bool = False) -> None:
+        self.store.flush(force=force)
+
+    def commit_batch(self, conn=None) -> None:
+        self.store.flush(force=True)
+
+    def segment_exists_batch(self) -> set:
+        return set(self.store.downloaded)
+
+    def combine_segments_to_file(self, output_file: str) -> str:
+        self._stats()['status'] = "merging"
+        self.logger.debug(f"Merging segments to {output_file}")
+        self.store.merge_to_file(output_file, clean=should_clean(self.ext))
+        self._stats()['status'] = "merged"
+        return output_file
+
+    def delete_temp_database(self) -> None:
+        if isinstance(self.store, SQLiteSegmentStore):
+            self.store.delete()
+
+    def delete_ts_file(self) -> None:
+        _remove_file(self.merged_file_name, self.logger)
+
+    # --- Live edge scheduling ---
+
+    def _on_start(self) -> None:
+        super()._on_start()
+        self.latest_downloaded_segment: int = -1
+        self.optimistic_fails: int = 0
+        self.optimistic_seg: int = 0
+        self.wait: int = 0
+        self.segment_retries: dict[int, int] = {}
+        # Min-heap of segment numbers waiting to be submitted, plus a membership set. New segment
+        # numbers are added incrementally as the head advances instead of rebuilding the full range
+        # every iteration (which was O(stream length) per loop).
+        self._queue: list[int] = []
+        self._queued: set[int] = set()
+        # Segments that exceeded their retries; re-queued if the stream URL changes
+        self._exhausted: set[int] = set()
+        self._frontier: int = self.store.first_needed()
+        self._refresh_result = None
+        self._enqueue_up_to(max(self.latest_sequence, self.latest_downloaded_segment))
+
+    def _enqueue(self, seg: int) -> None:
+        if seg not in self._queued and not self.store.has(seg) and seg not in self._exhausted:
+            heapq.heappush(self._queue, seg)
+            self._queued.add(seg)
+
+    def _enqueue_up_to(self, top: int) -> None:
+        """Queue all segments from the frontier up to `top` (inclusive)."""
+        if not hasattr(self, "_frontier"):
+            return
+        start = max(self._frontier, self.start_seg)
+        upper = top if self.end_seg == float('inf') else min(top, int(self.end_seg))
+        for seg in range(start, upper + 1):
+            self._enqueue(seg)
+        self._frontier = max(self._frontier, top + 1)
+
+    def _on_head_advanced(self, old_head: int, new_head: int) -> None:
+        self._enqueue_up_to(new_head)
+
+    def _on_window_resolved(self) -> None:
+        # Drop queued segments now outside the window and queue any that are now inside it
+        if hasattr(self, "_queue"):
+            self._queue = [seg for seg in self._queue if self._in_window(seg)]
+            heapq.heapify(self._queue)
+            self._queued = set(self._queue)
+            self._frontier = min(self._frontier, max(self.start_seg, self.store.first_needed()))
+            self._enqueue_up_to(max(self.latest_sequence, self.latest_downloaded_segment))
+
+    def _reset_retries(self, reason: str) -> None:
+        """A new stream URL may succeed where the old one failed, so retry exhausted segments."""
+        self.logger.info("({0}) {1}, resetting segment retry log".format(self.format, reason))
+        self.segment_retries.clear()
+        exhausted, self._exhausted = self._exhausted, set()
+        for seg in exhausted:
+            self._enqueue(seg)
+
+    def _pre_iteration(self) -> None:
+        previous_url = self.stream_url
+        self._refresh_result = self.refresh_Check(wait=False)
+        if previous_url != self.stream_url:
+            self.logger.debug("Stream URL has been updated, reseting segment retry counts")
+            self._reset_retries("New stream URL detected")
+
+    def _on_segment_result(self, seg: Optional[int], result: Optional[SegmentResult], error: Optional[BaseException]) -> None:
+        if seg is None:
+            return
+        status = result[3] if result is not None else None
+        data = result[1] if result is not None else None
+
+        # Track success of optimistic (beyond the known head) requests
+        if seg >= self.optimistic_seg and status != 200:
+            self.optimistic_fails += 1
+            self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg, self.optimistic_fails))
+        elif seg >= self.optimistic_seg and status == 200:
+            self.optimistic_fails = 0
+            self.latest_downloaded_segment = max(self.latest_downloaded_segment, seg)
+
+        if data is not None:
+            self.store.add(seg, data)
+            self.segment_retries.pop(seg, None)
+            if status == 200 and seg > self.latest_downloaded_segment:
+                self.latest_downloaded_segment = seg
+                self._enqueue_up_to(seg)
+        elif seg > self.latest_sequence:
+            # A segment beyond the known head may simply not exist yet (optimistic request). Those
+            # failures are tracked by optimistic_fails only; counting them as retries would make
+            # the end of every stream look like "all segments exhausted" and trigger URL refreshes.
+            pass
+        elif status != 200:
+            self.segment_retries[seg] = self.segment_retries.get(seg, 0) + 1
+            self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg, self.format, self.segment_retries.get(seg)))
+            if self.segment_retries[seg] > self.fragment_retries:
+                self._exhausted.add(seg)
+            elif self._in_window(seg) and seg <= max(self.latest_sequence, self.latest_downloaded_segment):
+                self._enqueue(seg)
+
+    def _next_segments(self, capacity: int) -> list[int]:
+        """Pop the lowest queued segments that still need downloading."""
+        limit = self._submission_limit()
+        segments: list[int] = []
+        while self._queue and len(segments) < capacity:
+            seg = self._queue[0]
+            if seg > limit:
+                break
+            heapq.heappop(self._queue)
+            self._queued.discard(seg)
+            if seg in self.submitted_segments or self.store.has(seg) or not self._in_window(seg):
+                continue
+            if self.segment_retries.get(seg, 0) > self.fragment_retries:
+                self._exhausted.add(seg)
+                continue
+            segments.append(seg)
+        return segments
+
+    def _submission_limit(self) -> float:
+        return self.end_seg
+
+    def _has_queued_work(self) -> bool:
+        limit = self._submission_limit()
+        return bool(self._queue) and self._queue[0] <= limit
+
+    def _submit_optimistic(self) -> None:
+        """
+        Request the segment after the newest known one before the server reports it. Its response
+        headers report the new head, which is how new segments are discovered at the live edge.
+        Only attempted a limited number of times in a row so it can't loop at the end of a stream.
+        """
+        self.optimistic_seg = max(self.latest_sequence, self.latest_downloaded_segment) + 1
+        opt = self.optimistic_seg
+        if (self.max_workers > 1 or not self._has_queued_work()) and self.optimistic_fails < OPTIMISTIC_FAILS_MAX \
+                and not self.store.has(opt) and opt not in self.submitted_segments \
+                and self._in_window(opt) and opt <= self._submission_limit():
+            # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s if no segments are to be submitted
+            if not self._has_queued_work():
+                self.smart_sleep(max(self.estimated_segment_duration, OPTIMISTIC_MIN_WAIT) + 0.1)
+            self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, opt, self.optimistic_fails))
+            self._submit(self._executor, opt, max_retries=min(self.fragment_retries, OPTIMISTIC_SEGMENT_RETRIES))
+            # Ensure wait isn't triggered while optimistic segments is enabled
+            self.wait = 0
+
+    def _evaluate(self) -> LoopAction:
+        # Resolve --start-time/--end-time before downloading anything (needs the segment duration)
+        if not self._window_resolved:
+            if not self._try_resolve_window():
+                self.logger.debug("Unable to determine segment duration, retrying...")
+                self.smart_sleep(2)
+                return LoopAction.CONTINUE
+
+        self._before_evaluate()
+        self._submit_optimistic()
+
+        if self._refresh_result == "IN_PROGRESS":
+            if not self._has_queued_work() and not self.submitted_segments and self._refresh_state.get("thread") is not None:
+                # Wait up to 0.5 seconds if there's no work, to prevent excessive loop processing
+                self._refresh_state.get("thread").join(0.5)
+            return LoopAction.PROCEED
+
+        if self.is_private and (self._has_queued_work() or self._exhausted):
+            # Segments remain (including ones that exhausted their retries on 403s) but the
+            # video is private: hand over to stream recovery where supported
+            return self._on_private_with_remaining()
+
+        if not self._has_queued_work() and not self.future_to_seg:
+            return self._on_idle()
+
+        if self._exhausted and not self._has_queued_work():
+            # Everything still missing has exceeded its retries (only in-flight requests remain)
+            return self._on_all_exhausted()
+
+        self.wait = 0
+        return LoopAction.PROCEED
+
+    def _before_evaluate(self) -> None:
+        pass
+
+    def _on_idle(self) -> LoopAction:
+        """No segments queued or in flight: wait for new segments, refreshing the URL periodically."""
+        if max(self.latest_sequence, self.latest_downloaded_segment) >= self.end_seg:
+            self.logger.info("All segments in range downloaded, ending...")
+            return LoopAction.BREAK
+
+        self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, self.wait))
+
+        # If waited for more than (non-zero) wait limit break. Zero wait limit is intended to keep checking until stream ends
+        if self.wait_limit > 0 and self.wait > self.wait_limit:
+            self.logger.debug("Wait time for new fragment exceeded, ending download...")
+            return LoopAction.BREAK
+
+        # Every REFRESH_EVERY_N_WAITS wait loops, get page for new URL and update status if necessary
+        if self.wait % REFRESH_EVERY_N_WAITS == 0 and self.wait > 0:
+            previous_url = self.stream_url
+            refresh = self.refresh_url(ignore_no_formats=True)
+            if self.is_private:
+                self.logger.debug("Video is private and no more segments are available. Ending...")
+                return LoopAction.BREAK
+            elif self.is_members_error:
+                self.logger.debug("Video turned members only, not accessible and no more segments are available. Ending...")
+                return LoopAction.BREAK
+            elif refresh is False:
+                self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
+                return LoopAction.BREAK
+            elif refresh is True:
+                self.logger.info(self.new_manifest_message)
+                return LoopAction.BREAK
+            elif previous_url != self.stream_url:
+                self._reset_retries("New stream URL detected")
+        self.smart_sleep(WAIT_INTERVAL_SECONDS)
+        self.update_latest_segment(client=self.client)
+        self.wait += 1
+        return LoopAction.CONTINUE
+
+    def _on_all_exhausted(self) -> LoopAction:
+        # Don't re-run yt-dlp over and over for segments that are simply gone: only refresh for
+        # exhausted segments if the URL hasn't been refreshed recently.
+        if time.time() - self.url_checked < EXHAUSTED_REFRESH_MIN_INTERVAL:
+            return LoopAction.PROCEED
+        self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
+        previous_url = self.stream_url
+        refresh = self.refresh_url(ignore_no_formats=True)
+        if refresh is True:
+            self.logger.info(self.new_manifest_message)
+            return LoopAction.BREAK
+        if previous_url != self.stream_url:
+            # If stream URL has changed, refresh retry count and continue
+            self._reset_retries("New stream URL detected")
+            return LoopAction.CONTINUE
+        if self.is_private or refresh is False or self.is_members_error:
+            if self.future_to_seg:
+                # Let in-flight requests finish first
+                return LoopAction.PROCEED
+            self.logger.warning("Failed to refresh URL or stream is private/members only, ending...")
+            return LoopAction.BREAK
+        # Same URL and still live: segments may simply not be available yet, try them again
+        self._reset_retries("URL refreshed")
+        return LoopAction.PROCEED
+
+    def _on_private_with_remaining(self) -> LoopAction:
+        if self.future_to_seg:
+            self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
+            self.smart_sleep(PRIVATE_DRAIN_WAIT)
+            return LoopAction.CONTINUE
+        if self.supports_recovery_handoff and self.stream_url.protocol == "https":
+            self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
+            self._handoff_to_recovery()
+        else:
+            self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...".format(self.format))
+        return LoopAction.BREAK
+
+    def _handoff_to_recovery(self) -> None:
+        """
+        Download the remaining segments with StreamRecovery into the SAME database. The store is
+        closed while recovery has the database open, then reopened so finalize() merges everything.
+        """
+        self.store.close()
+        try:
+            remaining = RECOVERY_HANDOFF_DELAY
+            while remaining > 0:
+                self.logger.debug("Waiting {0:.0f} minutes before starting stream recovery to improve chances of success".format(math.ceil(remaining / 60)))
+                step = min(60.0, remaining)
+                self.smart_sleep(step)
+                remaining -= step
+                if self._graceful_stop_requested():
+                    return
+            self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
+            recovery_options = dict(self.options)
+            recovery_options.update({
+                "max_workers": max((self.recovery_thread_multiplier * self.max_workers * len(self.stream_urls)), self.recovery_thread_multiplier),
+                "filename": self.paths.filename,
+                "download_folder": self.paths.folder,
+                "no_merge": True,
+                "recovery": True,
+                # The URLs are already known; keep the window already resolved for this stream
+                "start_time": None, "end_time": None,
+            })
+            recovery_options.pop("file_name", None)
+            try:
+                with StreamRecovery(info_dict=self.info_dict, stream_url=self.stream_url, options=recovery_options,
+                                    livestream_coordinator=self.livestream_coordinator, stream_urls=self.stream_urls,
+                                    live_status=self.live_status,
+                                    segment_range=(self.start_seg, self.end_seg)) as recovery:
+                    recovery.type = self.type
+                    recovery.live_dl()
+            except KeyboardInterrupt:
+                raise
+            except Exception:
+                self.logger.exception("An error occurred while trying to recover the stream")
+        finally:
+            self.smart_sleep(1)
+            self.store = self._make_store()
+            self.already_downloaded = self.store.downloaded
+
+    def finalize(self) -> FileInfo:
+        file_name = self.combine_segments_to_file(self.merged_file_name)
+        return self._file_info(file_name)
+
+
+class DownloadStreamDirect(DownloadStream):
+    """Live edge download written directly to the .ts file in sequence order (no database)."""
+    mode_name = "Direct Mode"
+    supports_recovery_handoff = False
+    new_manifest_message = "Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation"
+
+    def __init__(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, livestream_coordinator: LiveStreamDownloader = None, **kwargs):
+        super().__init__(info_dict=info_dict, stream_url=stream_url, options=options, livestream_coordinator=livestream_coordinator, **kwargs)
+        self.state_file_name = self.paths.state_file
+        self.state_file_backup = self.paths.state_backup
+        self.logger.debug(f"DownloadStreamDirect initialized for {self.id} ({self.format})")
+
+    def _make_store(self) -> SegmentStore:
+        return DirectTSStore(self.paths.merged_file_name, self.paths.state_file, self.paths.state_backup,
+                             logger=self.logger, clean=should_clean(self.ext), batch_size=1)
+
+    @property
+    def state(self) -> dict:
+        return self.store.state
+
+    def _reorder_window(self) -> int:
+        """How far beyond the last written segment downloads may run ahead (bounds buffered RAM)."""
+        return max(50, 10 * self.max_workers)
+
+    def _submission_limit(self) -> float:
+        return min(self.end_seg, self.store.last_written + self._reorder_window())
+
+    def _on_window_resolved(self) -> None:
+        self.store.set_start(self.start_seg)
+        super()._on_window_resolved()
+
+    def _before_evaluate(self) -> None:
+        # Original direct-mode behaviour: once the next segment to write has exceeded its retries,
+        # give up on it and advance so later segments can be written.
+        next_seg = self.store.last_written + 1
+        if self.segment_retries.get(next_seg, 0) > self.fragment_retries:
+            self.logger.warning("({1}) Segment {0} has exceeded maximum segment retries, advancing count to save data...".format(next_seg, self.format))
+            self.store.skip_to(next_seg)
+            self._exhausted.discard(next_seg)
+        # Keep the queue frontier ahead of the written position
+        self._frontier = max(self._frontier, self.store.first_needed())
+
+    def _update_progress_stats(self) -> None:
+        super()._update_progress_stats()
+        self._stats()["downloaded_segments"] = self.store.last_written
+
+    def _on_finish(self) -> None:
+        self.store.write_remaining()
+        super()._on_finish()
+        self._stats()['status'] = "merged"
+        self.logger.info(f"Completed direct download for {self.format}")
+
+    def _loop_result(self):
+        return self.merged_file_name
+
+    def delete_state_file(self) -> None:
+        self.store.delete_state_files()
+
+    def remove_folder(self):
+        """Remove folder and associated files"""
+        if self.folder:
+            self.delete_state_file()
+            self.delete_ts_file()
+            with contextlib.suppress(Exception):
+                os.rmdir(self.folder)
+
+    def finalize(self) -> FileInfo:
+        if not self.options.get("keep_state", False):
+            self.delete_state_file()
+        return self._file_info(self.merged_file_name)
+
+
+class StreamRecovery(StreamDownloaderBase):
+    """
+    Downloads segments missing from the database after a stream ended or turned private, using
+    every known URL of the format until they expire. Missing segments are retried with back-off.
+    """
+    mode_name = "Recovery"
+    POLL_INTERVAL = 0.5
+    # Recompute the retry priority order at most this often unless something changed
+    REORDER_INTERVAL = 1.0
+    # Minimum seconds between header probes of all URLs while 401/403 errors persist
+    PROBE_INTERVAL = 10.0
+
+    def __init__(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, stream_urls: Optional[list[YoutubeURL.YoutubeURL]] = None,
+                 live_status="is_live", livestream_coordinator: LiveStreamDownloader = None, segment_range: Optional[tuple[int, float]] = None, **kwargs):
+        self.expires: Optional[float] = None
+        self.segments_retries: dict[int, dict] = {}
+        self._segment_range = segment_range
+        super().__init__(info_dict=info_dict, stream_url=stream_url, options=options, livestream_coordinator=livestream_coordinator,
+                         stream_urls=stream_urls, live_status=live_status, **kwargs)
+        self.live_status = info_dict.get('live_status', live_status)
+        self.segment_retry_time: float = float(self.options.get('segment_retry_time', 30))
+        self.recover = self.options.get('recovery', False)
+        self.sequential: bool = False
+        self.count_400s = 0
+        self.sleep_time = 1
+        self.count_403s: dict = {}
+        self.user_agent_403s: dict = {}
+        self.user_agent_full_403s: dict = {}
+        self._url_index: int = 0
+        self.logger.debug("Recovery - Resolution: {0}, Format: {1}".format(self.resolution, self.format))
+        self.logger.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
+        # Ensure stats are set for the correct type
+        if self.livestream_coordinator:
+            self.livestream_coordinator.stats[self.type] = {}
+
+    def _initial_stream_urls(self, stream_url, kwargs) -> list[YoutubeURL.YoutubeURL]:
+        stream_urls = kwargs.get('stream_urls') or []
+        if stream_urls:
+            self.logger.debug("{0} stream urls available".format(len(stream_urls)))
+            return list(stream_urls)
+        stream_type = "video" if stream_url is not None and stream_url.vcodec else "audio"
+        return YoutubeURL.Formats(logger=self.logger).getFormatURL(
+            info_json=self.info_dict,
+            resolution=self.resolution,
+            sort=self.yt_dlp_sort,
+            get_all=True,
+            include_dash=False,
+            include_m3u8=False,
+            stream_type=stream_type,
+        ) or []
+
+    def _choose_initial_url(self) -> YoutubeURL.YoutubeURL:
+        return random.choice(self.stream_urls)
+
+    def _make_store(self) -> SegmentStore:
+        page_size = SQLITE_VIDEO_PAGE_SIZE if self.type == "video" else SQLITE_AUDIO_PAGE_SIZE
+        if self.database_in_memory:
+            return SQLiteSegmentStore(':memory:', logger=self.logger, batch_size=self.batch_size)
+        return SQLiteSegmentStore(self.paths.temp_db_file, logger=self.logger, batch_size=self.batch_size,
+                                  page_size=page_size, journal_mode=self.options.get("temp_db_journal") or "wal")
+
+    def _validate_urls(self) -> None:
+        self.check_Expiry()
+        if self.expires and time.time() > self.expires:
+            self._raise_expired()
+
+    def _raise_expired(self) -> None:
+        from datetime import datetime
+        self.logger.error("\033[31m ({0}) Current time is beyond highest expire time, unable to recover\033[0m".format(self.format))
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S') if self.expires else "unknown"
+        raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
+
+    def check_Expiry(self) -> None:
+        """Remove expired URLs and update the latest expiry time of the remaining ones."""
+        now = time.time()
+        self.stream_urls = [url for url in self.stream_urls if self._url_is_valid(url, now)]
+        expires = [int(self.get_expire_time(url)) for url in self.stream_urls if self.get_expire_time(url) is not None]
+        if expires:
+            self.expires = max(expires)
+
+    def _new_retry_entry(self) -> dict:
+        return {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time, 900), max(self.segment_retry_time + 300, 1200))}
+
+    def _on_head_advanced(self, old_head: int, new_head: int) -> None:
+        if old_head > -1 and hasattr(self, "segment_retry_time"):
+            for key in range(old_head, new_head):
+                if key not in self.store.downloaded and self._in_window(key):
+                    self.segments_retries.setdefault(key, self._new_retry_entry())
+            self._order_dirty = True
+
+    def update_latest_segment(self, url=None, client=None) -> None:
+        # Overrides base method to handle multiple, expiring URLs
+        self.check_kill()
+        self.check_Expiry()
+        if (not self.stream_urls) or (self.expires and time.time() > self.expires):
+            self.logger.critical("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m")
+            if getattr(self, "store", None) is not None:
+                self.store.flush(force=True)
+            self._raise_expired()
+        if url is None:
+            url = random.choice(self.stream_urls)
+        headers = self.get_Headers(url, client)
+        self._apply_head_headers(headers, set_type_from_content=True)
+        self._stats()["latest_sequence"] = self.latest_sequence
+
+    def _url_for_segment(self, seg: int) -> str:
+        # Round-robin through available stream URLs
+        url = self.stream_urls[self._url_index % len(self.stream_urls)]
+        self._url_index += 1
+        return url.segment(seg)
+
+    def _download_args(self, seg: int) -> tuple:
+        return (self._url_for_segment(seg), seg, self.client, True)
+
+    def _on_start(self) -> None:
+        super()._on_start()
+        if self._segment_range is not None:
+            self.start_seg, self.end_seg = self._segment_range
+            self._window_resolved = True
+        elif not self._window_resolved and not self._try_resolve_window():
+            self.logger.warning("Unable to determine segment duration, ignoring requested start/end time for recovery")
+            self._window_resolved = True
+        self.sleep_time = max(self.estimated_segment_duration, 0.1)
+        # Track retries of all missing segments in database
+        top = self.latest_sequence if self.end_seg == float('inf') else min(self.latest_sequence, int(self.end_seg))
+        self.segments_retries = {key: self._new_retry_entry() for key in range(self.start_seg, top + 1) if key not in self.store.downloaded}
+        self._order_dirty = True
+        self._ordered: list[int] = []
+        self._last_order_time = 0.0
+        self._last_print = time.time()
+        self._last_probe = 0.0
+        if self.expires is not None:
+            from datetime import datetime
+            self.logger.debug("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')))
+        else:
+            self.logger.debug("Recovery mode active")
+
+    def _pre_iteration(self) -> None:
+        self.check_Expiry()
+        if (not self.stream_urls) or (self.expires and time.time() > self.expires):
+            self.logger.critical("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m")
+            self.store.flush(force=True)
+            self._raise_expired()
+
+    def _record_failure(self, seg: int) -> None:
+        entry = self.segments_retries.setdefault(seg, self._new_retry_entry())
+        entry['retries'] = entry.get('retries', 0) + 1
+        entry['last_retry'] = time.time()
+        if entry['retries'] >= self.fragment_retries:
+            self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg, self.latest_sequence))
+
+    def _on_segment_result(self, seg: Optional[int], result: Optional[SegmentResult], error: Optional[BaseException]) -> None:
+        if seg is None:
+            return
+        self._order_dirty = True
+        data = result[1] if result is not None else None
+        if data is not None:
+            self.store.add(seg, data)
+            self.segments_retries.pop(seg, None)
+        else:
+            self._record_failure(seg)
+
+    def _update_progress_stats(self) -> None:
+        stats = self._stats()
+        stats["latest_sequence"] = self.latest_sequence
+        stats["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
+        stats["current_filesize"] = self.store.size_on_disk()
+
+    def _evaluate(self) -> LoopAction:
+        if len(self.segments_retries) <= 0:
+            self.logger.info("All segment downloads complete, ending...")
+            return LoopAction.BREAK
+        if all(value['retries'] > self.fragment_retries for value in self.segments_retries.values()):
+            if not self.future_to_seg:
+                self.logger.error("All remaining segments have exceeded their retry count, ending...")
+                return LoopAction.BREAK
+        elif self.is_403 and self.expires is not None and time.time() > self.expires:
+            self.logger.critical("URL(s) have expired and failures being detected, ending...")
+            return LoopAction.BREAK
+        elif self.is_401:
+            self.logger.debug("401s detected for {0}, sleeping for a minute".format(self.format))
+            self.smart_sleep(RECOVERY_401_SLEEP)
+            self._probe_urls()
+        elif self.is_403:
+            self._probe_urls()
+
+        self._log_remaining()
+        return LoopAction.PROCEED
+
+    def _probe_urls(self) -> None:
+        # Previously every URL was probed on every 0.1s loop iteration while 403s persisted
+        if time.monotonic() - self._last_probe < self.PROBE_INTERVAL:
+            return
+        self._last_probe = time.monotonic()
+        for url in list(self.stream_urls):
+            if self.live_status == 'post_live':
+                self.update_latest_segment(url=self.stream_url.segment(self.latest_sequence + 1), client=self.client)
+            else:
+                self.update_latest_segment(url=url, client=self.client)
+
+    def _log_remaining(self) -> None:
+        if self.submitted_segments:
+            return
+        if len(self.segments_retries) < 11 and time.time() - self._last_print > self.segment_retry_time:
+            self.logger.debug("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
+            self._last_print = time.time()
+        elif time.time() - self._last_print > self.segment_retry_time + 5:
+            self.logger.debug("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
+            self._last_print = time.time()
+
+    def _priority_order(self) -> list[int]:
+        """
+        Order of segments to try: segments that failed before and haven't been tried for their
+        "ideal retry time" first, then the rest; each group by fewest retries.
+        Recomputed only when something changed (or periodically, as priority depends on time).
+        """
+        now = time.time()
+        if not self._order_dirty and now - self._last_order_time < self.REORDER_INTERVAL:
+            return self._ordered
+        if self.sequential:
+            ordered = sorted(self.segments_retries.items(), key=lambda item: (item[1]['retries'], item[0]))
+        else:
+            priority, non_priority = [], []
+            for key, value in self.segments_retries.items():
+                if (now - value.get('last_retry', 0)) > value.get('ideal_retry_time', 0) and value.get('retries', 0) > 0:
+                    priority.append((key, value))
+                else:
+                    non_priority.append((key, value))
+            priority.sort(key=lambda item: item[1].get('retries', 0))
+            non_priority.sort(key=lambda item: item[1].get('retries', 0))
+            ordered = priority + non_priority
+        self._ordered = [key for key, _ in ordered]
+        self._order_dirty = False
+        self._last_order_time = now
+        return self._ordered
+
+    def _next_segments(self, capacity: int) -> list[int]:
+        now = time.time()
+        segments: list[int] = []
+        for seg in self._priority_order():
+            if len(segments) >= capacity:
+                break
+            entry = self.segments_retries.get(seg)
+            if entry is None or seg in self.submitted_segments or seg in self.store.pending:
+                continue
+            if self.store.has(seg):
+                self.segments_retries.pop(seg, None)
+                self._order_dirty = True
+                continue
+            # Retry a failed segment only after segment_retry_time has passed since its last attempt
+            # (previously compared against the retry count, so failed segments were retried immediately)
+            if entry.get('retries', 0) <= self.fragment_retries and now - entry.get('last_retry', 0) > self.segment_retry_time:
+                segments.append(seg)
+        return segments
+
+    def _loop_result(self) -> int:
+        return len(self.segments_retries)
+
+    def combine_segments_to_file(self, output_file: str) -> str:
+        self._stats()['status'] = "merging"
+        self.store.merge_to_file(output_file, clean=should_clean(self.ext))
+        self._stats()['status'] = "merged"
+        return output_file
+
+    def delete_temp_database(self) -> None:
+        if isinstance(self.store, SQLiteSegmentStore):
+            self.store.delete()
+
+    def save_stats(self) -> None:
+        # Stats files
+        for suffix, data in (("_seg_403s", self.count_403s), ("_usr_ag_403s", self.user_agent_403s), ("_usr_ag_full_403s", self.user_agent_full_403s)):
+            with open("{0}.{1}{2}.json".format(self.file_base_name, self.format, suffix), 'w', encoding='utf-8') as outfile:
+                json.dump(data, outfile, indent=4)
+
+    def finalize(self) -> FileInfo:
+        """Merge to .ts if all segments (or enough, per options) were recovered, else raise."""
+        remaining = len(self.segments_retries)
+        force_merge = bool(_opt(self.options, 'force_recover_merge', 'force_recovery_merge', 'force_merge', default=False))
+        tolerance = int(self.options.get('recovery_failure_tolerance') or 0)
+        if (force_merge or remaining <= 0 or remaining <= tolerance) and not self.options.get('no_merge', False):
+            if remaining > 0:
+                self.logger.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(self.format, remaining, self.id))
+            file_name = self.combine_segments_to_file(self.merged_file_name)
+            return self._file_info(file_name)
+        raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(self.format, remaining, self.id))
+
+
+# ==============================================================================================
+# FFmpeg merger
+# ==============================================================================================
+
+def _make_merger(ydl, ffmpeg_command_file: FileInfo):
+    """FFmpegMetadataPP subclass that writes the ffmpeg command and optionally runs it."""
+    import itertools
+    import subprocess
+    from yt_dlp.postprocessor.ffmpeg import (FFmpegMetadataPP, FFmpegPostProcessorError, PostProcessor,
+                                             encodeArgument, shell_quote, variadic, Popen)
+
+    class LiveStreamDLMerger(FFmpegMetadataPP):
+        def __init__(self, downloader, ffmpeg_command_file: FileInfo = None):
+            self.ffmpeg_command_file = ffmpeg_command_file
+            super().__init__(downloader=downloader)
+
+        @PostProcessor._restrict_to()
+        def run(self, info):
+            super().run(info)
+
+        def real_run_ffmpeg(self, input_path_opts, output_path_opts, *, merge=True, expected_retcodes=(0,)):
+            self.check_version()
+
+            oldest_mtime = min(os.stat(path).st_mtime for path, _ in input_path_opts if path)
+
+            cmd = [self.executable, encodeArgument('-y')]
+            # avconv does not have repeat option
+            if self.basename == 'ffmpeg':
+                cmd += [encodeArgument('-loglevel'), encodeArgument('repeat+info')]
+
+            def make_args(file, args, name, number):
+                keys = [f'_{name}{number}', f'_{name}']
+                if name == 'o':
+                    args += ['-movflags', '+faststart']
+                    if number == 1:
+                        keys.append('')
+                args += self._configuration_args(self.basename, keys)
+                if name == 'i':
+                    args.append('-i')
+                return [encodeArgument(arg) for arg in args] + [self._ffmpeg_filename_argument(file)]
+
+            for arg_type, path_opts in (('i', input_path_opts), ('o', output_path_opts)):
+                cmd += itertools.chain.from_iterable(
+                    make_args(path, list(opts), arg_type, i + 1)
+                    for i, (path, opts) in enumerate(path_opts) if path)
+
+            command_string = shell_quote(cmd)
+            self.write_debug(f'ffmpeg command line: {command_string}')
+            with open(self.ffmpeg_command_file, 'w', encoding="utf-8") as f:
+                f.write(command_string + "\n")
+
+            if not merge:
+                return None
+            _, stderr, returncode = Popen.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+            if returncode not in variadic(expected_retcodes):
+                raise FFmpegPostProcessorError(stderr)
+            for out_path, _ in output_path_opts:
+                if out_path:
+                    self.try_utime(out_path, oldest_mtime, oldest_mtime)
+            return stderr
+
+    return LiveStreamDLMerger(downloader=ydl, ffmpeg_command_file=ffmpeg_command_file)
+
+
+# ==============================================================================================
+# Coordinator
+# ==============================================================================================
 
 class LiveStreamDownloader:
+    # Minimum seconds between yt-dlp URL refresh extractions (doubles after rate limiting)
+    MIN_REFRESH_INTERVAL: float = 30.0
 
-    def __init__(self, kill_all: threading.Event=threading.Event(), cleanup = threading.Event(), logger: logging = None, kill_this: threading.Event = None,):
+    def __init__(self, kill_all: Optional[threading.Event] = None, cleanup: Optional[threading.Event] = None,
+                 logger: Optional[LoggerLike] = None, kill_this: Optional[threading.Event] = None):
         if logger:
             self.logger = logger
         else:
-            # 1. Create a Named Logger instance and assign it to self.logger
-            self.logger = logging.getLogger(self.__class__.__name__) 
-            # Ensure it processes messages (important if you don't call setup_logging immediately)
-        self.logger.propagate = False 
-        self.kill_this = kill_this or threading.Event()
-
-        # Global state converted to instance attributes
-        self.kill_all = kill_all
-        self.cleanup = cleanup
+            self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.propagate = False
+        # Events are created per instance (a default argument would be shared by every instance)
+        self.kill_this: threading.Event = kill_this or threading.Event()
+        self.kill_all: threading.Event = kill_all or threading.Event()
+        self.cleanup: threading.Event = cleanup or threading.Event()
         self.live_chat_result = None
-        self.chat_timeout = None
+        self.chat_timeout: Optional[float] = None
         # File name dictionary
-        self.file_names = {
+        self.file_names: dict = {
             'databases': [],
             "streams": {}
         }
-        self.stats = {}
+        self.stats: dict = {}
 
-        self.refresh_json = {}
-        self.live_status = ""
+        self.refresh_json: dict = {}
+        self.live_status: str = ""
         self.lock: threading.Lock = threading.Lock()
-        self.last_refresh_attempt = time.monotonic()
-        self.minimum_refresh_time = 30.0
+        self.last_refresh_attempt: float = time.monotonic()
+        self.minimum_refresh_time: float = self.MIN_REFRESH_INTERVAL
 
         self.graceful_stop = threading.Event()
+        # Signals the live chat thread to stop (set on timeout)
+        self.chat_stop = threading.Event()
+        self._live_chat_lock = threading.Lock()
+        self._live_chat_packaged = False
+
+        self._time_reference: Optional[float] = None
+        self._time_reference_lock = threading.Lock()
+        self._filename_ydl = None
+
+    # --- Signals ---
 
     @contextlib.contextmanager
     def graceful_signal_catcher(self, disable_graceful=False):
-        # Check if we are in the main thread
+        # Signal handlers can only be installed from the main thread
         is_main = (threading.current_thread() is threading.main_thread())
-        
+
         original_sigint = None
         original_sigterm = None
 
@@ -105,7 +2413,6 @@ class LiveStreamDownloader:
                 signal.signal(signal.SIGINT, original_sigint)
                 signal.signal(signal.SIGTERM, original_sigterm)
 
-            # Set temporary handlers only if we are in the main thread
             try:
                 signal.signal(signal.SIGINT, handler)
                 signal.signal(signal.SIGTERM, handler)
@@ -121,192 +2428,139 @@ class LiveStreamDownloader:
                 signal.signal(signal.SIGINT, original_sigint)
                 signal.signal(signal.SIGTERM, original_sigterm)
 
-    # Create runner function for each download format
-    def download_stream(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, **kwargs):
-        options = options or {}
+    # --- Shared state for stream downloaders ---
+
+    def resolve_time_reference(self, head_time: float) -> float:
+        """The live edge time (stream seconds) used for negative --start-time/--end-time values.
+        The first format to ask sets it so all formats cut at the same point."""
+        with self._time_reference_lock:
+            if self._time_reference is None:
+                self._time_reference = float(head_time)
+                self.logger.debug("Live edge reference for relative start/end times: {0:.0f}s".format(self._time_reference))
+            return self._time_reference
+
+    def _interruptible_wait(self, seconds: float) -> bool:
+        """Wait up to `seconds`. Returns False if a stop/kill was requested during the wait."""
+        deadline = time.monotonic() + seconds
+        while True:
+            if self.kill_all.is_set() or self.kill_this.is_set():
+                raise KeyboardInterrupt("Kill command executed")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            if self.graceful_stop.wait(min(remaining, 0.5)):
+                return False
+
+    def refresh_info_json(self, update_threshold: float, id, cookies=None, additional_options=None, include_dash=False,
+                          include_m3u8=False, ignore_no_formats=False, logger: Optional[LoggerLike] = None, proxy=None):
+        """
+        Shared URL refresh for all formats of this video. A cached extraction newer than
+        `update_threshold` seconds is reused, so video and audio refreshing together cost one
+        yt-dlp call. yt-dlp calls are spaced by minimum_refresh_time, which doubles after rate limiting.
+        """
+        if logger is None:
+            logger = self.logger
+        with self.lock:
+            if time.time() - self.refresh_json.get("refresh_time", 0.0) <= update_threshold:
+                return self.refresh_json, self.live_status
+
+            # Previously this slept for the time already elapsed rather than the time remaining
+            remaining = self.minimum_refresh_time - (time.monotonic() - self.last_refresh_attempt)
+            if remaining > 0:
+                self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Waiting for {remaining:.1f}s before attempting to refresh URL")
+                if not self._interruptible_wait(remaining) and self.refresh_json:
+                    # Stopping gracefully: don't start a new extraction
+                    return self.refresh_json, self.live_status
+
+            try:
+                # Set last attempt time before and after to ensure that a time is captured on an error
+                self.last_refresh_attempt = time.monotonic()
+                refresh_json, live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options,
+                                                                   include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True,
+                                                                   ignore_no_formats=ignore_no_formats, logger=logger, proxy=proxy)
+                self.last_refresh_attempt = time.monotonic()
+            except getUrls.RateLimitException:
+                self.minimum_refresh_time = min(self.minimum_refresh_time * 2, MAX_MINIMUM_REFRESH_TIME)
+                self.logger.error("Received rate limit error, increasing refresh attempt timeout to {0:.0f}s".format(self.minimum_refresh_time))
+                raise
+
+            # Remove unnecessary items for info.json used purely for url refresh
+            self.remove_format_segment_playlist_from_info_dict(refresh_json)
+            for key in ("thumbnails", "tags", "description"):
+                refresh_json.pop(key, None)
+
+            # Add refresh time for reference
+            refresh_json["refresh_time"] = time.time()
+            self.refresh_json, self.live_status = refresh_json, live_status
+            self.minimum_refresh_time = max(self.MIN_REFRESH_INTERVAL, self.minimum_refresh_time / 2)
+            return self.refresh_json, self.live_status
+
+    # --- Stream runners ---
+
+    def _register_stream_file(self, manifest, file: FileInfo, filetype: str) -> None:
+        self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({str(filetype).lower(): file})
+
+    def _run_stream(self, stream_cls: type, download_function: Callable, info_dict, stream_url, options=None, manifest=0, **kwargs):
+        """Run one stream downloader through download + finalize and register its output file."""
+        current_options = dict(options or {})
+        # Used by manifest-follow threads to run the same kind of download
+        current_options["download_function"] = download_function
         try:
-            # Update download params for recursive/following threads
-            # We copy options to avoid mutating the original dict passed in
-            current_options = options.copy()
-            current_options["download_function"] = self.download_stream
-            
-            file = None
-            filetype = None
-            
-            with DownloadStream(info_dict, stream_url=stream_url, options=current_options, livestream_coordinator=self, **kwargs) as downloader:       
-                self.stats["status"] = "Recording"       
+            with stream_cls(info_dict, stream_url=stream_url, options=current_options, livestream_coordinator=self, **kwargs) as downloader:
+                self.stats["status"] = "Recording"
                 downloader.live_dl()
-                file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
-                
-                keep_database = current_options.get('keep_database', False)
-                if not keep_database:
-                    self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
-                    downloader.delete_temp_database()
-                elif downloader.temp_db_file != ':memory:':
-                    database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
-                    self.file_names['databases'].append(database_file)
-
-                file = FileInfo(file_name, file_type=downloader.type, format=downloader.format, vcodec=downloader.stream_url.vcodec, acodec=downloader.stream_url.acodec, language=downloader.stream_url.language, protocol=downloader.stream_url.protocol)
-                filetype = downloader.type        
-
-            self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
-                str(filetype).lower(): file
-            })
-            
-            return file, filetype
-        except Exception as e:
-            self.logger.exception("Unexpected error occurred while downloading stream")
-            raise
-
-    # Create runner function for each download format
-    def download_stream_direct(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, **kwargs):
-        options = options or {}
-        try:
-            current_options = options.copy()
-            current_options["download_function"] = self.download_stream_direct
-            
-            file = None
-            filetype = None
-
-            with DownloadStreamDirect(info_dict, stream_url=stream_url, options=current_options, livestream_coordinator=self, **kwargs) as downloader:
-                self.stats["status"] = "Recording"
-                file_name = downloader.live_dl()
-                file = FileInfo(file_name, file_type=downloader.type, format=downloader.format, vcodec=downloader.stream_url.vcodec, acodec=downloader.stream_url.acodec, language=downloader.stream_url.language, protocol=downloader.stream_url.protocol)
+                file = downloader.finalize()
                 filetype = downloader.type
-                downloader.delete_state_file()
-
-            self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
-                str(filetype).lower(): file
-            })
+                if isinstance(downloader.store, SQLiteSegmentStore):
+                    self._dispose_database(downloader, current_options)
+            self._register_stream_file(manifest, file, filetype)
             return file, filetype
-        except Exception as e:
+        except Exception:
             self.logger.exception("Unexpected error occurred while downloading stream")
             raise
 
-    def recover_stream(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, stream_urls: list = [], **kwargs):
-        options = options or {}
-        try:
-            current_options = options.copy()
-            current_options["download_function"] = self.recover_stream
-            file = None
-            filetype = None
-            force_merge = current_options.get('force_recovery_merge', False)
-            recovery_failure_tolerance = current_options.get('recovery_failure_tolerance', 0)
-            no_merge = current_options.get('no_merge', False)
-            keep_database = current_options.get('keep_database', False)
+    def _dispose_database(self, downloader: StreamDownloaderBase, options: dict) -> None:
+        keep_database = options.get('keep_database', False) or options.get('keep_temp_files', False) or options.get('keep_database_file', False)
+        if not keep_database:
+            self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
+            downloader.store.delete()
+        elif downloader.temp_db_file != ':memory:':
+            downloader.store.close()
+            self.file_names['databases'].append(FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format))
 
-            with StreamRecovery(info_dict, stream_url=stream_url, options=current_options, stream_urls=stream_urls, livestream_coordinator=self, **kwargs) as downloader:
-                self.stats["status"] = "Recording"
-                result = downloader.live_dl()
-                #downloader.save_stats()    
-                if (force_merge or result <= 0 or result <= recovery_failure_tolerance) and (not no_merge):
-                    if result > 0:
-                        self.logger.warning("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
-                    file_name = downloader.combine_segments_to_file(downloader.merged_file_name)
-                    if not keep_database:
-                        self.logger.info("Merging to ts complete, removing {0}".format(downloader.temp_db_file))
-                        downloader.delete_temp_database()
-                    elif downloader.temp_db_file != ':memory:':
-                        database_file = FileInfo(downloader.temp_db_file, file_type='database', format=downloader.format)
-                        self.file_names['databases'].append(database_file)
-                else:
-                    raise getUrls.VideoDownloadError("({2}) Stream recovery of format {0} has {1} outstanding segments which were not able to complete. Exitting".format(downloader.format, result, downloader.id))
-                file = FileInfo(file_name, file_type=downloader.type, format=downloader.format, vcodec=downloader.stream_url.vcodec, acodec=downloader.stream_url.acodec, language=downloader.stream_url.language, protocol=downloader.stream_url.protocol)
-                filetype = downloader.type  
-                
-            self.file_names.setdefault("streams", {}).setdefault(manifest, {}).update({
-                str(filetype).lower(): file
-            })
-            return file, filetype
-        except Exception as e:
-            self.logger.exception("Unexpected error occurred while downloading stream")
-            raise
+    def download_stream(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, **kwargs):
+        return self._run_stream(DownloadStream, self.download_stream, info_dict, stream_url, options, manifest, **kwargs)
 
-    def submit_download(self, executor, info_dict: dict, resolution, options: dict, download_folder, file_name, futures, is_audio=False):
-        
-        # Prepare the options dictionary that will be passed to the runner functions
-        # This maps the external 'options' keys to the internal keys expected by DownloadStream classes
-        run_options = {
-            "batch_size": options.get('batch_size', 1),
-            "max_workers": options.get("threads", 1),
-            "folder": download_folder,
-            "file_name": file_name,
-            "fragment_retries": options.get('segment_retries'),
-            "cookies": options.get('cookies'),
-            "yt_dlp_options": options.get('ytdlp_options', None),
-            "proxies": options.get("proxy", None),
-            "yt_dlp_sort": options.get('custom_sort', None),
-            "is_audio": is_audio,
-            "wait_limit": options.get("wait_limit", 0)
-        }
+    def download_stream_direct(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, **kwargs):
+        return self._run_stream(DownloadStreamDirect, self.download_stream_direct, info_dict, stream_url, options, manifest, **kwargs)
 
-        if is_audio and options.get("audio_format"):
-            run_options["resolution"] = options.get("audio_format") # Override resolution key if needed internally
-        elif options.get("video_format"):
-            run_options["resolution"] = options.get("video_format")
+    def recover_stream(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, manifest=0, stream_urls: Optional[list] = None, **kwargs):
+        return self._run_stream(StreamRecovery, self.recover_stream, info_dict, stream_url, options, manifest,
+                                stream_urls=stream_urls or [], **kwargs)
 
-        # Specific Logic for Logic Selection
-        if options.get('recovery', False):
-            func = self.recover_stream
-            run_options.update({
-                "force_merge": options.get('force_recovery_merge', False),
-                "recovery_failure_tolerance": options.get('recovery_failure_tolerance', 0),
-                "keep_database": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
-                "recovery": True,
-                # Recovery specific
-                "stream_urls": options.get('stream_urls', []),
-                "no_merge": options.get('no_merge', False)
-            })
-        elif options.get('direct_to_ts', False):
-            func = self.download_stream_direct
-            run_options.update({
-                "keep_state": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
-                # Standard options
-                "include_dash": options.get("dash", False),
-                "include_m3u8": options.get("m3u8", False),
-                "force_m3u8": options.get("force_m3u8", False),
-            })
-        else:
-            func = self.download_stream
-            run_options.update({
-                "keep_database": options.get("keep_temp_files", False) or options.get("keep_database_file", False),
-                # Standard options
-                "include_dash": options.get("dash", False),
-                "include_m3u8": options.get("m3u8", False),
-                "force_m3u8": options.get("force_m3u8", False),
-            })
+    # --- Main entry point ---
 
-        # Add any extra values from the original options that might be needed by custom logic
-        # avoiding overwriting keys we just set if possible, or allowing override if intended
-        for key, value in options.items():
-            run_options.setdefault(key, value)
+    def _stream_urls_from_formats(self, formats_info: dict) -> list[YoutubeURL.YoutubeURL]:
+        stream_urls = []
+        with httpx.Client(timeout=30, follow_redirects=True) as m3u8_client:
+            for format_info in formats_info.get('requested_formats') or [formats_info]:
+                if not (format_info.get('url') or format_info.get('fragment_base_url')):
+                    continue
+                stream_urls.append(YoutubeURL.YoutubeURL.from_format(format_info, logger=self.logger, m3u8_client=m3u8_client))
+        return stream_urls
 
-        self.logger.debug("Starting executor with options: {0}".format(json.dumps(str(run_options))))
+    def download_segments(self, info_dict: dict, resolution='bv+ba/best', options: Optional[dict] = None, thread_event: Optional[threading.Event] = None):
+        """Download all selected formats of a video, then mux and move the files to the output location."""
+        options = dict(options or {})
+        futures: set[concurrent.futures.Future] = set()
 
-        # Submit to executor
-        # We now pass 'run_options' as the 'options' argument to the runner function
-        future = executor.submit(func, info_dict=info_dict, resolution="audio_only" if is_audio else resolution, options=run_options)
-        futures.add(future)
-        return future
-
-
-    # Multithreaded function to download new segments with delayed commit after a batch
-    def download_segments(self, info_dict: dict, resolution='bv+ba/best', options: dict={}, thread_event: threading.Event=None):
-        futures = set()
-        #file_names = {}
-
-        if thread_event is not None:        
+        if thread_event is not None:
             self.kill_all = thread_event
-            
-        #setup_logging(log_level=options.get('log_level', "INFO"), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name=str(self.__class__.__name__))
-        
-        #setup_logging(log_level=options.get('ytdlp_log_level') or self.logger.getEffectiveLevel(), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=info_dict.get("id", "ID N/A"), metadata={"log_type", "default"})
-        
+
         self.stats['id'] = info_dict.get('id', None)
         self.stats["status"] = "Starting"
-        self.logger.debug(json.dumps(options, indent=4))
+        self.logger.debug(json.dumps(options, indent=4, default=str))
         outputFile = self.output_filename(info_dict=info_dict, outtmpl=options.get('output'))
-        file_name = None
         # Requires testing
         if options.get('temp_folder') is not None and options.get('temp_folder') != os.path.dirname(outputFile):
             output_folder, file_name = os.path.split(outputFile)
@@ -315,172 +2569,116 @@ class LiveStreamDownloader:
         else:
             download_folder, file_name = os.path.split(outputFile)
         options['filename'] = file_name
-        if download_folder:    
+        if download_folder:
             os.makedirs(download_folder, exist_ok=True)
-            
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor: 
-            done = not_done = set() 
-            try: 
-                
-                # Download auxiliary files (thumbnail, info,json etc)
 
-                base_output = None
-                if options.get('filename') is not None:
-                    filename = options.get('filename')
-                else:
-                    filename = info_dict.get('id')
-                
-                if download_folder:
-                    base_output = os.path.join(download_folder, filename)
-                else:
-                    base_output = filename
-
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            done = not_done = set()
+            try:
+                base_output = os.path.join(download_folder, options['filename']) if download_folder else options['filename']
                 options["download_folder"] = download_folder
-                format_handler = YoutubeURL.Formats()
+                format_handler = YoutubeURL.Formats(logger=self.logger)
                 format_extractor_options = {}
                 if options.get("ext", None):
-                    format_extractor_options.update({"merge_output_format": options.get("ext", "").strip(" .")})
-                
-                formats_info = format_handler.getFormats(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None), include_dash=(options.get("dash", False) and not options.get('recovery', False)), include_m3u8=options.get("m3u8", False), force_m3u8=options.get("force_m3u8", False), base_path=base_output, ydl_options=format_extractor_options)
+                    format_extractor_options["merge_output_format"] = options.get("ext", "").strip(" .")
 
-                stream_urls = []
-                #with open("data.json", "w", encoding="utf-8") as json_file:
-                #    json.dump(formats_info, json_file, indent=4)
+                formats_info = format_handler.getFormats(info_json=info_dict, resolution=resolution, sort=options.get('custom_sort', None),
+                                                         include_dash=(options.get("dash", False) and not options.get('recovery', False)),
+                                                         include_m3u8=options.get("m3u8", False), force_m3u8=options.get("force_m3u8", False),
+                                                         base_path=base_output, ydl_options=format_extractor_options)
 
-                for format_info in formats_info.get('requested_formats') or [formats_info]:
-                    format_obj: YoutubeURL.YoutubeURL = None
-                    if format_info.get('protocol', "") == "http_dash_segments":
-                        format_obj = YoutubeURL.YoutubeURL(format_info.get('fragment_base_url'), format_info.get('protocol'), format_id=format_info.get('format_id'), logger=self.logger, vcodec=format_info.get('vcodec', None), acodec=format_info.get('acodec', None), format_note=format_info.get("format_note"), language=format_info.get('language', None), ext=format_info.get('ext', None))
-                        
-                    elif format_info.get('protocol', "") == "m3u8_native":      
-                        format_obj = YoutubeURL.YoutubeURL(url=format_handler.getM3u8Url(format_info.get('url')), protocol=format_info.get('protocol'), format_id=format_info.get('format_id'), logger=self.logger, vcodec=format_info.get('vcodec', None), acodec=format_info.get('acodec', None), format_note=format_info.get("format_note"), language=format_info.get('language', None), ext=format_info.get('ext', None))
-                        if not format_info.get('format_id', None):
-                            format_info['format_id'] = str(format_obj.itag).strip() 
-                    else:
-                        format_obj = YoutubeURL.YoutubeURL(format_info.get('url'), format_info.get('protocol'), format_id=format_info.get('format_id'), logger=self.logger, vcodec=format_info.get('vcodec', None), acodec=format_info.get('acodec', None), format_note=format_info.get("format_note"), language=format_info.get('language', None), ext=format_info.get('ext', None))
-
-                    if format_obj:
-                        stream_urls.append(format_obj)
-                
+                stream_urls = self._stream_urls_from_formats(formats_info)
 
                 auxiliary_thread = executor.submit(self.download_auxiliary_files, info_dict=formats_info, options=options)
                 futures.add(auxiliary_thread)
 
                 if not stream_urls:
                     raise ValueError("Resolution is not valid or does not exist in stream")
-                
+
+                options["keep_database"] = options.get("keep_temp_files", False) or options.get("keep_database_file", False)
+                options["keep_state"] = options.get("keep_temp_files", False) or options.get("keep_database_file", False)
                 for stream_url in stream_urls:
-                    options["keep_database"] = options.get("keep_temp_files", False) or options.get("keep_database_file", False)
-                    options["keep_state"] = options.get("keep_temp_files", False) or options.get("keep_database_file", False)
                     if options.get('recovery', False):
-                        options["stream_urls"] = options.get('stream_urls', []),
-                        futures.add(executor.submit(self.recover_stream, info_dict=info_dict, stream_url=stream_url, options=options, manifest=stream_url.manifest))
+                        runner = self.recover_stream
                     elif options.get('direct_to_ts', False):
-                        futures.add(executor.submit(self.download_stream_direct, info_dict=info_dict, stream_url=stream_url, options=options, manifest=stream_url.manifest))
+                        runner = self.download_stream_direct
                     else:
-                        futures.add(executor.submit(self.download_stream, info_dict=info_dict, stream_url=stream_url, options=options, manifest=stream_url.manifest))
+                        runner = self.download_stream
+                    futures.add(executor.submit(runner, info_dict=info_dict, stream_url=stream_url, options=options, manifest=stream_url.manifest))
 
                 info_dict = formats_info
 
                 live_chat_thread = None
                 if options.get('live_chat', False) is True:
-                    
-                    live_chat_thread = threading.Thread(target=self.download_live_chat, args=(info_dict,options), daemon=True)
+                    live_chat_thread = threading.Thread(target=self.download_live_chat, args=(info_dict, options), daemon=True)
                     live_chat_thread.start()
                 with self.graceful_signal_catcher(disable_graceful=options.get("disable_graceful_shutdown", False)):
                     while True:
                         if self.kill_all.is_set() or self.kill_this.is_set():
                             raise KeyboardInterrupt("Thread kill event is set, ending...")
                         done, not_done = concurrent.futures.wait(futures, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
-                        # Continuously check for completion or interruption
                         for future in done:
                             try:
-                                #if future.exception() is not None:
-                                #    if type == 'auxiliary': 
-                                        #logging.error(str(future.exception()))
-                                #   else:
-                                #        raise future.exception()
-                                
-                                result, type = future.result()
+                                result, result_type = future.result()
                                 self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "\033[93m{0}\033[0m".format(result))
-                                
-                                if type == 'auxiliary':
+                                if result_type == 'auxiliary':
                                     self.file_names.update(result)
-
                                     # Remove parts that would not be needed by stream downloaders
                                     self.remove_format_segment_playlist_from_info_dict(info_dict=info_dict)
                                     info_dict.pop("thumbnails", None)
-                                    # Remove no longer required parts for the rest of the downloader
-                                    #info_dict = self.trim_info_json(info_dict=info_dict, keys_to_keep={"id", "ext", "upload_date", "original_url", "description", "fulltitle", "channel"})
-                                    
-
-                                elif str(type).lower() == 'video':
-                                    #self.file_names['video'] = result
-                                    pass
-                                elif str(type).lower() == 'audio':
-                                    #self.file_names['audio'] = result  
-                                    pass
-                                elif str(type).lower() == 'live_chat':
-                                    pass
-                                else:
-                                    self.file_names[str(type)] = result
+                                elif str(result_type).lower() not in ('video', 'audio', 'live_chat'):
+                                    self.file_names[str(result_type)] = result
                             except Exception as e:
                                 self.logger.exception(e)
                             futures.discard(future)
-                            
+
                         if len(not_done) <= 0:
                             break
-                        #else:
-                        #    time.sleep(0.9)
                         self.print_stats(options=options)
 
-                    if live_chat_thread and live_chat_thread.is_alive():
-                        self.logger.info("Media downloads finished, waiting for live chat to end...")
-                        if options.get('stop_chat_when_done', None):
-                            self.chat_timeout = time.time()
-                        while live_chat_thread.is_alive() and not (self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set()):
-                            live_chat_thread.join(3.0)
-                
-            except KeyboardInterrupt as e:
+                    self._wait_for_live_chat(live_chat_thread, info_dict, options)
+
+            except KeyboardInterrupt:
                 self.kill_this.set()
                 self.logger.debug("Keyboard interrupt detected")
                 if len(not_done) > 0:
                     self.logger.debug("Cancelling remaining threads")
                 for future in not_done:
-                    _ = future.cancel()
+                    future.cancel()
                 done, not_done = concurrent.futures.wait(futures, timeout=5, return_when=concurrent.futures.ALL_COMPLETED)
-                executor.shutdown(wait=False,cancel_futures=True)
+                executor.shutdown(wait=False, cancel_futures=True)
                 self.logger.debug("Shutdown all threads")
                 self.stats["status"] = "Cancelled"
-                raise        
-                
+                raise
+
         self.stats["status"] = "Muxing"
-        self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options)
-            
+        self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options, output_file=outputFile)
+
         self.stats["status"] = "Moving"
         self.move_to_final(options=options, output_file=outputFile, file_names=self.file_names)
-        self.stats["status"] = "Finished"            
-        #move_to_final(info_dict, options, file_names)
-        
-    def output_filename(self, info_dict, outtmpl):
-        outputFile = str(yt_dlp.YoutubeDL().prepare_filename(info_dict, outtmpl=outtmpl)).replace("%", "％") # Replace normal percent sign with unicode version to prevent ffmpeg errors
-        return outputFile
-    
+        self.stats["status"] = "Finished"
+
+    def output_filename(self, info_dict, outtmpl) -> str:
+        # Reuse one YoutubeDL instance for filename templating (constructing one is relatively expensive)
+        if self._filename_ydl is None:
+            self._filename_ydl = yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True})
+        # Replace normal percent sign with unicode version to prevent ffmpeg errors
+        return str(self._filename_ydl.prepare_filename(info_dict, outtmpl=outtmpl)).replace("%", "％")
+
+    # --- Moving to final destination ---
 
     def move_to_final(self, options, output_file, file_names):
-        def maybe_move(key, dest_func, file_names_dict: dict=file_names, option_flag=None):
+        def maybe_move(key, dest_func, file_names_dict: dict = file_names, option_flag=None):
             """
             key: key in file_names
-            dest_func: func -> pathlib -> string dest path
-            delete_if_false: if True, delete when option_flag not set
-            option_flag: name of boolean option (write_thumbnail etc)
+            dest_func: FileInfo -> destination path
+            option_flag: name of a boolean option (write_thumbnail etc). If set and the option is
+                         false, the file is deleted instead of moved.
             """
             f: FileInfo = file_names_dict.get(key)
             if not f:
                 return
             try:
-                # deletion case (thumbnail / ffmpeg)
                 if option_flag is not None and not options.get(option_flag, False):
                     self.logger.info(f"Removing {f.absolute()}")
                     f.unlink(missing_ok=True)
@@ -488,7 +2686,7 @@ class LiveStreamDownloader:
                     return
 
                 dest = dest_func(f)
-                if str(f).strip() != str(dest).strip():
+                if os.path.abspath(str(f).strip()) != os.path.abspath(str(dest).strip()):
                     self.logger.info(f"Moving {f.absolute()} -> {dest}")
                     shutil.move(f.absolute(), dest)
                 else:
@@ -501,45 +2699,22 @@ class LiveStreamDownloader:
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
 
-        # === individual file handlers ===
+        maybe_move('thumbnail', lambda f: f"{output_file}{f.suffix}", option_flag='write_thumbnail')
+        maybe_move('info_json', lambda f: f"{output_file}.info.json")
+        maybe_move('description', lambda f: f"{output_file}{f.suffix}")
 
-        maybe_move('thumbnail',
-                lambda f: f"{output_file}{f.suffix}",
-                option_flag='write_thumbnail')
-
-        maybe_move('info_json',
-                lambda f: f"{output_file}.info.json",
-                )
-
-        maybe_move('description',
-                lambda f: f"{output_file}{f.suffix}",
-                )
-        
         stream_manifests = list(self.file_names["streams"].items())
         for manifest, stream in stream_manifests:
             stream_output_file = output_file
             if len(stream_manifests) > 1:
                 stream_output_file = f"{output_file}.{manifest}"
-            maybe_move('video',
-                    lambda f: f"{stream_output_file}.{f._format}{f.suffix}",
-                    file_names_dict=stream)
+            maybe_move('video', lambda f: f"{stream_output_file}.{f._format}{f.suffix}", file_names_dict=stream)
+            maybe_move('audio', lambda f: f"{stream_output_file}.{f._format}{f.suffix}", file_names_dict=stream)
+            # create_mp4 normally writes the merged file in place already (then this is a no-op)
+            maybe_move('merged', lambda f: self._with_ext(stream_output_file, f.suffix), file_names_dict=stream)
+            maybe_move('ffmpeg_cmd', lambda f: f"{stream_output_file}.ffmpeg.txt", option_flag='write_ffmpeg_command', file_names_dict=stream)
 
-            maybe_move('audio',
-                    lambda f: f"{stream_output_file}.{f._format}{f.suffix}",
-                    file_names_dict=stream)
-
-            maybe_move('merged',
-                    lambda f: f"{stream_output_file}{f.suffix}",
-                    file_names_dict=stream)
-            
-            maybe_move('ffmpeg_cmd',
-                    lambda f: f"{stream_output_file}.ffmpeg.txt",
-                    option_flag='write_ffmpeg_command',
-                    file_names_dict=stream,)
-
-        maybe_move('live_chat',
-                lambda f: f"{output_file}.live_chat.zip",
-                )
+        maybe_move('live_chat', lambda f: f"{output_file}.live_chat.zip")
 
         # special: databases = list
         try:
@@ -551,78 +2726,91 @@ class LiveStreamDownloader:
         except Exception as e:
             self.logger.exception(f"unable to move database files: {e}")
 
-        
-
-        # remove temp folder
-        """
-        if options.get('temp_folder', None) is not None:
-            try:
-                os.rmdir(options.get('temp_folder'))
-            except OSError as e:
-                if e.errno == errno.ENOTEMPTY:
-                    self.logger.warning(f"Error: Directory not empty: {e.filename}")
-                else:
-                    self.logger.exception(f"Error removing temp folder: {e}")
-            except Exception as e:
-                self.logger.exception(f"Error removing temp folder: {e}")
-        """
         self.logger.info("Finished moving files from temporary directory to output destination")
 
+    # --- Live chat ---
+
+    def _wait_for_live_chat(self, live_chat_thread: Optional[threading.Thread], info_dict: dict, options: dict) -> None:
+        """
+        Wait for the live chat download after the media finished, for at most --stop-chat-when-done
+        seconds. The timeout is enforced here because the downloaders only check it when a chat
+        message arrives (chat-downloader) or not at all (yt-dlp), which could block forever.
+        """
+        if not (live_chat_thread and live_chat_thread.is_alive()):
+            return
+        self.logger.info("Media downloads finished, waiting for live chat to end...")
+        timeout = options.get('stop_chat_when_done', None)
+        if timeout:
+            self.chat_timeout = time.time()
+        deadline = time.monotonic() + timeout if timeout else None
+        while live_chat_thread.is_alive() and not (self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set()):
+            live_chat_thread.join(3.0)
+            if deadline is not None and time.monotonic() > deadline:
+                self.logger.warning("Stopping chat download for {0}, timeout ({1}s) exceeded".format(info_dict.get('id', "N/A"), timeout))
+                self.chat_stop.set()
+                live_chat_thread.join(LIVE_CHAT_STOP_GRACE)
+                if live_chat_thread.is_alive():
+                    self.logger.warning("Live chat downloader did not stop, keeping the chat downloaded so far")
+                    self._package_live_chat(base_output_path(options, info_dict), snapshot=True)
+                break
+
+    def _package_live_chat(self, base_output: str, livechat_filename: Optional[str] = None, snapshot: bool = False) -> Optional[dict]:
+        """
+        Zip the live chat JSON (appending any .part file) and register it. Runs at most once, as it
+        may be called both by an abandoned chat thread and by the coordinator after a timeout.
+        `snapshot` leaves the source files in place because they may still be written to.
+        """
+        import zipfile
+        livechat_filename = livechat_filename or base_output + ".live_chat.json"
+        part_file = "{0}.part".format(livechat_filename)
+        with self._live_chat_lock:
+            if self._live_chat_packaged:
+                return None
+            if not (os.path.exists(livechat_filename) or os.path.exists(part_file)):
+                self.logger.warning("No live chat file found at {0}".format(livechat_filename))
+                return None
+            try:
+                zip_filename = base_output + ".live_chat.zip"
+                with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
+                    with zipf.open(os.path.basename(livechat_filename), 'w', force_zip64=True) as dest:
+                        for source in (livechat_filename, part_file):
+                            if os.path.exists(source):
+                                with open(source, 'rb') as src:
+                                    shutil.copyfileobj(src, dest, WRITE_BUFFER_SIZE)
+                if not snapshot:
+                    _remove_file(livechat_filename, self.logger)
+                    _remove_file(part_file, self.logger)
+                live_chat = {'live_chat': FileInfo(zip_filename, file_type='live_chat')}
+                self.file_names.update(live_chat)
+                self._live_chat_packaged = True
+                return live_chat
+            except Exception as e:
+                self.logger.exception("\033[31m{0}\033[0m".format(e))
+                return None
+
     def download_live_chat(self, info_dict, options):
-        
-        if info_dict.get("status", "") == "post_live":
+        if info_dict.get("live_status", info_dict.get("status", "")) == "post_live":
             self.logger.warning("Stream is post live, unlikely to retrieve live chat")
-        if options.get('filename') is not None:
-            filename = options.get('filename')
-        else:
-            filename = info_dict.get('id')
-        
-        if options.get("temp_folder"):
-            base_output = os.path.join(options.get("temp_folder"), filename)
-        else:
-            base_output = filename
+        base_output = base_output_path(options, info_dict)
 
-        class YTDLP_Chat_logger(YoutubeURL.YTDLPLogger):        
-            def __init__(self, logger: logging = logging.getLogger()):
-                super().__init__(logger=logger)
-
-            def prefix(self, msg: str):
-                if msg.startswith("[live-chat] "):
-                    return msg
-                else:
-                    return "[live-chat] {0}".format(msg)
-            def debug(self, msg):
-                super().debug(self.prefix(msg))
-            def info(self, msg):
-                super().info(self.prefix(msg))
-            def warning(self, msg):
-                super().warning(self.prefix(msg))
-            def error(self, msg):
-                super().error(self.prefix(msg))
-        
-        logger = self.logger
-        
         ydl_opts = {
             'skip_download': True,               # Skip downloading video/audio
-            'logger': YTDLP_Chat_logger(logger=logger),
-            #'quiet': True,
+            'logger': YoutubeURL.PrefixedYTDLPLogger("live-chat", logger=self.logger),
             'cookiefile': options.get('cookies', None),
             'retries': 25,
             'concurrent_fragment_downloads': 3,
-            #'live_from_start': True,
             'writesubtitles': True,              # Extract subtitles (live chat)
             'subtitlesformat': 'json',           # Set format to JSON
             'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
-            'outtmpl': base_output          # Save to a JSON file        
+            'outtmpl': base_output               # Save to a JSON file
         }
         self.logger.debug(options.get('ytdlp_options', {}))
-        ydl_opts.update(options.get('ytdlp_options', {}))
-        
+        ydl_opts.update(options.get('ytdlp_options') or {})
+        proxy = getUrls.proxy_for_ytdlp(options.get('proxy'))
+
         livechat_filename = base_output + ".live_chat.json"
-        
-        
         self.logger.info("Downloading live chat to: {0}".format(livechat_filename))
-        # Run yt-dlp with the specified options
+
         # Don't except whole process on live chat fail
         class ChatDownloaderParsingError(ValueError):
             pass
@@ -630,221 +2818,128 @@ class LiveStreamDownloader:
             import chat_downloader
             from chat_downloader import ChatDownloader
             try:
-                # URL of the video or stream chat
                 chat_url = 'https://www.youtube.com/watch?v={0}'.format(info_dict.get('id'))
                 self.logger.debug("Attempting to download with chat downloader")
-                # Initialize the ChatDownloader
-                chat_download = ChatDownloader(cookies=options.get('cookies', None), proxy=next(iter((options.get('proxy', None) or {}).values()), None))
-
-                # Open a JSON file to save the chat
-
-                # Download the chat
+                chat_download = ChatDownloader(cookies=options.get('cookies', None), proxy=proxy)
                 chat = chat_download.get_chat(chat_url, output=livechat_filename, overwrite=False)
-
-                # Process chat messages for the duration of the timeout
+                # Process chat messages; stop/timeout checks only run when a message arrives, the
+                # coordinator enforces the timeout independently (see _wait_for_live_chat)
                 for message in chat:
-                    if self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set():
+                    if self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set() or self.chat_stop.is_set():
                         self.logger.debug("Killing live chat downloader")
-                        chat_download.close()
                         break
                     if self.chat_timeout is not None and time.time() - self.chat_timeout >= options.get('stop_chat_when_done', 300):
                         self.logger.warning("Stopping chat download for {0}, timeout ({1}s) exceeded".format(options.get('id', "N/A"), options.get('stop_chat_when_done', 300)))
-                        chat_download.close()
                         break
-                chat_download.close()   
+                chat_download.close()
 
             # Temporary fallback due to know issue of chat-downloader not working after youtube changes
             except chat_downloader.errors.ParsingError as e:
                 self.logger.exception("Unable to parse live chat using chat-downloader, using yt-dlp")
                 raise ChatDownloaderParsingError(e)
-                """
-                
-                if options.get('proxy', None) is not None:
-                    ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        result = ydl.process_ie_result(info_dict)
-                        try:
-                            if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
-                                livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None)
-                        except:
-                            self.logger.exception("Unable to find live chat path")
-                        
-                        
-                        #result = ydl.download_with_info_file(info_dict)
-                        #result = ydl._writesubtitles(info_dict, )
-                except Exception as e:
-                    self.logger.exception("\033[31m{0}\033[0m".format(e))
-                """
-            
-        except (ImportError,ChatDownloaderParsingError) as e:
+
+        except (ImportError, ChatDownloaderParsingError) as e:
             if isinstance(e, ImportError):
                 self.logger.warning("Unable to import chat-downloader, using yt-dlp")
-
-            if options.get('proxy', None) is not None:
-                ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
+            if proxy:
+                ydl_opts['proxy'] = proxy
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.process_ie_result(info_dict)
                     try:
-                        
-                        #if result.get('requested_subtitles', {}):
-                        #    self.logger.warning(json.dumps(result.get('requested_subtitles')))
-                        if result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath', None):
-                            livechat_filename = result.get('requested_subtitles', {}).get('live_chat', {}).get('filepath')
-                    except Exception as e:
+                        if (result.get('requested_subtitles') or {}).get('live_chat', {}).get('filepath', None):
+                            livechat_filename = result['requested_subtitles']['live_chat']['filepath']
+                    except Exception:
                         self.logger.warning("Unable to find live chat path, remaining with existing path")
-                    #result = ydl.download_with_info_file(info_dict)
-                    #result = ydl._writesubtitles()
             except Exception as e:
-                self.logger.exception("\033[31m{0}\033[0m".format(e)) 
-        
-            
-        except Exception as e:
-            self.logger.exception("\033[31m{0}\033[0m".format(e))
-        time.sleep(1)
-        part_file = "{0}.part".format(livechat_filename)
-        if os.path.exists(part_file):
-            # Append part to 
-            chunk_size = 1024*1024*10  # number of characters per chunk, up to 10M characters
-            with open(part_file, "r", encoding="utf-8") as fa, \
-                open(livechat_filename, "a", encoding="utf-8") as fb:
-                while chunk := fa.read(chunk_size):
-                    fb.write(chunk)
-            os.remove("{0}.part".format(livechat_filename))
+                self.logger.exception("\033[31m{0}\033[0m".format(e))
 
-        
-        try:
-            import zipfile
-            zip_filename = base_output + ".live_chat.zip"
-            with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
-                zipf.write(livechat_filename, arcname=os.path.basename(livechat_filename))
-            os.remove(livechat_filename)
-            live_chat = {
-                'live_chat': FileInfo(zip_filename, file_type='live_chat')
-            }
-            self.file_names.update(live_chat)
-            return live_chat, 'live_chat'
         except Exception as e:
             self.logger.exception("\033[31m{0}\033[0m".format(e))
-        
+
+        time.sleep(1)
+        live_chat = self._package_live_chat(base_output, livechat_filename=livechat_filename)
+        if live_chat:
+            return live_chat, 'live_chat'
+        return None
+
+    # --- info.json helpers ---
+
     def replace_ip_in_json(self, file_name):
         import re
         pattern = re.compile(r'((?:[0-9]{1,3}\.){3}[0-9]{1,3})|((?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4})')
-
         with open(file_name, 'r', encoding="utf-8") as file:
             content = file.read()
-
         modified_content = re.sub(pattern, '0.0.0.0', content)
-
         with open(file_name, 'w', encoding="utf-8") as file:
             file.write(modified_content)
 
     def remove_urls_from_json(self, file_name):
         with open(file_name, 'r', encoding="utf-8") as file:
             data = json.load(file)
-            
-        if data.get('formats', None) is not None:
-            for format in data['formats']:
-                if format.get('url') is not None:
-                    format['url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
-                    
-                if format.get('manifest_url') is not None:
-                    format['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
-                
-                format.pop('fragment_base_url', None)
-                format.pop('fragments', None)
-                    
-        if data.get('thumbnails', None) is not None:
-            for thumbnail in data['thumbnails']:
-                if thumbnail.get('url', None) is not None:
-                    parsed_url = urlparse(thumbnail.get('url', ""))
-                    thumbnail['url'] = "{0}://{1}{2}".format(parsed_url.scheme, parsed_url.netloc, parsed_url.path)
-                    
-        if data.get('url', None) is not None:
-            data['url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
 
+        watch_url = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
+        for format in data.get('formats') or []:
+            if format.get('url') is not None:
+                format['url'] = watch_url
+            if format.get('manifest_url') is not None:
+                format['manifest_url'] = watch_url
+            format.pop('fragment_base_url', None)
+            format.pop('fragments', None)
+
+        for thumbnail in data.get('thumbnails') or []:
+            if thumbnail.get('url', None) is not None:
+                parsed_url = urlparse(thumbnail.get('url', ""))
+                thumbnail['url'] = "{0}://{1}{2}".format(parsed_url.scheme, parsed_url.netloc, parsed_url.path)
+
+        if data.get('url', None) is not None:
+            data['url'] = watch_url
         if data.get('manifest_url', None) is not None:
-            data['manifest_url'] = "https://www.youtube.com/watch?v={0}".format(data.get('id', ""))
-            
+            data['manifest_url'] = watch_url
+
         data['removed_urls'] = True
-        
         with open(file_name, "w", encoding='utf-8') as file:
             json.dump(data, file)
-            
+
     def download_auxiliary_files(self, info_dict, options):
-        if options.get('filename') is not None:
-            filename = options.get('filename')
-        else:
-            filename = info_dict.get('id')
-        
-        if options.get("temp_folder"):
-            base_output = os.path.join(options.get("temp_folder"), filename)
-        else:
-            base_output = filename
-        
+        base_output = base_output_path(options, info_dict)
         created_files = {}
-
-        logger = self.logger
-
-        class YTDLP_Auxiliary_logger(YoutubeURL.YTDLPLogger):        
-            def __init__(self, logger: logging = logging.getLogger()):
-                super().__init__(logger=logger)
-
-            def prefix(self, msg: str):
-                if msg.startswith("[auxiliary] "):
-                    return msg
-                else:
-                    return "[auxiliary] {0}".format(msg)
-            def debug(self, msg):
-                super().debug(self.prefix(msg))
-            def info(self, msg):
-                super().info(self.prefix(msg))
-            def warning(self, msg):
-                super().warning(self.prefix(msg))
-            def error(self, msg):
-                super().error(self.prefix(msg))
 
         ydl_opts = {
             'skip_download': True,
             'quiet': True,
-    #        'cookiefile': options.get('cookies', None),
             'writeinfojson': options.get('write_info_json', False),
             'writedescription': options.get('write_description', False),
             'writethumbnail': (options.get('write_thumbnail', False) or options.get("embed_thumbnail", False)),
             'outtmpl': base_output,
             'retries': 10,
-            'logger': YTDLP_Auxiliary_logger(logger=logger),
+            'logger': YoutubeURL.PrefixedYTDLPLogger("auxiliary", logger=self.logger),
             'format': options.get("resolution", "bv+ba/best")
         }
-        if options.get('proxy', None) is not None:
-            ydl_opts['proxy'] = next(iter((options.get('proxy', None) or {}).values()), None)
-            
+        proxy = getUrls.proxy_for_ytdlp(options.get('proxy'))
+        if proxy:
+            ydl_opts['proxy'] = proxy
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            #base_name = ydl.prepare_filename(info_dict)
-            #result = ydl.download_with_info_file(info_dict)
             info = ydl.process_ie_result(info_dict)
-            #with open("aux_data.json", "w", encoding="utf-8") as json_file:
-            #    json.dump(info, json_file, indent=4)
-            
-            # Check if info.json has been 
+
+            # Check if info.json has been written
             info_dict_file = next(
-                (item for item in info.get("requested_downloads", []) if item.get("infojson_filename", None) and os.path.exists(item["infojson_filename"])), 
+                (item for item in info.get("requested_downloads", []) if item.get("infojson_filename", None) and os.path.exists(item["infojson_filename"])),
                 {}
             )
             if info_dict_file.get("infojson_filename"):
-                
                 created_files['info_json'] = FileInfo(info_dict_file.get("infojson_filename"), file_type='info_json')
                 try:
                     if options.get('remove_ip_from_json'):
                         self.replace_ip_in_json(created_files['info_json'].absolute())
                     if options.get('clean_urls'):
                         self.remove_urls_from_json(created_files['info_json'].absolute())
-                except Exception as e:
+                except Exception:
                     self.logger.exception("Unable to find info.json file")
             elif ydl_opts.get("writeinfojson", False):
                 self.logger.error("Unable to write info.json")
-                    
+
             if ydl_opts.get("writedescription", False):
                 if info_dict.get("description"):
                     try:
@@ -852,169 +2947,98 @@ class LiveStreamDownloader:
                         with open(description_file, "w", encoding="utf-8") as desc_file:
                             desc_file.write(info_dict["description"])
                         created_files['description'] = FileInfo(description_file, file_type='description')
-                    except Exception as e:
+                    except Exception:
                         self.logger.exception("Unable to write description file")
                 else:
                     self.logger.info("No description in info.json")
-                
-            #thumbnails = ydl._write_thumbnails('video', info_dict, ydl.prepare_filename(info_dict, 'thumbnail'))
+
             try:
-                # 1. Safely find the last thumbnail that has a 'filepath'
-                # Using a generator expression with reversed() is cleaner than [::-1]
+                # Find the last thumbnail that has a 'filepath'
                 thumbnail_data = next((t for t in reversed(info.get('thumbnails', [])) if t.get('filepath')), None)
-
-                # 2. Extract the filename safely
                 thumbnail_filename = thumbnail_data.get('filepath') if thumbnail_data else None
-
-                # 3. Check if we actually have a valid file on disk
                 if not thumbnail_filename or not os.path.exists(thumbnail_filename):
                     if ydl_opts.get("writethumbnail", False):
                         self.logger.error("Unable to download thumbnail")
                 else:
-                    # Everything is good
-                    created_files['thumbnail'] = FileInfo(thumbnail_filename, file_type='thumbnail')     
-            except Exception as e:
+                    created_files['thumbnail'] = FileInfo(thumbnail_filename, file_type='thumbnail')
+            except Exception:
                 self.logger.exception("Unable to download thumbnail")
-                               
-            
+
         return created_files, 'auxiliary'
-        
-    def create_mp4(self, file_names: dict, info_dict: dict, options: dict):
-        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Files: {0}\n".format(json.dumps(self.file_names, default=lambda o: o.to_dict())))
-        import subprocess
+
+    # --- Muxing ---
+
+    def _ensure_png_or_jpeg_thumbnail(self, file_names: dict) -> None:
         import mimetypes
-        from yt_dlp.postprocessor.ffmpeg import FFmpegMetadataPP, FFmpegPostProcessorError, PostProcessor, encodeArgument, shell_quote, variadic, Popen
-        import itertools
-        #import shlex
-        #from sys import platform as sys_platform
-        class LiveStreamDLMerger(FFmpegMetadataPP):
-            def __init__(self, downloader, ffmpeg_command_file: FileInfo=None):
-                self.ffmpeg_command_file = ffmpeg_command_file
-                super().__init__(downloader=downloader)
-            
-            @PostProcessor._restrict_to()
-            def run(self, info):
-                super().run(info)           
+        import subprocess
+        # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
+        guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
+        mime_type, _ = guess(file_names.get('thumbnail'))
+        if str(mime_type) in ("image/jpeg", "image/png"):
+            return
+        self.logger.info("{0} is not a JPG or PNG file, converting to png".format(file_names.get('thumbnail').name))
+        png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
+        thumbnail_conversion = ['ffmpeg', '-y', '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats',
+                                "-i", str(file_names.get('thumbnail').absolute()), "-c", "png", "-compression_level", "9",
+                                "-pred", "mixed", str(png_thumbnail.absolute())]
+        try:
+            subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
+            self.logger.debug("Replacing thumbnail with .png version")
+            file_names.pop('thumbnail').unlink(missing_ok=True)
+            file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
+        except subprocess.CalledProcessError as e:
+            self.logger.error(e.stderr)
+            self.logger.critical(e)
 
-            def real_run_ffmpeg(self, input_path_opts, output_path_opts, *, merge=True, expected_retcodes=(0,)):
-                self.check_version()
+    @staticmethod
+    def _with_ext(path: str, ext: str) -> str:
+        return path if path.endswith(ext) else path + ext
 
-                oldest_mtime = min(
-                    os.stat(path).st_mtime for path, _ in input_path_opts if path)
+    def create_mp4(self, file_names: dict, info_dict: dict, options: dict, output_file: Optional[str] = None):
+        """
+        Mux the downloaded .ts files of each manifest with ffmpeg.
+        If `output_file` (final destination, without extension) is given, ffmpeg writes directly into
+        the destination directory under a temporary ".merging" name which is renamed on success. This
+        avoids copying the whole merged file when the temp folder is on another file system.
+        """
+        import mimetypes
+        import subprocess
+        from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessorError
 
-                cmd = [self.executable, encodeArgument('-y')]
-                # avconv does not have repeat option
-                if self.basename == 'ffmpeg':
-                    cmd += [encodeArgument('-loglevel'), encodeArgument('repeat+info')]
+        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Files: {0}\n".format(json.dumps(self.file_names, default=lambda o: o.to_dict())))
 
-                def make_args(file, args, name, number):
-                    keys = [f'_{name}{number}', f'_{name}']
-                    if name == 'o':
-                        args += ['-movflags', '+faststart']
-                        if number == 1:
-                            keys.append('')
-                    args += self._configuration_args(self.basename, keys)
-                    if name == 'i':
-                        args.append('-i')
-                    return (
-                        [encodeArgument(arg) for arg in args]
-                        + [self._ffmpeg_filename_argument(file)])
-
-                for arg_type, path_opts in (('i', input_path_opts), ('o', output_path_opts)):
-                    cmd += itertools.chain.from_iterable(
-                        make_args(path, list(opts), arg_type, i + 1)
-                        for i, (path, opts) in enumerate(path_opts) if path)
-                    
-                command_string = shell_quote(cmd)
-                self.write_debug(f'ffmpeg command line: {command_string}')
-                with open(self.ffmpeg_command_file, 'w', encoding="utf-8") as f:
-                    f.write(command_string + "\n")
-
-                if not merge:
-                    return None
-                _, stderr, returncode = Popen.run(
-                    cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
-                
-                if returncode not in variadic(expected_retcodes):
-                    #self.write_debug(stderr)                    
-                    raise FFmpegPostProcessorError(stderr)
-                for out_path, _ in output_path_opts:
-                    if out_path:
-                        self.try_utime(out_path, oldest_mtime, oldest_mtime)
-                return stderr
-
-        class YTDLP_FFmpeg_logger(YoutubeURL.YTDLPLogger):        
-            def __init__(self, logger: logging = logging.getLogger()):
-                super().__init__(logger=logger)
-
-            def prefix(self, msg: str):
-                if msg.startswith("[ffmpeg] "):
-                    return msg
-                else:
-                    return "[ffmpeg] {0}".format(msg)
-            def debug(self, msg):
-                super().debug(self.prefix(msg))
-            def info(self, msg):
-                super().info(self.prefix(msg))
-            def warning(self, msg):
-                super().warning(self.prefix(msg))
-            def error(self, msg):
-                super().error(self.prefix(msg))
-
-
-        #self.logger.debug("Files: {0}".format(json.dumps(file_names)))
         stream_manifests = list(self.file_names["streams"].items())
         input_args = ['-thread_queue_size', '1024', "-seekable", "0"]
+        ext = "." + str(options.get("ext") or info_dict.get('ext') or 'mp4').strip(" .")
+        guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
+
         for manifest, stream in stream_manifests:
             index = 0
-            thumbnail = None
-            video = None
-            audio = None
-
             info_dict["requested_formats"] = []
             files = []
 
-            # Determine output path
-            if options.get('filename') is not None:
-                filename = options.get('filename')
-            else:
-                filename = info_dict.get('id')
-            
-            if options.get("temp_folder"):
-                base_output = os.path.join(options.get("temp_folder"), filename)
-            else:
-                base_output = filename
-
+            base_output = base_output_path(options, info_dict)
+            final_base = output_file
             if len(stream_manifests) > 1:
-                base_output = f"{base_output}.{manifest}" 
-
-            ext = options.get("ext") or info_dict.get('ext', '.mp4')               
-            ext = "." + str(ext).strip(" .")
-
-            if not base_output.endswith(ext):
-                base_output = base_output + ext  
+                base_output = f"{base_output}.{manifest}"
+                final_base = f"{output_file}.{manifest}" if output_file else None
+            base_output = self._with_ext(base_output, ext)
 
             ydl_opts = {
                 'skip_download': True,
                 'quiet': True,
                 'outtmpl': base_output,
-                'logger': YTDLP_FFmpeg_logger(logger=self.logger),
+                'logger': YoutubeURL.PrefixedYTDLPLogger("ffmpeg", logger=self.logger),
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                
                 ffmpeg_command_file = FileInfo("{0}.ffmpeg.txt".format(base_output), file_type='ffmpeg_command')
                 file_names["streams"][manifest]['ffmpeg_cmd'] = ffmpeg_command_file
-                livestream_merger = LiveStreamDLMerger(downloader=ydl, ffmpeg_command_file=ffmpeg_command_file)
-                
-                # Create a mapping for the indices we need to track
-                stream_indices = {"video": video, "audio": audio}
+                livestream_merger = _make_merger(ydl, ffmpeg_command_file)
 
                 for key in ["video", "audio"]:
                     file_info: FileInfo = stream.get(key)
                     if not file_info:
                         continue
-
-                    # 1. Update info_dict
                     info_dict["requested_formats"].append({
                         "filepath": str(file_info.absolute()),
                         "format": file_info._format,
@@ -1023,17 +3047,12 @@ class LiveStreamDownloader:
                         "language": file_info._language,
                         "protocol": file_info._protocol,
                     })
-
-                    # 2. Add to ffmpeg files
                     files.append(str(file_info.absolute()))
-
-                    # 3. Track the index and increment
-                    stream_indices[key] = index
                     index += 1
 
-                # Extract the values back if you need them as standalone variables
-                video, audio = stream_indices["video"], stream_indices["audio"]
-
+                if not files:
+                    self.logger.error("No downloaded streams to merge for manifest {0}".format(manifest))
+                    continue
 
                 # From FFmpegMergerPP
                 args = ['-c', 'copy']
@@ -1053,7 +3072,7 @@ class LiveStreamDownloader:
                         if fmt.get("format"):
                             args.extend([f'-metadata:s:a:{audio_streams}', f'comment={fmt.get("format")}'])
                         audio_streams += 1
-                        
+
                     if fmt.get('vcodec') != 'none':
                         args.extend(['-map', f'{i}:v:0'])
                         if fmt.get("format"):
@@ -1063,181 +3082,94 @@ class LiveStreamDownloader:
 
                 if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
                     if file_names.get('thumbnail').exists():
-                        # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
-                        guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
-
-                        mime_type, _ = guess(file_names.get('thumbnail'))
-
-                        # If not jpeg or png, convert to png
-                        if not str(mime_type) in ("image/jpeg", "image/png"):
-                            self.logger.info("{0} is not a JPG or PNG file, converting to png".format(file_names.get('thumbnail').name))
-                            png_thumbnail = file_names.get('thumbnail').with_suffix(".png")
-
-                            thumbnail_conversion = ['ffmpeg', '-y', 
-                                    '-hide_banner', '-nostdin', '-loglevel', 'error', '-stats',
-                                    "-i", str(file_names.get('thumbnail').absolute()), "-c", "png", "-compression_level", "9", "-pred", "mixed", str(png_thumbnail.absolute())
-                                ]
-                            try:                            
-                                result = subprocess.run(thumbnail_conversion, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', check=True)
-                                self.logger.debug("Replacing thumbnail with .png version")
-                                file_names.pop('thumbnail').unlink(missing_ok=True)                
-                                file_names['thumbnail'] = FileInfo(png_thumbnail, file_type='thumbnail')
-                                del result
-                            except subprocess.CalledProcessError as e:
-                                self.logger.error(e.stderr)
-                                self.logger.critical(e)
-                    
-                        thumbnail = index    
-                        if ext.lower() == ".mkv": # Don't add input file for mkv, use attach later
-                            # Use "guess_file_type" if function exists (added in 3.13), otherwise fall back to depreciated version
-                            guess = getattr(mimetypes, 'guess_file_type', mimetypes.guess_type)
-                            mime_type, _ = guess(file_names.get('thumbnail'))  
-                            args.extend(['-attach', str(file_names.get('thumbnail').absolute()), f"-metadata:s:t:{attachments}", "filename=cover{0}".format(file_names.get('thumbnail').suffix), f"-metadata:s:t:{attachments}", "mimetype={0}".format(mime_type or "application/octet-stream")])
+                        self._ensure_png_or_jpeg_thumbnail(file_names)
+                        if ext.lower() == ".mkv":  # Don't add input file for mkv, use attach later
+                            mime_type, _ = guess(file_names.get('thumbnail'))
+                            args.extend(['-attach', str(file_names.get('thumbnail').absolute()), f"-metadata:s:t:{attachments}",
+                                         "filename=cover{0}".format(file_names.get('thumbnail').suffix), f"-metadata:s:t:{attachments}",
+                                         "mimetype={0}".format(mime_type or "application/octet-stream")])
                             attachments += 1
                         else:
-                            files.append(str(file_names.get('thumbnail').absolute()))  
-                            args.extend(['-map', f'{index}:v:0', '-disposition:v:{0}'.format(video_streams), 'attached_pic'])     
-                            video_streams += 1           
+                            files.append(str(file_names.get('thumbnail').absolute()))
+                            args.extend(['-map', f'{index}:v:0', '-disposition:v:{0}'.format(video_streams), 'attached_pic'])
+                            video_streams += 1
                             index += 1
                     else:
                         self.logger.error("Thumbnail file: {0} is missing, continuing without embedding".format(file_names.get('thumbnail').absolute()))
 
-                # Add faststart
-                #ffmpeg_builder.extend(['-movflags', 'faststart'])
-
                 # From FFmpegMetadataPP
                 if livestream_merger._add_metadata:
-                    args.extend(item for pair in livestream_merger._get_metadata_opts(info_dict) for item in pair)                
-                
+                    args.extend(item for pair in livestream_merger._get_metadata_opts(info_dict) for item in pair)
+
                 if livestream_merger._add_infojson:
-                    if info_dict['ext'] in ('mkv', 'mka') and file_names.get("info_json"):
+                    if ext.lower() in ('.mkv', '.mka') and file_names.get("info_json"):
                         if file_names.get("info_json").exists():
                             args.extend([
                                 '-attach', str(file_names.get('info_json').absolute()),
                                 f'-metadata:s:t:{attachments}', 'mimetype=application/json',
                                 f'-metadata:s:t:{attachments}', 'filename=info.json',
-                                ])                        
+                            ])
                             attachments += 1
                         else:
-                            self.logger.error("Unable to find info.json file {0}".format(file_names.get("info_json")))             
+                            self.logger.error("Unable to find info.json file {0}".format(file_names.get("info_json")))
 
-                merged_file = FileInfo(base_output, file_type='merged')
                 do_merge = options.get("merge", True)
-                try:            
-                    if do_merge:        
+                if final_base:
+                    final_path = self._with_ext(final_base, ext)
+                    final_dir = os.path.dirname(final_path)
+                    if final_dir:
+                        os.makedirs(final_dir, exist_ok=True)
+                    # "<name>.merging.<ext>" keeps the real extension so ffmpeg picks the right muxer
+                    working_path = final_path[:-len(ext)] + ".merging" + ext
+                else:
+                    final_path = working_path = base_output
+
+                merged_file = FileInfo(final_path, file_type='merged')
+                try:
+                    if do_merge:
                         self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Merging streams into {merged_file}")
                     else:
-                        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Writing ffmpeg command instead of merging")
+                        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Writing ffmpeg command instead of merging")
                     livestream_merger.real_run_ffmpeg(
                         [(path, input_args) for path in files],
-                        [(str(merged_file.absolute()), args)], merge=do_merge)
-                except subprocess.CalledProcessError as e:
-                    self.logger.error(e.stderr)
-                    self.logger.critical(e)
-                    raise e
-                
-                except FFmpegPostProcessorError as e:
-                    self.logger.exception(e)
-                    raise e
+                        [(str(Path(working_path).absolute()), args)], merge=do_merge)
+                    if do_merge and working_path != final_path:
+                        os.replace(working_path, final_path)
+                except (subprocess.CalledProcessError, FFmpegPostProcessorError) as e:
+                    if isinstance(e, subprocess.CalledProcessError):
+                        self.logger.error(e.stderr)
+                        self.logger.critical(e)
+                    else:
+                        self.logger.exception(e)
+                    if do_merge and working_path != final_path:
+                        _remove_file(working_path, self.logger)
+                    raise
 
                 if do_merge:
                     file_names["streams"][manifest]['merged'] = merged_file
-                    self.logger.info("Successfully merged files into: {0}".format(file_names["streams"][manifest].get('merged').absolute()))
-                
-                
+                    self.logger.info("Successfully merged files into: {0}".format(merged_file.absolute()))
+
                 # Remove temp video and audio files
                 if do_merge and not (options.get('keep_ts_files') or options.get('keep_temp_files')):
-                    if file_names["streams"][manifest].get('video'): 
-                        try:
-                            self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('video').absolute()))
-                            file_names["streams"][manifest].get('video').unlink(missing_ok=True)
-                        except Exception as e:
-                            self.logger.exception("Unable to remove video .ts file")
-                        file_names["streams"][manifest].pop('video',None)
-                    if file_names["streams"][manifest].get('audio'): 
-                        try:
-                            self.logger.info("Removing {0}".format(file_names["streams"][manifest].get('audio').absolute()))
-                            file_names["streams"][manifest].get('audio').unlink(missing_ok=True)
-                        except Exception as e:
-                            self.logger.exception("Unable to remove video .ts file")
-                        file_names["streams"][manifest].pop('audio',None)       
-            del ydl
+                    for key in ("video", "audio"):
+                        stream_file = file_names["streams"][manifest].get(key)
+                        if stream_file:
+                            try:
+                                self.logger.info("Removing {0}".format(stream_file.absolute()))
+                                stream_file.unlink(missing_ok=True)
+                            except Exception:
+                                self.logger.exception("Unable to remove {0} .ts file".format(key))
+                            file_names["streams"][manifest].pop(key, None)
         return file_names
-        #for file in file_names:
-        #    os.remove(file)
-        
-    def write_ffmpeg_command(self, command_array, filename):
-        import shlex
-        # Determine the platform
-        """
-        Builds a platform-compatible FFmpeg command with proper quoting.
 
-        Args:
-            command_array (list): List of arguments to append to the command.
-            filename: Filename to write command to 
-
-        Returns:
-            str: A properly quoted FFmpeg command.
-        """
-        if os.name == "nt":  # Windows
-            # Handle special quoting and escaping for Windows
-            quoted_args = []
-            for arg in command_array:
-                if "\n" in arg:
-                    # Replace newlines with literal \n
-                    arg = arg.replace("\n", "\\n")
-                # Escape double quotes and wrap in double quotes if necessary
-                if " " in arg or any(ch in arg for ch in ('&', '^', '%', '$', '#', '"')):
-                    arg = '"{0}"'.format(arg.replace("\"", "\\\""))
-                quoted_args.append(arg)
-            command_string = "{0}".format(' '.join(quoted_args))
-        else:  # POSIX (Linux/macOS)
-            # Use shlex.quote for safe quoting
-            #quoted_args = [shlex.quote(arg) for arg in arguments]
-            command_string = shlex.join(command_array)
-
-        
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(command_string + "\n")
-
-        return filename
-    
-    def universal_sanitize(self, text):
-        if not text: return ""
-        
-        # Map dangerous ASCII to safe "Fullwidth" Unicode equivalents
-        # Shells (Windows/Linux) treat these as normal text characters.
-        replacements = {
-            '&': '＆',  # Fullwidth Ampersand (Fixes your 'pp' crash)
-            '|': '｜',  # Fullwidth Pipe
-            '<': '＜',  # Fullwidth Less-Than
-            '>': '＞',  # Fullwidth Greater-Than
-            '"': '＂',  # Fullwidth Quote
-            '^': '＾',  # Fullwidth Caret
-            ';': '；',  # Fullwidth Semicolon
-            '$': '＄',  # Fullwidth Dollar Sign
-        }
-        
-        for char, replacement in replacements.items():
-            text = text.replace(char, replacement)
-    
-        # Hard truncation to stay safe within the 8,191 limit
-        # We leave room for the rest of the ffmpeg command.
-        return (text[:6144] + '...') if len(text) > 6144 else text
-        #return text
+    # --- Stats ---
 
     def convert_bytes(self, bytes):
-        # List of units in order
         units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB']
-        
-        # Start with bytes and convert to larger units
         unit_index = 0
         while bytes >= 1024 and unit_index < len(units) - 1:
             bytes /= 1024
             unit_index += 1
-        
-        # Format and return the result
         return f"{bytes:.2f} {units[unit_index]}"
 
     def print_stats(self, options):
@@ -1247,2350 +3179,32 @@ class LiveStreamDownloader:
             return
 
         if self.logger.getEffectiveLevel() > logging.INFO:
-            #print("Log level too high for printing: {0}".format(self.logger.getEffectiveLevel()))
             return
 
         if not (self.stats.get('video') or self.stats.get('audio')):
-            #print("No stats available")
-            #print(json.dumps(self.stats))
             return
 
-        # Build the output parts in a list
         parts = [f"{self.stats.get('id')}:"]
-
-        if self.stats.get('video'):
-            v = self.stats.get('video', {})
-            v_str = f"Video: {v.get('downloaded_segments', 0)}/{v.get('latest_sequence', 0)}"
-            if v.get('status'):
-                v_str += f" ({v.get('status').capitalize()})"
-            parts.append(v_str)
-
-        if self.stats.get('audio'):
-            a = self.stats.get('audio', {})
-            a_str = f"Audio: {a.get('downloaded_segments', 0)}/{a.get('latest_sequence', 0)}"
-            # Note: Fixed a likely typo in your original code where you checked 
-            # video status while printing audio stats
-            if a.get('status'):
-                a_str += f" ({a.get('status').capitalize()})"
-            parts.append(a_str)
+        for key, label in (('video', 'Video'), ('audio', 'Audio')):
+            if self.stats.get(key):
+                s = self.stats.get(key, {})
+                text = f"{label}: {s.get('downloaded_segments', 0)}/{s.get('latest_sequence', 0)}"
+                if s.get('status'):
+                    text += f" ({s.get('status').capitalize()})"
+                parts.append(text)
 
         if self.stats.get('video', {}).get('current_filesize') or self.stats.get('audio', {}).get('current_filesize'):
             size = self.stats.get('video', {}).get('current_filesize', 0) + self.stats.get('audio', {}).get('current_filesize', 0)
             parts.append(f"~{self.convert_bytes(size)} downloaded")
 
-        # Join everything with commas or spaces
         full_line = " ".join(parts)
-
         if options.get("new_line", False):
             print(full_line)
         else:
             # \r moves to start, \033[K clears anything left over from the previous longer line
             print(f"\r{full_line}\033[K", end="", flush=True)
-        """
-    def add_url_param(self, url: str, key, value) -> str:
-        parsed = urlparse(url)
-        query = parse_qs(parsed.query)
-        query[key] = [value]  # add or replace parameter
-
-        new_query = urlencode(query, doseq=True)
-        new_url = parsed._replace(query=new_query)
-        return str(urlunparse(new_url))  
-        """
-    
-    def trim_info_json(self, info_dict: dict, keys_to_keep: set):
-        return {k: info_dict[k] for k in info_dict.keys() & keys_to_keep}
 
     def remove_format_segment_playlist_from_info_dict(self, info_dict: dict):
-        for stream_format in info_dict.get('formats', []):
-            try:
+        for stream_format in info_dict.get('formats', []) or []:
+            if isinstance(stream_format, dict):
                 stream_format.pop('fragments', None)
-            except:
-                pass
-
-    def refresh_info_json(self, update_threshold: int, id, cookies=None, additional_options=None, include_dash=False, include_m3u8=False, ignore_no_formats=False, logger: logging.Logger=None):
-        if logger is None:
-            logger = self.logger
-        # Check if time difference is greater than the threshold. If doesn't exist, subtraction of zero will always be true
-        with self.lock:
-            if time.time() - self.refresh_json.get("refresh_time", 0.0) > update_threshold:
-                try:
-                    if time.monotonic() - self.last_refresh_attempt < self.minimum_refresh_time:
-                        sleep_time = time.monotonic() - self.last_refresh_attempt
-                        self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Waiting for {sleep_time}s before attempting to refresh URL")
-                        time.sleep(sleep_time)
-
-                    # Set last attempt time before and after to ensure that a time is captured on an error
-                    self.last_refresh_attempt = time.monotonic()
-                    self.refresh_json, self.live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options, include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True, ignore_no_formats=ignore_no_formats, logger=logger,)
-                    self.last_refresh_attempt = time.monotonic()
-
-                    # Remove unnecessary items for info.json used purely for url refresh
-                    self.remove_format_segment_playlist_from_info_dict(self.refresh_json)
-
-                    self.refresh_json.pop("thumbnails", None)
-                    self.refresh_json.pop("tags", None)
-                    self.refresh_json.pop("description", None)                    
-
-                    # Add refresh time for reference
-                    self.refresh_json["refresh_time"] = time.time()                   
-                    self.minimum_refresh_time = max(30.0, self.minimum_refresh_time/2)
-
-                    return self.refresh_json, self.live_status
-                except getUrls.RateLimitException as e:
-                    self.logger.error("Received rate limit error, doubling refresh attempt timeout")
-                    self.minimum_refresh_time = self.minimum_refresh_time * 2
-                    raise
-            else:
-                return self.refresh_json, self.live_status
-        
-class FileInfo(Path):
-    _file_type: str = None
-    _format: str = None
-    _acodec: str = None
-    _vcodec: str = None
-    _language: str = None
-    _protocol: str = None
-
-    def __new__(cls, *args, **kwargs):
-        # 1. Pop custom arguments so they don't go to Path.__new__
-        file_type = kwargs.pop("file_type", None)
-        format = kwargs.pop("format", None)
-        acodec = kwargs.pop("acodec", None)
-        vcodec = kwargs.pop("vcodec", None)
-        language = kwargs.pop("language", None)
-        protocol = kwargs.pop("protocol", None)
-        # 2. Create the instance using Path's machinery
-        instance = super().__new__(cls, *args, **kwargs)
-        
-        # 3. Store the values on the instance
-        instance._file_type = file_type
-        instance._format = format
-        instance._acodec = acodec
-        instance._vcodec = vcodec
-        instance._language = language
-        instance._protocol = protocol
-        return instance
-
-    def __init__(self, *args, **kwargs):
-        # 4. Overriding __init__ is CRITICAL.
-        # We must NOT pass file_type or format to super().__init__
-        kwargs.pop("file_type", None)
-        kwargs.pop("format", None)
-        kwargs.pop("acodec", None)
-        kwargs.pop("vcodec", None)
-        kwargs.pop("language", None)
-        kwargs.pop("protocol", None)
-        super().__init__(*args, **kwargs)
-
-    @property
-    def file_type(self):
-        return self._file_type
-
-    @file_type.setter
-    def file_type(self, value):
-        self._file_type = value
-
-    def __repr__(self):
-        return f"{super().__repr__()} (file_type={self._file_type})"
-    
-    def to_dict(self):
-        return {
-            "filename": str(self),
-            "filetype": str(self._file_type),
-            "format": str(self._format)
-        }
-
-class DownloadStream:
-    
-    timeout_config = httpx.Timeout(10.0, connect=5.0)
-    ATOM_BASED_EXTENSIONS = {".mp4", ".m4a", ".mov", ".m4v", ".f4v", ".3gp"}
-
-    def __init__(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, livestream_coordinator: LiveStreamDownloader = None, **kwargs):        
-        self.livestream_coordinator = livestream_coordinator
-        if self.livestream_coordinator:
-            self.logger = self.livestream_coordinator.logger
-            self.kill_all = self.livestream_coordinator.kill_all
-            self.kill_this = self.livestream_coordinator.kill_this
-        else:
-            self.logger = logging.getLogger()
-            self.kill_all = threading.Event()
-            self.kill_this = threading.Event()
-
-        self.pending_segments: dict[int, bytes] = {}
-        self.sqlite_thread = None
-        
-        self.options = options or {}
-        # Use options dict for assignments with defaults
-        self.params = self.options.get('download_params') or self.options.copy() 
-        self.conn = None
-        self.latest_sequence = -1
-        self.already_downloaded = set()
-        
-        self.batch_size = self.options.get('batch_size', 10)
-        self.max_workers = self.options.get('max_workers', 5)
-        self.yt_dlp_options = self.options.get('ytdlp_options')
-
-        self.include_dash = self.options.get('include_dash', False)
-        self.include_m3u8 = self.options.get('include_m3u8', False)
-        self.force_m3u8 = self.options.get('force_m3u8', False)
-        
-        self.resolution = options.get("resolution", "bv+ba/best")
-        self.yt_dlp_sort = self.options.get('custom_sort')
-        
-        self.id = info_dict.get('id')
-        self.live_status = info_dict.get('live_status')
-        
-        self.info_dict = info_dict
-        self.stream_urls = []
-
-        self.wait_limit = self.options.get("wait_limit", 0)
-
-        self.type = None
-
-        """
-        if resolution == "audio_only" or self.options.get("is_audio", False):
-            self.type = "audio"
-        else:
-            self.type = "video"
-        """
-        #self.stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type) 
-        self.stream_url = stream_url
-
-        if self.stream_url is None:
-            raise ValueError("Stream URL not found for {0}, unable to continue".format(self.resolution))
-        
-        if stream_url.vcodec:
-            self.type = "video"
-        else:
-            self.type = "audio"
-        
-        self.format = self.stream_url.format_id
-        #print(self.stream_url)
-        self.stream_urls.append(self.stream_url)
-        # Extract and parse the query parameters into a dictionary
-        #parsed_url = urlparse(self.stream_url)        
-        #self.url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
-
-        self.logger.debug("{0} stream URL parameters: {1}".format(self.id,json.dumps(self.stream_url.url_parameters)))
-        
-        self.database_in_memory = self.options.get('database_in_memory', False)
-        
-        file_name = self.options.get('filename', None)
-        if file_name is None:
-            file_name = self.id    
-        
-        self.file_base_name = file_name
-        
-        self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)     
-        if self.database_in_memory:
-            self.temp_db_file = ':memory:'
-        else:
-            self.temp_db_file = '{0}.{1}.temp'.format(file_name, self.format)
-        
-        self.folder = self.options.get('download_folder')
-        if self.folder:
-            os.makedirs(self.folder, exist_ok=True)
-            self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
-            self.file_base_name = os.path.join(self.folder, self.file_base_name)
-            if not self.database_in_memory:
-                self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
-
-            
-        self.fragment_retries = self.options.get('fragment_retries', 5)
-        
-        self.is_403 = False
-        self.is_private = False
-        self.is_members_error = False
-        self.estimated_segment_duration = 0
-        self.refresh_retries = 0
-        
-        self.recovery_thread_multiplier = self.options.get('recovery_thread_multiplier', 2)
-        
-        self.cookies = self.options.get('cookies')
-        #self.type = None
-        self.ext = self.stream_url.ext     
-
-        self.following_manifest_thread = None
-        
-        self.proxies, self.mounts = self.process_proxies_for_httpx(proxies=self.options.get('proxies'))
-
-        current_level = self.logger.getEffectiveLevel()            
-
-        # Set log level of httpx to one level above other loggers
-        if current_level == logging.NOTSET:
-            target_level = logging.WARNING # Default fallback
-        else:
-            target_level = min(current_level + 10, logging.ERROR)
-
-        logging.getLogger("httpx").setLevel(target_level)
-        logging.getLogger("httpcore").setLevel(target_level)
-        
-        self.update_latest_segment()
-        self.url_checked = time.time()
-        
-        self.conn = self.create_db(self.temp_db_file)  
-
-        self._refresh_state = {} 
-        
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
-
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close_connection()
-        return False
-        
-    def get_expire_time(self, url: YoutubeURL.YoutubeURL):
-        return url.expire
-    
-    def unique_stream_urls(self, stream_urls: list) -> list:
-        return list({str(stream_url): stream_url for stream_url in stream_urls}.values())
-
-    def refresh_Check(self, wait=True):    
-        
-        #print("Refresh check ({0})".format(self.format)) 
-
-        # Filter array into set to remove duplicates
-        filtered_array = [url for url in self.unique_stream_urls(self.stream_urls) if int(self.get_expire_time(url)) > time.time()]
-        self.stream_urls = filtered_array  
-        
-        # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership      
-        if (time.time() - self.url_checked >= 3600.0 or (time.time() - self.url_checked >= 30.0 and self.is_403) or len(self.stream_urls) <= 0) and not self.is_private:
-            return self.refresh_url(wait=wait)
-    
-    def live_dl(self):
-        
-        self.logger.info("\033[33mStarting download of live fragments ({0} - {1})\033[0m".format(self.format, self.stream_url.fomat_note))
-        self.already_downloaded = self.segment_exists_batch()
-        latest_downloaded_segment = -1
-        wait = 0   
-        self.conn.execute('BEGIN TRANSACTION')
-        uncommitted_inserts = 0     
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]['status'] = "recording"
-
-        # Connection Limits
-        # We use a semaphore to limit concurrency if needed, though 'active_tasks' len check does this too.
-        limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
-        with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header())) as client):
-            submitted_segments = set()
-            future_to_seg = {}
-            
-            # Trackers for optimistic segment downloads 
-            optimistic_fails_max = 10
-            optimistic_fails = 0
-            optimistic_seg = 0           
-            latest_downloaded_segment = -1
-
-            segments_to_download = set()
-
-            segment_retries = {}
-
-            thread_windows_size = self.max_workers*2
-
-            start_time = self.options.get('start_time')
-            end_time = self.options.get('end_time')
-            start_seg = 0
-            end_seg = float('inf')
-
-            # We only care about duration if start or end times are actually provided
-            needs_segment_calc = start_time is not None or end_time is not None
-
-            if needs_segment_calc and self.estimated_segment_duration > 0:
-                if start_time is not None:
-                    start_seg = int(start_time // self.estimated_segment_duration)
-                if end_time is not None:
-                    end_seg = -int(-end_time // self.estimated_segment_duration)
-                needs_segment_calc = False
-
-            while True:     
-                self.check_kill(executor)
-
-                if self.livestream_coordinator and self.livestream_coordinator.graceful_stop.is_set():
-                    self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
-                    break
-
-                temp_stream_url = self.stream_url
-                refresh = self.refresh_Check(wait=False)
-                #if refresh is True:
-                #    break
-                
-                if temp_stream_url != self.stream_url:
-                    self.logger.debug("Stream URL has been updated, reseting segment retry counts")
-                    segment_retries.clear()
-                del temp_stream_url                
-
-                if needs_segment_calc and self.estimated_segment_duration <= 0:
-                    try:
-                        headers = self.get_Headers(url=self.stream_url, client=client)
-                        # Calculating duration once
-                        h_time = int(headers.get("X-Head-Time-Sec", 0))
-                        h_seq = int(headers.get("X-Head-Seqnum", 0))
-                        
-                        if h_seq > 0:
-                            self.estimated_segment_duration = h_time / h_seq
-                        
-                    except Exception as e:
-                        self.logger.warning(f"Unable to determine segment duration: {e}")
-
-                    # Check if we succeeded in getting a duration
-                    if self.estimated_segment_duration > 0:
-                        if start_time is not None:
-                            start_seg = int(start_time // self.estimated_segment_duration)
-                        if end_time is not None:
-                            end_seg = -int(-end_time // self.estimated_segment_duration)
-                        
-                        # Stop checking this block for the rest of the loop's life
-                        needs_segment_calc = False 
-                        self.logger.debug(f"Segments calculated: Start={start_seg}, End={end_seg}")
-                    else:
-                        self.logger.debug("Unable to determine segment duration, retrying...")
-                        self.smart_sleep(2)
-                        continue
-
-                if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
-                    self.livestream_coordinator.stats[self.type] = {}
-
-                self.commit_segments()
-                # Process completed segment downloads, wait up to 5 seconds for segments to complete before next loop
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)  # need to fully determine if timeout or ALL_COMPLETED takes priority             
-                
-                for future in done:
-                    seg_num = None
-                    try:
-                        head_seg_num, segment_data, seg_num, status, headers = future.result()
-                        
-                        self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
-                                seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
-                            ))
-
-                        if seg_num >= optimistic_seg and (status is None or status != 200):
-                            optimistic_fails += 1
-                            self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
-                            
-                        elif seg_num >= optimistic_seg and status == 200:
-                            optimistic_fails = 0
-                            if seg_num >= latest_downloaded_segment:
-                                latest_downloaded_segment = seg_num
-                        
-                        if head_seg_num > self.latest_sequence:
-                            self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
-                            self.latest_sequence = head_seg_num
-                            if self.livestream_coordinator:
-                                if start_seg != 0 or end_seg != float('inf'):
-                                    self.livestream_coordinator.stats[self.type]["latest_sequence"] = max(0, min(self.latest_sequence, end_seg) - start_seg)
-                                else:
-                                    self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
-                            
-                        if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                            self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
-                            if start_time is not None:
-                                start_seg = int(start_time // self.estimated_segment_duration)
-                            if end_time is not None:
-                                end_seg = -(int(-end_time // self.estimated_segment_duration))
-                        
-                        #if headers and headers.get('X-Bandwidth-Est', None):
-                        #    stats[self.type]["estimated_size"] = int(headers.get('X-Bandwidth-Est', 0))
-
-                        if segment_data is not None:
-                            # Insert segment data in the main thread (database interaction)
-                            #self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                            #uncommitted_inserts += 1                               
-                            existing = self.pending_segments.get(seg_num, None)
-                            if existing is None or len(segment_data) > len(existing):
-                                self.pending_segments[seg_num] = segment_data                    
-                                
-                            if self.livestream_coordinator:
-                                self.livestream_coordinator.stats[self.type]["downloaded_segments"] = len(self.already_downloaded) + len(self.pending_segments)                          
-
-                            if status == 200 and seg_num > latest_downloaded_segment:
-                                latest_downloaded_segment = seg_num
-                        elif status is None or status != 200:
-                            segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                            self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
-                    
-                    except httpx.ConnectTimeout:
-                        self.logger.warning('({0}) Experienced connection timeout while fetching segment {1}'.format(self.format, future_to_seg.get(future,"(Unknown)")))
-                        
-                    except Exception as e:
-                        self.logger.exception("An unknown error occurred")
-                        seg_num = seg_num or future_to_seg.get(future,None)
-                        if seg_num is not None:
-                            segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                    # Remove from submitted segments in case it neeeds to be regrabbed
-
-                    future_segnum = future_to_seg.pop(future,None)
-
-                    submitted_segments.discard(seg_num if seg_num is not None else future_segnum)
-
-                    # Remove completed thread to free RAM
-                    
-                optimistic_seg = max(self.latest_sequence, latest_downloaded_segment) + 1
-
-                # Check if optimistic segment has already downloaded or not
-                if start_seg <= optimistic_seg <= end_seg and optimistic_seg not in self.already_downloaded and self.segment_exists(optimistic_seg):
-                    self.already_downloaded.add(optimistic_seg)
-                    
-                segments_to_download = set(range(0, max(self.latest_sequence + 1, latest_downloaded_segment + 1))) - self.already_downloaded - set(self.pending_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries)  
-
-                # Check if range has been limited
-                if start_seg != 0 or end_seg != float('inf'):
-                    segments_to_download = {x for x in segments_to_download if start_seg <= x <= end_seg}
-                                        
-                # If segments remain to download, don't bother updating and wait for segment download to refresh values.
-                """
-                if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded and optimistic_seg not in segments_to_download:
-                        
-                        
-                        
-                        #logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
-                        logging.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
-                        segments_to_download.discard(optimistic_seg)
-                        segments_to_download = {optimistic_seg, *segments_to_download}       
-                """
-
-                # Add optimistic segment if conditions are right
-                # Only attempt to grab optimistic segment a number of times to ensure it does not cause a loop at the end of a stream
-                if (self.max_workers > 1 or not segments_to_download) and optimistic_fails < optimistic_fails_max and optimistic_seg not in self.already_downloaded and optimistic_seg not in self.pending_segments and optimistic_seg not in submitted_segments and start_seg <= optimistic_seg <= end_seg:
-                    # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s if no segments are to be submitted
-                    if not segments_to_download:
-                        self.smart_sleep(max(self.estimated_segment_duration, 2) + 0.1)
-                    self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
-                    future_to_seg.update({
-                        executor.submit(self.download_segment, self.stream_url.segment(optimistic_seg), optimistic_seg, client): optimistic_seg
-                    })
-                    submitted_segments.add(optimistic_seg)
-
-                    # Ensure wait isn't triggered while optimistic segments is enabled
-                    wait = 0
-
-                if refresh != "IN_PROGRESS":
-                    # If update has no segments and no segments are currently running, wait                              
-                    if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
-
-                        if max(self.latest_sequence, latest_downloaded_segment) >= end_seg:
-                            self.logger.info("All segments in range downloaded, ending...")
-                            break
-                        
-                        self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
-                            
-                        # If waited for more than (non-zero) wait limit break. Zero wait limit is intended to keep checking until stream ends
-                        if (self.wait_limit or 0) > 0 and wait > self.wait_limit:
-                            self.logger.debug("Wait time for new fragment exceeded, ending download...")
-                            break    
-                        # If over 10 wait loops have been executed, get page for new URL and update status if necessary
-                        elif wait % 10 == 0 and wait > 0:
-                            temp_stream_url = self.stream_url
-                            refresh = self.refresh_url(ignore_no_formats=True)
-                            if self.is_private:
-                                self.logger.debug("Video is private and no more segments are available. Ending...")
-                                break
-                            elif self.is_members_error:
-                                self.logger.debug("Video turned members only, not accessible and no more segments are available. Ending...")
-                                break
-                            elif refresh is False:
-                                self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
-                                break                              
-                            elif refresh is True:
-                                self.logger.info("Video finished downloading via new manifest")
-                                break
-                            elif temp_stream_url != self.stream_url:
-                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log".format(self.format))
-                                segment_retries.clear()
-                        self.smart_sleep(10)
-                        self.update_latest_segment(client=client)
-                        wait += 1
-                        continue
-                    
-                    elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
-                        self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
-                        self.smart_sleep(5)
-                        continue
-                    elif len(segments_to_download) > 0 and self.is_private:
-                        if self.stream_url.protocol == "https":
-                            self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
-                            self.commit_batch(self.conn)
-                            self.close_connection()
-
-                            for i in range(5, 0, -1):
-                                self.logger.debug("Waiting {0} minutes before starting stream recovery to improve chances of success".format(i))
-                                self.smart_sleep(60)
-                            # Break if a graceful shutdown is triggered
-                                if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():                            
-                                    break
-                            if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
-                                break
-                            
-                            self.logger.warning("Sending stream URLs of {0} to stream recovery: {1}".format(self.format, self.stream_urls))
-                            if self.livestream_coordinator:
-                                try:
-                                    # Construct the options dictionary for the recovery call
-                                    recovery_options = {
-                                        "batch_size": self.batch_size,
-                                        "max_workers": max((self.recovery_thread_multiplier * self.max_workers * int(len(self.stream_urls))), self.recovery_thread_multiplier),
-                                        "file_name": self.file_base_name,
-                                        "cookies": self.cookies,
-                                        "fragment_retries": self.fragment_retries,
-                                        "proxies": self.proxies,
-                                        "no_merge": True
-                                    }
-                                    self.livestream_coordinator.recover_stream(
-                                        info_dict=self.info_dict, 
-                                        stream_url=self.stream_url,
-                                        options=recovery_options,
-                                        stream_urls=self.stream_urls,
-                                        live_status=self.live_status,
-                                    )
-                                    #self.livestream_coordinator.recover_stream(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), file_name=self.file_base_name, cookies=self.cookies, retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies, no_merge=True)
-                                except Exception as e:
-                                    self.logger.exception("An error occurred while trying to recover the stream")
-                            else:
-                                try:
-                                    recovery_options = {
-                                        "batch_size": self.batch_size,
-                                        "max_workers": max((self.recovery_thread_multiplier * self.max_workers * int(len(self.stream_urls))), self.recovery_thread_multiplier),
-                                        "file_name": self.file_base_name,
-                                        "cookies": self.cookies,
-                                        "fragment_retries": self.fragment_retries,
-                                        "proxies": self.proxies
-                                    }
-                                    with StreamRecovery(
-                                        info_dict=self.info_dict, 
-                                        stream_url=self.stream_url, 
-                                        options=recovery_options,
-                                        livestream_coordinator=self.livestream_coordinator,
-                                        stream_urls=self.stream_urls,
-                                        live_status=self.live_status,
-                                    ) as downloader:
-                                        downloader.live_dl()
-                                        downloader.close_connection()
-                                    #with StreamRecovery(info_dict=self.info_dict, resolution=str(self.format), batch_size=self.batch_size, max_workers=max((self.recovery_thread_multiplier*self.max_workers*int(len(self.stream_urls))),self.recovery_thread_multiplier), 
-                                    #                    file_name=self.file_base_name, cookies=self.cookies, fragment_retries=self.fragment_retries, stream_urls=self.stream_urls, proxies=self.proxies) as downloader:
-                                    #    downloader.live_dl()
-                                    #    downloader.close_connection()
-                                except Exception as e:
-                                    self.logger.exception("An error occurred while trying to recover the stream")
-                            self.smart_sleep(1)
-                            self.conn = self.create_connection(self.temp_db_file)
-                            return True
-                            
-                        else:
-                            self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
-                            break
-                    
-                    elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
-                        
-                        self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
-                        temp_stream_url = self.stream_url
-                        refresh = self.refresh_url(ignore_no_formats=True)
-                        if refresh is True:
-                            self.logger.info("Video finished downloading via new manifest")
-                            break
-                        elif self.is_private or refresh is False or self.is_members_error:
-                            # If stream URL has changed, refresh retry count and continue
-                            if temp_stream_url != self.stream_url:
-                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
-                                segment_retries.clear()
-                                continue
-                            self.logger.warning("Failed to refresh URL or stream is private/members only, ending...")
-                            break
-                        
-                        else:
-                            self.logger.info("({0}) New stream URL detecting, resetting segment retry log".format(self.format))
-                            segment_retries.clear()
-                    else:
-                        wait = 0
-                    
-                elif not segments_to_download and not submitted_segments and self._refresh_state.get("thread", None) is not None:
-                    # Wait up to 0.5 seconds if there are no outstanding or in progress segments to prevent excessive loop processing when there is no work to do
-                    self._refresh_state.get("thread").join(0.5)
-                
-                # Get current state of futures to determine if more threads should be added this loop
-                if len(not_done) <= 0 and len(done) > 0:
-                    thread_windows_size = 3*thread_windows_size
-                else:
-                    thread_windows_size = max(thread_windows_size//2, 2*self.max_workers)
-                
-                #self.logger.debug("{0} segments in thread queue, set window size to {1}".format(len(not_done), thread_windows_size))
-
-                # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
-                for seg_num in segments_to_download:
-                    # Have up to 2x max workers of threads submitted
-                    if len(future_to_seg) > max(10,2*self.max_workers, thread_windows_size):
-                        break
-                    if seg_num not in submitted_segments and seg_num not in self.pending_segments:
-                        # Check if segment already exist within database (used to not create more connections). Needs fixing upstream
-                        if self.segment_exists(seg_num):
-                            self.already_downloaded.add(seg_num)
-                            segment_retries.pop(seg_num,None)
-                            continue
-                        future_to_seg.update({
-                            executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num, client): seg_num
-                        })
-                        submitted_segments.add(seg_num)
-                    
-                
-            self.commit_batch(self.conn)
-        self.commit_batch(self.conn)
-        if self.following_manifest_thread is not None:
-            self.following_manifest_thread.join()
-        return True           
-    
-    def download_segment(self, segment_url, segment_order, client: httpx.Client=None, immediate_403s=False):
-        total_retries = self.fragment_retries
-        backoff_factor = 1
-        backoff_max = 4
-        # 30-second hard limit for the entire download process per attempt
-        MAX_DURATION = 30.0 
-        status_forcelist = {204, 400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504}
-
-        for attempt in range(total_retries + 1):
-            if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
-                return -1, None, segment_order, None, None
-            if client is None or client.is_closed:
-                # Set a base timeout of 30s for connect/read as well
-                httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header()))
-            
-            start_time = time.time()
-            try:
-                self.check_kill() 
-
-                with client.stream("GET", segment_url) as response:
-                    status = response.status_code
-                    headers = response.headers
-                    head_seq = int(headers.get("X-Head-Seqnum", -1))
-
-                    if status == 403 and immediate_403s:
-                        self.is_403 = True
-
-                    if status in status_forcelist and attempt < total_retries:
-                        raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
-
-                    # Handle auth flags
-                    if status == 403:
-                        self.is_403 = True
-                        self.logger.warning("({0}) Encountered 403 status when downloading segment {1}".format(self.format, segment_order))
-                    elif status == 401:
-                        self.is_401 = True
-                        self.logger.warning("({0}) Encountered 401 status when downloading segment {1}. This can be cause by using too many threads.".format(self.format, segment_order))
-                    elif status in {200, 204}:
-                        self.is_403 = self.is_401 = False
-
-                    # Process successful stream
-                    if status == 200:
-                        buffer = bytearray()
-                        # Use 64kb chunks to regularly check progress
-                        for chunk in response.iter_bytes(chunk_size=(64 * 1024)):
-                            # Hard limit check: Total elapsed time
-                            if (time.time() - start_time) > MAX_DURATION:
-                                raise httpx.TimeoutException("Download exceeded hard limit of {0}".format(MAX_DURATION))
-                            
-                            buffer.extend(chunk)
-                        
-                        return head_seq, bytes(buffer), int(segment_order), status, headers
-                    
-                    elif status == 204:
-                        return head_seq, bytes(), int(segment_order), status, headers
-                    else:
-                        self.logger.warning("({0}) Unexpected status returned {1}".format(self.format, status))
-                        return head_seq, None, int(segment_order), status, headers
-                    
-            except httpx.ConnectTimeout as e:
-                if attempt >= total_retries:
-                    raise                
-                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
-                self.smart_sleep(sleep_time)
-
-            except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException) as e:
-                if attempt >= total_retries:
-                    self.logger.warning("({0}) Unexpected error downloading segment {1} file after {2} attempts {3}".format(self.format, segment_order, attempt, e))
-                    # Return standard error format
-                    status_err = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
-                    return -1, None, segment_order, status_err, None
-                
-                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
-                self.smart_sleep(sleep_time)
-                
-            except Exception as e:
-                self.logger.exception(f"Unknown error: {e}")
-                if attempt >= total_retries:                    
-                    return -1, None, segment_order, None, None
-                
-                sleep_time = min(backoff_max, backoff_factor * (2 ** attempt))
-                self.smart_sleep(sleep_time)
-
-    
-    def process_proxies_for_httpx(self, proxies) -> tuple[Optional[str], Optional[dict]]:
-        if not proxies:
-            return None, None
-        if isinstance(proxies, str):
-            return proxies.strip(), None
-        elif isinstance(proxies, dict):
-            proxy_mounts = {
-                protocol: httpx.HTTPTransport(proxy=url) 
-                for protocol, url in proxies.items()
-            }
-            return None, proxy_mounts
-        
-        return None, None
-
-    def http2_available(self):
-        HAS_HTTP2 = False
-        try:
-            import h2
-            HAS_HTTP2 = True
-        except ImportError:
-            HAS_HTTP2 = False
-        return HAS_HTTP2
-
-    def update_latest_segment(self, client: httpx.Client = None):
-        # Kill if keyboard interrupt is detected
-        self.check_kill()
-        
-        stream_url_info = self.get_Headers(url=self.stream_url, client=client)
-        if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
-            self.latest_sequence = int(stream_url_info.get("X-Head-Seqnum"))
-            self.logger.debug("Latest sequence: {0}".format(self.latest_sequence))
-            
-        if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
-            file_type, ext = str(stream_url_info.get('Content-Type')).split('/')
-            if not self.ext and file_type.strip().lower() in ["video", "audio"]:
-                #self.type = self.type.strip().lower()
-                self.ext = ext
-
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
-    
-    def get_Headers(self, url, client: httpx.Client=None):
-        if client is None or client.is_closed:
-            client = httpx.Client(timeout=self.timeout_config, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header()))
-        try:
-            # Send a GET request to a URL
-            #response = requests.get(url, timeout=30, proxies=self.proxies)
-            response = client.get(str(url))
-            # 200 and 204 responses appear to have valid headers so far
-            if response.status_code == 200 or response.status_code == 204:
-                self.is_403 = self.is_401 = False
-
-                # Print the response headers
-                #print(json.dumps(dict(response.headers), indent=4))  
-                
-            elif response.status_code == 403:
-                self.logger.warning("Received 403 error, marking for URL refresh...")
-                self.is_403 = True
-                
-            elif response.status_code == 401:
-                self.is_401 = True
-            else:
-                self.logger.debug("Error retrieving headers: {0}".format(response.status_code))
-                self.logger.debug(json.dumps(dict(response.headers), indent=4))
-            return response.headers
-            
-        except httpx.TimeoutException as e:
-            self.logger.info("Timed out updating fragments: {0}".format(e))
-            #print(e)
-            return None
-        
-        except Exception as e:
-            self.logger.exception("\033[31m{0}\033[0m".format(e))
-            return None
-        
-        return None
-    
-    def detect_manifest_change(self, info_json, follow_manifest=True):
-        resolution = "bv+ba/best"
-        try:
-            resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
-            self.logger.debug("Searching for new manifest of same format {0}".format(resolution))
-            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type)
-            if temp_stream_url is not None:
-                #resolution = r"(format_id~='^({0}(?:\D*(?:[^0-9].*)?)?)$')[protocol={1}]".format(str(self.format).split('-', 1)[0], self.stream_url.protocol)
-                
-                #parsed_url = urlparse(temp_stream_url)        
-                #temp_url_params = {k: v if len(v) > 1 else v[0] for k, v in parse_qs(parsed_url.query).items()}
-                #if temp_url_params.get("id", None) is not None and temp_url_params.get("id") != self.url_params.get("id"):
-                if temp_stream_url.itag is not None and temp_stream_url.protocol == self.stream_url.protocol and temp_stream_url.itag == self.stream_url.itag and temp_stream_url.manifest != self.stream_url.manifest:
-                    self.logger.warning("({1}) New manifest for format {0} detected, starting a new instance for the new manifest".format(self.format, self.id))
-                    self.commit_batch(self.conn)
-                    if follow_manifest:
-                        #new_params = copy.copy(self.params)
-                        new_options = copy.copy(self.options)
-                        new_options.update({
-                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                        })
-                        new_params = {
-                            "info_dict": info_json,
-                            "stream_url": temp_stream_url,                            
-                            "manifest": temp_stream_url.manifest,
-                            "options": new_options,
-                        }
-                        if new_options.get("download_function", None) is not None: 
-                            self.following_manifest_thread = threading.Thread(
-                                target=new_options.get("download_function"),
-                                kwargs=new_params,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        else:
-                            download_Instance = self.__class__(**new_params)
-                            self.following_manifest_thread = threading.Thread(
-                                target=download_Instance.live_dl,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        new_options = None
-                    return True
-                else:
-                    return False
-        except yt_dlp.utils.ExtractorError as e:
-            self.logger.warning("Unable to find stream of same format ({0}) for {1}".format(resolution, self.id))
-            
-        try:
-            temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=self.resolution, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type, sort=self.options.get("format_sort"))
-            if temp_stream_url is not None:
-                self.logger.debug("Searching for new manifest of same resolution {0}".format(resolution))
-                
-                if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
-                    self.logger.warning("({2}) New manifest for resolution {0} detected, but not the same format as {1}, starting a new instance for the new manifest".format(self.resolution, self.format, self.id))
-                    self.commit_batch(self.conn)
-                    if follow_manifest:
-                        #new_params = copy.copy(self.params)
-                        new_options = copy.copy(self.options)
-                        new_options.update({
-                            "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                        })
-                        new_params = {
-                            "info_dict": info_json,
-                            "stream_url": temp_stream_url,
-                            #"file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                            "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
-                            "options": new_options,
-                        }
-                        if new_params.get("download_function", None) is not None: 
-                            self.following_manifest_thread = threading.Thread(
-                                target=new_params.get("download_function"),
-                                kwargs=new_params,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        else:
-                            download_Instance = self.__class__(**new_params)
-                            self.following_manifest_thread = threading.Thread(
-                                target=download_Instance.live_dl,
-                                daemon=True
-                            )
-                            self.following_manifest_thread.start()
-                        new_options = None
-                    return True
-                else:
-                    return False
-        except yt_dlp.utils.ExtractorError as e:
-            self.logger.warning("Unable to find stream of same resolution ({0}) for {1}".format(self.resolution, self.id))
-
-        try:
-            if self.resolution != "audio_only":
-                temp_stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution="bv+ba/best", include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type, sort=self.options.get("format_sort"))
-                if temp_stream_url is not None:
-                    self.logger.debug("Searching for new best stream")
-                    
-                    if temp_stream_url.itag is not None and temp_stream_url.itag != self.stream_url.itag:
-                        self.logger.warning("({2}) New manifest has been found, but it is not the same format or resolution".format(self.resolution, self.format, self.id))
-                        self.commit_batch(self.conn)
-                        if follow_manifest:
-                            #new_params = copy.copy(self.params)
-                            new_options = copy.copy(self.options)
-                            new_options.update({
-                                "file_name": f"{self.file_base_name}.{temp_stream_url.manifest}",
-                                "resolution": "bv+ba/best",
-                            })
-                            new_params = {
-                                "info_dict": info_json,
-                                "stream_url": temp_stream_url,                            
-                                "options": new_options,
-                                "manifest": self.stream_url.itag if self.stream_url.manifest == temp_stream_url.manifest else self.stream_url.manifest,
-                            }
-                            if new_params.get("download_function", None) is not None: 
-                                self.following_manifest_thread = threading.Thread(
-                                    target=new_params.get("download_function"),
-                                    kwargs=new_params,
-                                    daemon=True
-                                )
-                                self.following_manifest_thread.start()
-                            else:
-                                download_Instance = self.__class__(**new_params)
-                                self.following_manifest_thread = threading.Thread(
-                                    target=download_Instance.live_dl,
-                                    daemon=True
-                                )
-                                self.following_manifest_thread.start()
-                            new_options = None
-                        return True
-                    else:
-                        return False
-        except yt_dlp.utils.ExtractorError as e:
-            self.logger.warning("Unable to find any stream for {1} when attempting to find 'best' stream".format(self.resolution, self.id))
-        return False
-
-    def create_connection(self, file):
-        conn = sqlite3.connect(file, timeout=30)
-
-        # Database connection optimization (when not in memory)
-        if not self.database_in_memory:
-            conn.execute('PRAGMA journal_mode = WAL;')
-            conn.execute('PRAGMA synchronous = NORMAL;')
-            conn.execute('PRAGMA temp_store = MEMORY;') # Likely minimal gains, but may help for loading the optimistic segment
-            conn.execute('PRAGMA page_size = 32768;')
-            conn.execute('PRAGMA mmap_size = 52428200;')
-            conn.execute('PRAGMA cache_size = -4000;')
-            # Optionally commit immediately to persist the PRAGMA settings
-            conn.commit()
-
-        return conn
-
-    
-    def create_db(self, temp_file):
-        # Connect to SQLite database (or create it if it doesn't exist)
-        self.sqlite_thread = threading.get_ident()
-        conn = self.create_connection(temp_file)  # should return a Connection object
-
-        # Create the table (id = segment order, segment_data as BLOB)
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS segments (
-                id INTEGER PRIMARY KEY,
-                segment_data BLOB
-            )
-        ''')
-        conn.commit()
-
-        return conn
-    
-    def commit_segments(self, force=False):
-        # Early exit if nothing to do and not forcing a sync
-        if not self.pending_segments and not force:
-            return
-
-        # Logic: Commit if we have enough data OR if we are forced
-        if len(self.pending_segments) >= self.batch_size or force:
-            if self.pending_segments:
-                self.logger.debug(f"Writing {len(self.pending_segments)} segments to file...")
-                try:
-                    # 1. Sort by ID for linear B-Tree insertion (avoids page splitting)
-                    batch = sorted(self.pending_segments.items())
-
-                    # 2. Optimized UPSERT with WHERE clause
-                    # This is more efficient than a CASE statement because SQLite 
-                    # skips the update entirely if the condition isn't met.
-                    sql = '''
-                        INSERT INTO segments (id, segment_data) 
-                        VALUES (?, ?) 
-                        ON CONFLICT(id) DO UPDATE SET 
-                            segment_data = excluded.segment_data
-                        WHERE LENGTH(excluded.segment_data) > LENGTH(segments.segment_data);
-                    '''
-                    
-                    self.conn.executemany(sql, batch)
-                    self.pending_segments.clear()
-                    
-                except Exception as e:
-                    self.logger.exception("Batch insert failed:")
-                    self.conn.rollback()
-                    # Re-raise or handle as needed
-                    return 
-
-            # 3. Handle the physical commit
-            self.conn.commit()
-            
-            # 4. Immediate BEGIN for the next cycle (crucial for WAL performance)
-            self.conn.execute('BEGIN')
-
-            # 5. Update stats if coordinator exists
-            if self.livestream_coordinator:
-                self.livestream_coordinator.stats[self.type]["current_filesize"] = os.path.getsize(self.temp_db_file)
-
-    # Function to check if a segment exists in the database
-    def segment_exists(self, segment_order):
-        cursor = self.conn.execute('SELECT 1 FROM segments WHERE id = ?', (segment_order,))
-        return cursor.fetchone() is not None
-    
-    def segment_exists_batch(self) -> set:
-        """
-        Queries the database to check if a batch of segment numbers are already downloaded.
-        Returns a set of existing segment numbers.
-        """
-        query = "SELECT id FROM segments"
-        cur = self.conn.execute(query)
-        rows = cur.fetchall()
-        return set(row[0] for row in rows)
-
-    
-    # Function to insert a single segment without committing
-    def insert_single_segment(self, segment_order, segment_data):
-        self.conn.execute('''
-                        INSERT INTO segments (id, segment_data) 
-                        VALUES (?, ?) 
-                        ON CONFLICT(id) DO UPDATE SET 
-                            segment_data = excluded.segment_data
-                        WHERE LENGTH(excluded.segment_data) > LENGTH(segments.segment_data);
-                    ''', (segment_order, segment_data))
-
-    # Function to commit after a batch of inserts
-    def commit_batch(self, conn=None):
-        self.conn.commit()
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]["current_filesize"] = os.path.getsize(self.temp_db_file)
-        
-    def close_connection(self):
-        if self.conn:
-            self.conn.close()
-
-    def combine_segments_to_file(self, output_file):
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]['status'] = "merging"
-
-        self.logger.debug(f"Merging segments to {output_file}")
-        
-        should_clean = self.should_clean(self.ext)
-
-        # Use a large buffer for the file write to reduce syscalls
-        with open(output_file, 'wb', buffering=1048576) as f:
-            # 1. We don't need fetchmany if we iterate the cursor directly.
-            # Python's sqlite3 driver automatically fetches in chunks internally.
-            cursor = self.conn.execute('SELECT segment_data FROM segments ORDER BY id')
-            
-            is_first = True
-            
-            # 2. Iterate directly over the cursor to avoid building a massive 
-            # 'rows' list in Python memory.
-            for (segment_data,) in cursor:
-                if should_clean:
-                    # 3. Memoryview/Bytearray optimization: 
-                    # If clean_segments can work with memoryviews, it avoids copying BLOBs in RAM.
-                    piece = self.clean_segments(segment_data, first=is_first)
-                    f.write(piece)
-                else:
-                    f.write(segment_data)
-                
-                is_first = False
-
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]['status'] = "merged"
-
-        return output_file
-    
-    def should_clean(self, ext = None) -> bool:
-        if not ext:
-            return True
-        ext = str(ext).lower()
-        if not ext.startswith("."): 
-            ext = f".{ext}"
-        
-        return (ext in self.ATOM_BASED_EXTENSIONS)
-    
-    ### Via ytarchive            
-    def get_atoms(self, data):
-        """
-        Faster parsing using struct and avoiding unnecessary string conversions.
-        """
-        atoms = {}
-        ofs = 0
-        data_len = len(data)
-        
-        # Use memoryview to slice without copying
-        view = memoryview(data)
-
-        while ofs + 8 <= data_len:
-            try:
-                # '>I' reads 4 bytes as a Big-Endian Unsigned Int (the standard MP4 length format)
-                # This is significantly faster than .hex() -> int()
-                alen = struct.unpack_from('>I', view, ofs)[0]
-                
-                # Basic MP4 validation: length can't be smaller than the header itself (8 bytes)
-                if alen < 8 or ofs + alen > data_len:
-                    break
-
-                # Decode the 4-character atom name (e.g., 'moov')
-                aname = view[ofs + 4:ofs + 8].tobytes().decode(errors='ignore')
-                atoms[aname] = {"ofs": ofs, "len": alen}
-                ofs += alen
-            except (struct.error, UnicodeDecodeError):
-                break
-
-        return atoms
-    
-    def remove_atoms(self, data, atom_list):
-        """
-        Removes atoms in-place using a bytearray to avoid memory re-allocations.
-        """
-        atoms = self.get_atoms(data)
-        # Convert input (bytes) to bytearray so it's mutable
-        data_buffer = bytearray(data)
-        
-        # Sort by offset descending so deleting an atom doesn't shift the 
-        # offsets of the atoms we still need to delete.
-        to_remove = [atoms[name] for name in atom_list if name in atoms]
-        if not to_remove:
-            return data_buffer
-
-        to_remove.sort(key=lambda x: x["ofs"], reverse=True)
-        
-        for atom in to_remove:
-            # del on bytearray shifts memory in C, no Python-level loops
-            del data_buffer[atom["ofs"] : atom["ofs"] + atom["len"]]
-        
-        return data_buffer
-
-    def clean_segments(self, data, first=True):
-        # sidx is metadata usually used for DASH/HLS seeking, dead weight in a merged file.
-        bad_atoms = ["sidx"]
-        
-        if not first:
-            # ftyp and moov are headers. We only want them from the first segment.
-            bad_atoms.extend(["ftyp", "moov"])
-
-        return self.remove_atoms(data=data, atom_list=bad_atoms)
-    
-    def check_kill(self, executor: concurrent.futures.ThreadPoolExecutor = None, tasks=None):
-        """
-        Checks kill flags. If set, cancels threads or async tasks and shuts down.
-        """
-        if self.kill_all.is_set() or self.kill_this.is_set():
-            try:
-                self.logger.debug("Kill command detected, ending...")
-                
-                # Shutdown ThreadPool (Old way)
-                if executor is not None:
-                    executor.shutdown(wait=True, cancel_futures=True)
-                    
-                # Cancel Async Tasks (New way)
-                if tasks is not None:
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                if self.sqlite_thread is None or self.sqlite_thread == threading.get_ident():
-                    self.close_connection()
-            except Exception as e:
-                self.logger.exception("Unable to perform cleanup")
-            # Raising KeyboardInterrupt will bubble up to asyncio.run() 
-            # which handles the final cleanup of the event loop.
-            raise KeyboardInterrupt("Kill command executed")
-        
-    def smart_sleep(self, timeout):
-        """Sleeps for the given timeout, but wakes up instantly if a graceful stop is triggered."""
-        if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None):
-            # wait() returns True immediately if the flag is set, or blocks for 'timeout' seconds
-            self.livestream_coordinator.graceful_stop.wait(timeout)
-        else:
-            time.sleep(timeout)
-        
-    def delete_temp_database(self):
-        self.close_connection()
-        os.remove(self.temp_db_file)
-        
-    def delete_ts_file(self):
-        os.remove(self.merged_file_name)
-        
-    def remove_folder(self):
-        if self.folder:
-            self.delete_temp_database()
-            self.delete_ts_file()
-            os.remove(self.folder)
-
-    def refresh_url(self, follow_manifest=True, wait=True, ignore_no_formats=False): # Added wait parameter
-        exc = res = None
-        # 1. Initialize the state dictionary if it doesn't exist
-        if not hasattr(self, '_refresh_state'):
-            self._refresh_state = {
-                'thread': None,
-                'status': 'IDLE', # IDLE, IN_PROGRESS, or DONE
-                'result': None,
-                'exc': None
-            }
-
-        state = self._refresh_state
-
-        # 2. Check if the thread is currently running
-        if state.get('status') == 'IN_PROGRESS':
-            thread = state.get('thread')
-            if thread and thread.is_alive():
-                if wait:
-                    # OPTIONAL: Wait for the existing thread to finish
-                    thread.join()
-                    state['status'] = 'DONE'
-                else:
-                    return "IN_PROGRESS"
-            else:
-                # Thread finished running since our last check
-                state['status'] = 'DONE'
-
-        # 3. If the thread just finished, grab the results and reset the state
-        if state.get('status') == 'DONE':
-            exc = state.get('exc')
-            res = state.get('result')
-            
-            # Reset the state dictionary for the next time we need to refresh
-            self._refresh_state = {
-                'thread': None, 'status': 'IDLE', 'result': None, 'exc': None
-            }
-
-        # Only start refresh if manifest thread isn't activated
-        elif self.following_manifest_thread is None and not (self.livestream_coordinator and self.livestream_coordinator.graceful_stop.is_set()):
-            # 4. Otherwise, we are IDLE. Start the background thread!
-            self.logger.info("Starting background URL refresh for {0}".format(self.format))
-            state['status'] = 'IN_PROGRESS'
-            
-            def fetch_url_data():
-                try:
-                    if self.livestream_coordinator:                            
-                        info_dict, live_status = self.livestream_coordinator.refresh_info_json(
-                            update_threshold=min(900.0, time.time() - self.url_checked), 
-                            id=self.id, cookies=self.cookies, 
-                            additional_options=self.yt_dlp_options, 
-                            include_dash=self.include_dash, 
-                            include_m3u8=(self.include_m3u8 or self.force_m3u8),
-                            ignore_no_formats=ignore_no_formats,
-                            logger=self.logger,
-                        )
-                        state['result'] = (info_dict, live_status)
-
-                    else:
-                        info_dict, live_status = getUrls.get_Video_Info(
-                            self.id, wait=False, cookies=self.cookies, 
-                            additional_options=self.yt_dlp_options, 
-                            include_dash=self.include_dash, 
-                            include_m3u8=(self.include_m3u8 or self.force_m3u8),
-                            ignore_no_formats=ignore_no_formats,
-                            logger=self.logger,
-                        )
-                        state['result'] = (info_dict, live_status)
-                except Exception as e:
-                    state['exc'] = e
-
-            state['thread'] = threading.Thread(target=fetch_url_data, daemon=True)
-            state['thread'].start()
-            
-            if wait:
-                # OPTIONAL: Wait for the newly started thread to finish
-                state['thread'].join()
-                # Extract values immediately so they can be processed in Step 5
-                exc = state.get('exc')
-                res = state.get('result')
-                self._refresh_state = {
-                    'thread': None, 'status': 'IDLE', 'result': None, 'exc': None
-                }
-            else:
-                return "IN_PROGRESS"
-
-        # 5. Process the retrieved results
-        # (The code below will now run immediately if wait=True)
-        if self.following_manifest_thread is None:
-            try:
-                if exc:
-                    raise exc
-                
-                if res is None:
-                    return None
-                    
-                info_dict, live_status = res
-                
-                if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
-                    return True
-                
-                if live_status:
-                    self.live_status = live_status
-                
-                resolution = "(bv/ba/best)[format_id~='^{0}(?:-.*)?$'][protocol={1}]".format(self.stream_url.itag, self.stream_url.protocol)
-                stream_url = YoutubeURL.Formats().getFormatURL(info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash, include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type, logger=self.logger) 
-                
-                if stream_url is not None:
-                    self.stream_url = stream_url
-                    self.stream_urls.append(stream_url)
-                    
-                    # Filter array using a set to remove duplicates
-                    filtered_array = [url for url in self.unique_stream_urls(self.stream_urls) if int(self.get_expire_time(url)) > time.time()]
-                    self.stream_urls = filtered_array
-                    self.refresh_retries = 0
-                    self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Refreshed stream URL with {0} - {1}".format(stream_url.format_id, stream_url.fomat_note))
-                    self.is_members_error = False
-                else:
-                    self.logger.warning("Unable to refresh URLs for {0} on format {2} ({1})".format(self.id, self.format, resolution))        
-                                
-                if info_dict:
-                    self.info_dict = info_dict    
-
-            except getUrls.VideoInaccessibleError as e:
-                error_msg = str(e).lower()
-                self.logger.warning("Video Inaccessible error: {0}".format(e))
-                if "private" in error_msg or self.is_403:
-                    self.logger.warning("{0} is Inaccessible and is either private or experiencing 403 errors. Marking as private.".format(self.id))
-                    self.is_private = True
-                elif "membership" in error_msg or "premium" in error_msg:
-                    self.logger.warning("{0} is now members only or premium. Continuing until 403 errors".format(self.id))
-                    self.is_members_error = True
-                else:
-                    if "recording is not available" in error_msg:
-                        self.logger.warning("Recording is not available, marking as post-live")
-                    else:
-                        self.logger.warning("Stream is inaccessible but not encountering 403 errors. Marking as post-live.")
-                    self.live_status = "post_live"
-            except getUrls.VideoUnavailableError as e:
-                self.logger.warning("Video unavailable; treating the active recording as post-live: {0}".format(e))
-                self.live_status = "post_live"
-                
-            except getUrls.VideoProcessedError as e:
-                # Livestream has been processed
-                self.logger.exception("Error refreshing URL: {0}".format(e))
-                self.logger.info("Livestream has ended and processed.")
-                self.live_status = "was_live"
-            except getUrls.LivestreamError:
-                self.logger.debug("Livestream has ended.")
-                self.live_status = "post_live"
-            except Exception as e:
-                self.logger.exception("Error: {0}".format(e))                 
-                
-        self.url_checked = time.time()
-
-        if self.live_status not in ['is_live', 'is_upcoming']:
-            self.logger.debug("Livestream has ended.")
-            return False
-
-        if self.get_expire_time(self.stream_url) < time.time():
-            raise TimeoutError("Video is unavailable and stream url for {0} has expired, unable to continue...".format(self.format))
-        
-        return None
-
-class DownloadStreamDirect(DownloadStream):
-    def __init__(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, livestream_coordinator: LiveStreamDownloader=None):
-        options = options or {}
-        # Set database_in_memory to True for Direct download, overriding default or provided option
-        options['database_in_memory'] = True
-        
-        # Initialize base class
-        super().__init__(
-            info_dict=info_dict,
-            stream_url=stream_url,
-            options=options,
-            livestream_coordinator=livestream_coordinator
-        )
-        
-        # Close the unused in-memory DB connection opened by super().__init__
-        if self.conn:
-            self.close_connection()
-        self.conn = None
-
-        # State tracking for direct writes
-        self.state_file_name = f"{self.file_base_name}.{self.format}.state"
-        self.state_file_backup = f"{self.file_base_name}.{self.format}.state.bkup"
-
-        if self.folder:
-            self.state_file_name = os.path.join(self.folder, os.path.basename(self.state_file_name))
-            self.state_file_backup = os.path.join(self.folder, os.path.basename(self.state_file_backup))
-
-        self.state = {
-            'last_written': -1,
-            'file_size': 0
-        }
-
-        # Attempt to restore existing state
-        self._load_existing_state()
-        self.logger.debug(f"DownloadStreamDirect initialized for {self.id} ({self.format})")
-
-    def _load_existing_state(self):
-        """Restore download progress if a state file exists"""
-        for path in [self.state_file_backup, self.state_file_name]:
-            if os.path.exists(path) and os.path.exists(self.merged_file_name):
-                try:
-                    with open(path, "r") as file:
-                        loaded = json.load(file)
-                    ts_size = os.path.getsize(self.merged_file_name)
-                    if ts_size >= loaded.get('file_size', 0) and loaded.get('last_written', None) is not None:
-                        self.state = loaded
-                        self.logger.debug(f"Resumed state: {self.state}")
-                        return
-                except Exception as e:
-                    self.logger.warning(f"Failed to load state file {path}: {e}")
-
-    def _save_state(self):
-        """Safely write the current state to disk"""
-        try:
-            if os.path.exists(self.state_file_name):
-                shutil.move(self.state_file_name, self.state_file_backup)
-            with open(self.state_file_name, "w") as f:
-                json.dump(self.state, f, indent=4)
-        except Exception as e:
-            self.logger.warning(f"Failed to save state file: {e}")
-    
-    def live_dl(self):
-        self.logger.info(f"\033[93mStarting download of live fragments ({self.format} - {self.stream_url.fomat_note}) [Direct Mode]\033[0m")
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]['status'] = "recording"
-            self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state['last_written']
-            self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state['file_size']
-
-        submitted_segments = set()
-        downloaded_segments = {}
-        future_to_seg = {}
-        optimistic_seg = 0
-        optimistic = True
-        wait = 0
-        
-        limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
-        with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"{self.id}-{self.format}") as executor,
-            httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header())) as client):
-            
-            # Trackers for optimistic segment downloads 
-            optimistic_fails_max = 10
-            optimistic_fails = 0
-            optimistic_seg = 0  
-            # Add range of up to head segment +1
-            segments_to_download = list()   
-            segment_retries = {}      
-
-            while True:
-                self.check_kill(executor)
-
-                if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
-                    self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
-                    break
-
-                refresh = self.refresh_Check(wait=False)
-                #if refresh is True:
-                #    break
-
-                done, _ = concurrent.futures.wait(future_to_seg, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
-
-                for future in done:
-                    seg_num = None
-                    try:
-                        head_seg_num, segment_data, seg_num, status, headers = future.result()
-                        #print("Finished: {0}".format(seg_num))
-                        #submitted_segments.discard(seg_num)
-                        #future_to_seg.pop(future, None)
-                        self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
-                                seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
-                            ))
-
-                        if seg_num >= optimistic_seg and (status is None or status != 200):
-                            optimistic_fails += 1
-                            self.logger.debug("Unable to optimistically grab segment {1} for {0}. Up to {2} attempts".format(self.format, seg_num, optimistic_fails))
-                            
-                        elif seg_num >= optimistic_seg and status == 200:
-                            optimistic_fails = 0
-                        
-                        if head_seg_num > self.latest_sequence:
-                            self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))                    
-                            self.latest_sequence = head_seg_num
-                            if self.livestream_coordinator:
-                                self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
-                            
-                        if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                            self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence
-
-                        if segment_data is not None:
-                            downloaded_segments[seg_num] = segment_data
-                            
-                            segment_retries.pop(seg_num, None)
-                        elif status is None or status != 200:
-                            segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                            #print("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
-                            self.logger.debug("Unable to download {0} ({1}). Currently at {2} retries".format(seg_num, self.format, segment_retries.get(seg_num, "UNKNOWN")))
-
-                    except httpx.ConnectTimeout:
-                        self.logger.warning('({0}) Experienced connection timeout while fetching segment {1}'.format(self.format, seg_num or future_to_seg.get(future,"(Unknown)"))) 
-
-                    except Exception as e:
-                        self.logger.exception("An unknown error occurred")
-                        seg_num = seg_num or future_to_seg.get(future,None)
-                        if seg_num is not None:
-                            segment_retries[seg_num] = segment_retries.get(seg_num, 0) + 1
-                    # Remove from submitted segments in case it neeeds to be regrabbed
-
-                    future_segnum = future_to_seg.pop(future,None)
-
-                    submitted_segments.discard(seg_num if seg_num is not None else future_segnum)
-
-                # Write contiguous downloaded segments
-                # Check if there is at least one segment to write
-                
-                #print("[{2}] Last written: {0} - Downloaded: {0} - Next ready: {3}".format(self.state['last_written'], downloaded_segments.keys(), self.format, downloaded_segments.get(self.state['last_written'] + 1, None) is not None))
-                if downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
-                    # If segments exist, open the file *once*
-                    mode = 'wb' if self.state['file_size'] == 0 else 'r+b'
-                    isFirst = self.state['file_size'] == 0
-                    should_clean = self.should_clean(self.ext)
-                    with open(self.merged_file_name, mode) as f:
-                        # Seek to the end of the file *once* (if not a new file)
-                        if mode != 'wb':
-                            f.seek(self.state['file_size'])
-
-                        # Loop and write all available consecutive segments
-                        while downloaded_segments.get(self.state['last_written'] + 1, None) is not None:
-                            seg_num = self.state['last_written'] + 1
-                            segment = downloaded_segments.pop(seg_num)
-                            
-                            if should_clean:
-                                cleaned = self.clean_segments(data=segment, first=isFirst)                                
-                                f.write(cleaned)
-                            else:
-                                f.write(segment)
-                            f.truncate()  # Truncates the file at the current position (after the write)
-                            
-                            self.state['last_written'] = seg_num
-                            
-                            # Optimization: Use f.tell() instead of os.path.getsize()
-                            # f.tell() returns the current file position, which is the new
-                            # file size after writing and truncating. This is much faster.
-                            self.state['file_size'] = f.tell()                         
-                            
-                            self.logger.debug(f"Written segment {seg_num} ({self.format}), file size: {self.state['file_size']} bytes")
-                    self._save_state()
-                    if self.livestream_coordinator:
-                        self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.state.get('last_written', 0)
-                        self.livestream_coordinator.stats[self.type]["current_filesize"] = self.state.get('file_size', 0) 
-                    
-                elif segment_retries.get(self.state.get('last_written', 0) + 1, 0) > self.fragment_retries:
-                    self.logger.warning("({1}) Segment {0} has exceeded maximum segment retries, advancing count to save data...".format(self.state.get('last_written', 0), self.format))
-                    self.state['last_written'] = self.state.get('last_written', 0) + 1
-
-                # Remove any potential stray segments 
-                downloaded_segments = dict((k, v) for k, v in downloaded_segments.items() if k >= self.state.get('last_written',0))
-
-                # Determine segments to download. Sort into a list as direct to ts relies on segments to be written in order
-                segments_to_download = sorted(set(range(self.state.get('last_written',-1) + 1, self.latest_sequence + 1)) - submitted_segments - set(downloaded_segments.keys()) - set(self.pending_segments.keys()) - set(k for k, v in segment_retries.items() if v > self.fragment_retries))
-
-                optimistic_seg = max(self.latest_sequence, self.state.get('last_written',0)) + 1  
-                                        
-                
-                if optimistic_fails < optimistic_fails_max and optimistic_seg not in submitted_segments and optimistic_seg not in self.already_downloaded and len(segments_to_download) <= 2 * self.max_workers:
-                    # Wait estimated fragment time +0.1s to make sure it would exist. Wait a minimum of 2s
-                    if not segments_to_download:
-                        self.smart_sleep(max(self.estimated_segment_duration, 2) + 0.1)
-                    
-                    self.logger.debug("\033[93mAdding segment {1} optimistically ({0}). Currently at {2} fails\033[0m".format(self.format, optimistic_seg, optimistic_fails))
-                    segments_to_download.append(optimistic_seg)
-                if refresh != "IN_PROGRESS":                    
-                    # If update has no segments and no segments are currently running, wait                              
-                    if len(segments_to_download) <= 0 and len(future_to_seg) <= 0:                 
-                        
-                        self.logger.debug("No new fragments available for {0}, attempted {1} times...".format(self.format, wait))
-                            
-                        # If waited for new fragments hits 20 loops, assume stream is offline
-                        if (self.wait_limit or 0) > 0 and wait > self.wait_limit:
-                            self.logger.debug("Wait time for new fragment exceeded, ending download...")
-                            break    
-                        # If over 10 wait loops have been executed, get page for new URL and update status if necessary
-                        elif wait % 10 == 0 and wait > 0:
-                            temp_stream_url = self.stream_url
-                            refresh = self.refresh_url(ignore_no_formats=True)
-                            if self.is_private:
-                                self.logger.debug("Video is private and no more segments are available. Ending...")
-                                break
-                            elif self.is_members_error:
-                                self.logger.debug("Video turned members only, not accessible and no more segments are available. Ending...")
-                                break
-                            elif refresh is False:
-                                self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
-                                break                              
-                            elif refresh is True:
-                                self.logger.info("Video finished downloading via new manifest")
-                                break
-                            elif temp_stream_url != self.stream_url:
-                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
-                                segment_retries.clear()
-                        self.smart_sleep(10)
-                        self.update_latest_segment(client=client)
-                        wait += 1
-                        continue
-                        """
-                    elif len(segments_to_download) > 0 and self.is_private and len(future_to_seg) > 0:
-                        self.logger.debug("Video is private, waiting for remaining threads to finish before ending")
-                        time.sleep(5)
-                        continue
-
-                    elif len(segments_to_download) > 0 and self.is_private:
-                        self.logger.warning("{0} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
-                        break
-                    """
-                    elif segment_retries and all(v > self.fragment_retries for v in segment_retries.values()):
-                        self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
-                        temp_stream_url = self.stream_url
-                        refresh = self.refresh_url(ignore_no_formats=True)                       
-                        if refresh is True:
-                            self.logger.warning("Video has new manifest. This cannot be handled by current implementation of Direct to .ts implementation")
-                            break
-                        elif self.is_private or refresh is False:
-                            self.logger.warning("Failed to refresh URL or stream is private, ending...")
-                            break
-                        elif self.is_private or refresh is False or self.is_members_error:
-                            # If stream URL has changed, refresh retry count and continue
-                            if temp_stream_url != self.stream_url:
-                                self.logger.info("({0}) New stream URL detecting, resetting segment retry log")
-                                segment_retries.clear()
-                                continue
-                            self.logger.warning("Failed to refresh URL or stream is private/members only, ending...")
-                            break
-                        else:
-                            segment_retries.clear()
-                    else:
-                        wait = 0
-                elif not segments_to_download and not submitted_segments and self._refresh_state.get("thread", None) is not None:
-                    # Wait up to 0.5 seconds if there are no outstanding or in progress segments to prevent excessive loop processing when there is no work to do
-                    self._refresh_state.get("thread").join(0.5)
-
-                    
-                for seg_num in segments_to_download:
-                    # Have up to 2x max workers of threads submitted
-                    if len(future_to_seg) > max(10,2*self.max_workers):
-                        break
-                    if seg_num not in submitted_segments and seg_num > self.state.get('last_written', 0):
-                        future_to_seg.update({
-                            executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num, client): seg_num
-                        })
-                        submitted_segments.add(seg_num)
-                """
-                for seg_num in segments_to_download:
-                    if len(future_to_seg) > 2 * self.max_workers:
-                        break
-                    if seg_num not in submitted_segments:
-                        future_to_seg[executor.submit(self.download_segment, self.stream_url.segment(seg_num), seg_num, client)] = seg_num
-                        submitted_segments.add(seg_num)
-                """
-                    
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]['status'] = "merged"
-        self.logger.info(f"Completed direct download for {self.format}")
-        return self.merged_file_name
-        
-    def delete_state_file(self):
-        """Remove saved state files"""
-        for path in [self.state_file_name, self.state_file_backup]:
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception as e:
-                self.logger.warning(f"Failed to delete state file {path}: {e}")
-
-    def remove_folder(self):
-        """Remove folder and associated files"""
-        if self.folder:
-            self.delete_state_file()
-            self.delete_ts_file()
-            try:
-                os.rmdir(self.folder)
-            except Exception:
-                pass
-
-# Gemini super class version - remains untested with youtube changes
-class StreamRecovery(DownloadStream):
-    """
-    class CustomRetry(Retry):
-        def __init__(self, *args, downloader_instance=None, retry_time_clamp=4, segment_number=None, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.downloader_instance = downloader_instance  # Store the Downloader instance
-            self.retry_time_clamp = retry_time_clamp
-            self.segment_number = segment_number
-
-        def increment(self, method=None, url=None, response=None, error=None, _pool=None, _stacktrace=None):
-            # Check the response status code and set self.is_403 if it's 403
-            if response and response.status == 403:
-                if self.downloader_instance:  # Ensure the instance exists
-                    self.downloader_instance.is_403 = True
-            if response and response.status and self.segment_number is not None:
-                self.logger.debug("{0} encountered a {1} code".format(self.segment_number, response.status))
-                    
-            return super().increment(method, url, response, error, _pool, _stacktrace)
-        
-        # Limit backoff to a maximum of 4 seconds
-        def get_backoff_time(self):
-            # Calculate the base backoff time using exponential backoff
-            base_backoff = super().get_backoff_time()
-
-            clamped_backoff = min(self.retry_time_clamp, base_backoff)
-            return clamped_backoff
-
-    class SessionWith403Counter(requests.Session):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.num_retries = 0  # Initialize counter for 403 responses
-
-        def get_403_count(self):
-            return self.num_retries  # Return the number of 403 responses
-    """    
-
-    def __init__(self, info_dict, stream_url: YoutubeURL.YoutubeURL, options=None, stream_urls: list[YoutubeURL.YoutubeURL]=[], live_status="is_live", livestream_coordinator: LiveStreamDownloader=None, **kwargs):        
-        from datetime import datetime
-        self.options = options or {}
-        self.expires = time.time()
-        
-        self.livestream_coordinator = livestream_coordinator
-        if self.livestream_coordinator:
-            self.logger = self.livestream_coordinator.logger
-            self.kill_all = self.livestream_coordinator.kill_all
-            self.kill_this = self.livestream_coordinator.kill_this
-        else:
-            self.logger = logging.getLogger()
-            self.kill_all = threading.Event()
-            self.kill_this = threading.Event()
-            
-        self.pending_segments: dict[int, bytes] = {}
-        self.sqlite_thread = None
-        self.conn = None
-        self.latest_sequence = -1
-        self.already_downloaded = set()
-        
-        self.batch_size = self.options.get('batch_size', 10)
-        self.max_workers = self.options.get('max_workers', 5)
-        self.proxies, self.mounts = self.process_proxies_for_httpx(proxies=self.options.get('proxies'))
-        
-        self.resolution = options.get("resolution", "best")
-        self.yt_dlp_sort = self.options.get('custom_sort')
-
-        if stream_urls:
-            self.logger.debug("{0} stream urls available".format(len(stream_urls)))
-            for url in stream_urls:
-                self.format = url.format_id
-                if self.format is not None:
-                    self.logger.debug("Stream recovery - Found format {0} from itags".format(self.format))
-                    break            
-            self.stream_urls = stream_urls          
-        else:
-            if stream_url.vcodec:
-                self.type = "video"
-            else:
-                self.type = "audio"
-            self.stream_urls = YoutubeURL.Formats().getFormatURL(
-                info_json=info_dict, 
-                resolution=self.resolution,  
-                sort=self.yt_dlp_sort, 
-                get_all=True, 
-                include_dash=False,
-                include_m3u8=False, 
-                stream_type=self.type
-            )
-
-
-
-        if not self.stream_urls:
-            raise ValueError("No compatible stream URLs not found for {0}, unable to continue".format(self.resolution))
-        
-        self.id = info_dict.get('id', self.stream_urls[0].id)
-        
-        self.info_dict = info_dict
-
-        self.live_status = info_dict.get('live_status', live_status)
-            
-        self.stream_url: YoutubeURL.YoutubeURL = random.choice(self.stream_urls)
-        if stream_url.vcodec:
-            self.type = "video"
-        else:
-            self.type = "audio"
-        self.format = self.stream_url.format_id           
-        
-        self.logger.debug("Recovery - Resolution: {0}, Format: {1}".format(self.resolution, self.format))
-        
-        self.logger.debug("Number of stream URLs available: {0}".format(len(self.stream_urls)))
-        
-        self.database_in_memory = self.options.get('database_in_memory', False)
-        
-        file_name = self.options.get('filename')
-        if file_name is None:
-            file_name = self.id    
-        
-        self.file_base_name = file_name
-        
-        self.merged_file_name = "{0}.{1}.ts".format(file_name, self.format)     
-        if self.database_in_memory:
-            self.temp_db_file = ':memory:'
-        else:
-            self.temp_db_file = '{0}.{1}.temp'.format(file_name, self.format)
-        
-        self.folder = self.options.get('folder')
-        if self.folder:
-            os.makedirs(self.folder, exist_ok=True)
-            self.merged_file_name = os.path.join(self.folder, self.merged_file_name)
-            self.file_base_name = os.path.join(self.folder, self.file_base_name)
-            if not self.database_in_memory:
-                self.temp_db_file = os.path.join(self.folder, self.temp_db_file)
-
-        self.conn = self.create_db(self.temp_db_file) 
-        
-        self.fragment_retries = self.options.get('fragment_retries', 5)  
-        self.segment_retry_time = self.options.get('segment_retry_time', 30)
-
-        self.is_403 = False
-        self.is_private = False
-        self.estimated_segment_duration = 0
-
-        self.type = None
-        self.ext = self.stream_url.ext  
-        
-        # Set StreamRecovery-specific properties
-        self.is_401 = False
-        self.recover = self.options.get('recovery', False)
-        self.sequential = False
-        self.count_400s = 0
-        self.sleep_time = 1
-        
-        # Override expires logic to check all available URLs
-        expires = [
-            int(self.get_expire_time(url))
-            for url in self.stream_urls
-            if self.get_expire_time(url) is not None
-        ]
-
-        if expires:
-            self.expires = max(expires)
-            
-        if self.expires and time.time() > self.expires:
-            self.logger.error("\033[31m ({0}) Current time is beyond highest expire time, unable to recover\033[0m".format(self.format))
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
-            raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))
-        
-        current_level = self.logger.getEffectiveLevel()            
-
-        # Set log level of httpx to one level above other loggers
-        if current_level == logging.NOTSET:
-            target_level = logging.WARNING # Default fallback
-        else:
-            target_level = min(current_level + 10, logging.ERROR)
-
-        logging.getLogger("httpx").setLevel(target_level)
-        logging.getLogger("httpcore").setLevel(target_level)
-        
-        # The base __init__ already called update_latest_segment(),
-        # but we must call it again because self.stream_url and self.stream_urls
-        # have been overridden.
-        self.update_latest_segment()
-        
-        self.url_checked = time.time()
-
-        # (Re-)populate already_downloaded from the correct DB
-        self.already_downloaded = self.segment_exists_batch() 
-        
-        # Set more StreamRecovery-specific properties
-        self.count_403s = {}        
-        self.user_agent_403s = {}
-        self.user_agent_full_403s = {}
-        self._refresh_state = {} 
-        
-        # Ensure stats are set for the correct type
-        if self.type and self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type] = {}
-    
-                
-    def live_dl(self):
-        # This method is completely different from the base class.
-        # It's designed to recover missing segments, not optimistically
-        # download a live edge.
-        self.logger.info("\033[93mStarting download of live fragments ({0} - {1})\033[0m".format(self.format, self.stream_url.fomat_note))
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats[self.type]['status'] = "recording"
-        self.already_downloaded = self.segment_exists_batch()
-        self.conn.execute('BEGIN TRANSACTION')
-        uncommitted_inserts = 0     
-        
-        self.sleep_time = max(self.estimated_segment_duration, 0.1)
-        
-        # Track retries of all missing segments in database      
-        self.segments_retries = {key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence + 1) if key not in self.already_downloaded}
-        segment_retries = {}
-        #segments_to_download = set(range(0, self.latest_sequence)) - self.already_downloaded  
-        
-        i = 0
-        
-        last_print = time.time()
-        limits = httpx.Limits(max_keepalive_connections=self.max_workers+1, max_connections=self.max_workers+1, keepalive_expiry=30)
-        with (concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="{0}-{1}".format(self.id,self.format)) as executor,
-              httpx.Client(timeout=self.timeout_config, limits=limits, proxy=self.proxies, mounts=self.mounts, http1=True, http2=self.http2_available(), follow_redirects=True, headers=self.info_dict.get("http_headers", customheaders.get_httpx_header())) as client):
-            submitted_segments = set()
-            future_to_seg = {}
-            
-            if self.expires is not None:
-                from datetime import datetime
-                self.logger.debug("Recovery mode active, URL expected to expire at {0}".format(datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')))
-            else:
-                self.logger.debug("Recovery mode active")
-                    
-            thread_windows_size = 2*self.max_workers
-            while True:     
-                self.check_kill(executor)     
-
-                if self.livestream_coordinator and getattr(self.livestream_coordinator, 'graceful_stop', None) and self.livestream_coordinator.graceful_stop.is_set():
-                    self.logger.info(f"Graceful stop triggered for {self.format}. Finalizing downloaded segments...")
-                    break
-
-                if self.livestream_coordinator and self.livestream_coordinator.stats.get(self.type, None) is None:
-                    self.livestream_coordinator.stats[self.type] = {}     
-
-                self.check_Expiry()
-
-                if (not self.stream_urls) or (self.expires and time.time() > self.expires):
-                    self.logger.critical("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
-                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    format_exp = datetime.fromtimestamp(int(self.expires)).strftime('%Y-%m-%d %H:%M:%S')
-                    self.commit_batch()
-                    raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp)) 
-                
-                done, not_done = concurrent.futures.wait(future_to_seg, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED)
-                
-                for future in done:
-                    head_seg_num, segment_data, seg_num, status, headers = future.result()
-                    try:
-                        self.logger.debug("\033[92mFormat: {3}, Segnum: {0}, Status: {1}, Data: {2}\033[0m".format(
-                                seg_num, status, "None" if segment_data is None else f"{len(segment_data)} bytes", self.format
-                            ))
-                        
-                        if seg_num in submitted_segments:
-                            submitted_segments.discard(seg_num)
-                        
-                        if head_seg_num > self.latest_sequence:
-                            self.logger.debug("More segments available: {0}, previously {1}".format(head_seg_num, self.latest_sequence))        
-                            self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, head_seg_num) if key not in self.already_downloaded})
-                            self.latest_sequence = head_seg_num
-                            
-                            
-                        if headers is not None and headers.get("X-Head-Time-Sec", None) is not None:
-                            self.estimated_segment_duration = int(headers.get("X-Head-Time-Sec"))/self.latest_sequence  
-                            
-                        if segment_data is not None:
-                            # self.insert_single_segment(segment_order=seg_num, segment_data=segment_data)
-                            # uncommitted_inserts += 1        
-                            
-                            existing = self.pending_segments.get(seg_num, None)
-                            if existing is None or len(segment_data) > len(existing):
-                                self.pending_segments[seg_num] = segment_data               
-                            
-                            self.segments_retries.pop(seg_num,None)
-                            
-                            
-                        else:                        
-                            self.segments_retries.setdefault(seg_num, {})['retries'] = self.segments_retries.get(seg_num,{}).get('retries',0) + 1
-                            self.segments_retries.setdefault(seg_num, {})['last_retry'] = time.time()
-                            self.segments_retries.setdefault(seg_num, {}).setdefault('ideal_retry_time', random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200)))
-
-                            if self.segments_retries.get(seg_num, {}).get('retries',0) >= self.fragment_retries:
-                                self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
-                    except httpx.ConnectTimeout:
-                        self.logger.warning('({0}) Experienced connection timeout while fetching segment {1}'.format(self.format, future_to_seg.get(future,"(Unknown)")))      
-
-                    except Exception as e:
-                        self.logger.exception("An unknown error occurred")
-                        seg_num = seg_num or future_to_seg.get(future,None)
-                        if seg_num is not None:
-                            self.segments_retries.setdefault(seg_num, {})['retries'] = self.segments_retries.get(seg_num,{}).get('retries',0) + 1
-                            self.segments_retries.setdefault(seg_num, {})['last_retry'] = time.time()
-                            self.segments_retries.setdefault(seg_num, {}).setdefault('ideal_retry_time', random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200)))
-
-                            if self.segments_retries.get(seg_num, {}).get('retries',0) >= self.fragment_retries:
-                                self.logger.debug("Segment {0} of {1} has exceeded maximum number of retries".format(seg_num, self.latest_sequence))
-
-                    future_to_seg.pop(future,None)
-
-                if self.livestream_coordinator:
-                    self.livestream_coordinator.stats[self.type]["latest_sequence"] = self.latest_sequence
-                
-                    self.livestream_coordinator.stats[self.type]["downloaded_segments"] = self.latest_sequence - len(self.segments_retries)
-
-                #if uncommitted_inserts >= max(self.batch_size, len(done)):
-                #    self.logger.debug("Writing segments to file...")
-                #    self.commit_batch(self.conn)
-                #    uncommitted_inserts = 0
-                #    self.conn.execute('BEGIN TRANSACTION')    
-
-                self.commit_segments()                         
-                    
-                if len(self.segments_retries) <= 0:
-                    self.logger.info("All segment downloads complete, ending...")
-                    break
-
-                elif all(value['retries'] > self.fragment_retries for value in self.segments_retries.values()):
-                    self.logger.error("All remaining segments have exceeded their retry count, ending...")
-                    break
-                
-                elif self.is_403 and self.expires is not None and time.time() > self.expires:
-                    self.logger.critical("URL(s) have expired and failures being detected, ending...")
-                    break               
-                
-                elif self.is_401:
-                    self.logger.debug("401s detected for {0}, sleeping for a minute")
-                    self.smart_sleep(60)
-                    for url in self.stream_urls:
-                        if self.live_status == 'post_live':
-                            self.update_latest_segment(url=self.stream_url.segment(self.latest_sequence+1), client=client)
-                        else:
-                            self.update_latest_segment(url=url, client=client)
-                
-                elif self.is_403:
-                    for url in self.stream_urls:
-                        if self.live_status == 'post_live':
-                            self.update_latest_segment(url=self.stream_url.segment(self.latest_sequence+1), client=client)
-                        else:
-                            self.update_latest_segment(url=url, client=client)
-                    
-                
-                potential_segments_to_download = set(self.segments_retries.keys()) - self.already_downloaded
-                
-                if self.sequential:
-                    sorted_retries = dict(sorted(self.segments_retries.items(), key=lambda item: (item[1]['retries'], item[0])))
-                else:
-                    """
-                    current_time = time.time()
-                    priority_items = {
-                        key: value for key, value in self.segments_retries.items()
-                        if (current_time - value['last_retry']) > value['ideal_retry_time'] and value['retries'] > 0
-                    }
-                    non_priority_items = {
-                        key: value for key, value in self.segments_retries.items()
-                        if not ((current_time - value['last_retry']) > value['ideal_retry_time'] and value['retries'] > 0)
-                    }
-                    priority_items_sorted = dict(sorted(priority_items.items(), key=lambda item: item[1]['retries']))
-                    non_priority_items_sorted = dict(sorted(non_priority_items.items(), key=lambda item: item[1]['retries']))
-                    sorted_retries = priority_items_sorted | non_priority_items_sorted
-                    """
-                    current_time = time.time()
-                    priority_items = {}
-                    non_priority_items = {}
-
-                    for key, value in self.segments_retries.items():
-                        # .get() allows us to provide safe defaults if keys are missing
-                        last_retry = value.get('last_retry', 0)
-                        ideal_time = value.get('ideal_retry_time', 0)
-                        retries = value.get('retries', 0)
-
-                        # Check priority condition
-                        if (current_time - last_retry) > ideal_time and retries > 0:
-                            priority_items[key] = value
-                        else:
-                            non_priority_items[key] = value
-
-                    # Sorting logic remains consistent
-                    priority_items_sorted = dict(sorted(priority_items.items(), key=lambda item: item[1].get('retries', 0)))
-                    non_priority_items_sorted = dict(sorted(non_priority_items.items(), key=lambda item: item[1].get('retries', 0)))
-
-                    sorted_retries = priority_items_sorted | non_priority_items_sorted
-                
-                if sorted_retries:
-                    potential_segments_to_download = sorted_retries.keys()
-                    
-                """
-                if not not_done or len(not_done) < self.max_workers:
-                    new_download = set()
-                    number_to_add = self.max_workers - len(not_done)
-
-                    for seg_num in potential_segments_to_download:
-                        if seg_num not in submitted_segments :                            
-                            if seg_num in self.already_downloaded:
-                                self.segments_retries.pop(seg_num,None)
-                                continue
-                            if self.segment_exists(seg_num):
-                                self.already_downloaded.add(seg_num)
-                                continue
-                            new_download.add(seg_num)
-                            self.logger.debug("Adding segment {0} of {2} with retries: {1}".format(seg_num, self.segments_retries[seg_num]['retries'], self.format))
-                        if len(new_download) >= number_to_add:                            
-                            break
-                    segments_to_download = new_download
-                
-                for seg_num in segments_to_download:
-                    if seg_num not in submitted_segments:
-                        # Round-robin through available stream URLs
-                        future_to_seg[executor.submit(self.download_segment, self.stream_urls[i % len(self.stream_urls)].segment(seg_num), seg_num)] = seg_num
-                        submitted_segments.add(seg_num)
-                        i += 1
-                """
-
-                if len(not_done) <= 0 and len(done) > 0:
-                    thread_windows_size = 3*thread_windows_size
-                else:
-                    thread_windows_size = max(thread_windows_size//2, 2*self.max_workers)
-
-                # Add new threads to existing future dictionary, done directly to almost half RAM usage from creating new threads
-                for seg_num in potential_segments_to_download:
-                    # Have up to 2x max workers of threads submitted
-                    if len(future_to_seg) > max(10,2*self.max_workers, thread_windows_size):
-                        break
-                    if seg_num not in submitted_segments and self.segments_retries.get(seg_num, {}).get('retries', 0) <= self.fragment_retries and time.time() - self.segments_retries.get(seg_num, {}).get('retries', 0) > self.segment_retry_time and seg_num not in self.pending_segments:
-                        # Check if segment already exist within database (used to not create more connections). Needs fixing upstream
-                        if self.segment_exists(seg_num):
-                            self.already_downloaded.add(seg_num)
-                            self.segments_retries.pop(seg_num,None)
-                            continue
-                        future_to_seg.update({
-                            executor.submit(self.download_segment, self.stream_urls[i % len(self.stream_urls)].segment(seg_num), seg_num, client, True): seg_num
-                        })
-                        submitted_segments.add(seg_num)
-                        i += 1
-                
-                if len(submitted_segments) == 0 and len(self.segments_retries) < 11 and time.time() - last_print > self.segment_retry_time:
-                    self.logger.debug("{2} remaining segments for {1}: {0}".format(self.segments_retries, self.format, len(self.segments_retries)))
-                    last_print = time.time()
-                elif len(submitted_segments) == 0 and time.time() - last_print > self.segment_retry_time + 5:
-                    self.logger.debug("{0} segments remain for {1}".format(len(self.segments_retries), self.format))
-                    last_print = time.time()
-                
-            self.commit_batch(self.conn)
-        self.commit_batch(self.conn)
-        return len(self.segments_retries)
-    
-    def check_Expiry(self): 
-        #print("Refresh check ({0})".format(self.format)) 
-        filtered_array = [url for url in self.stream_urls if int(self.get_expire_time(url)) >= time.time()]
-        self.stream_urls = filtered_array  
-
-        expires = [
-            int(self.get_expire_time(url))
-            for url in self.stream_urls
-            if self.get_expire_time(url) is not None
-        ]
-
-        if expires:
-            self.expires = max(expires)
-
-
-    def update_latest_segment(self, url=None, client=None):
-        from datetime import datetime
-        # Overrides base method to handle multiple, expiring URLs
-        self.check_kill()
-        
-        # Remove expired URLs
-        self.check_Expiry()  
-
-        if (not self.stream_urls) or (self.expires and time.time() > self.expires):
-            self.logger.critical("\033[31mCurrent time is beyond highest expire time and no valid URLs remain, unable to recover\033[0m".format(self.format))
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            format_exp = datetime.fromtimestamp(self.expires).strftime('%Y-%m-%d %H:%M:%S')
-            self.commit_batch(self.conn)
-            raise TimeoutError("Current time {0} exceeds latest URL expiry time of {1}".format(now, format_exp))         
-        
-        if url is None:
-            url = random.choice(self.stream_urls)
-        
-        stream_url_info = self.get_Headers(url, client)
-        if stream_url_info is not None and stream_url_info.get("X-Head-Seqnum", None) is not None:
-            new_latest = int(stream_url_info.get("X-Head-Seqnum"))
-            if new_latest > self.latest_sequence and self.latest_sequence > -1:
-                self.segments_retries.update({key: {'retries': 0, 'last_retry': 0, 'ideal_retry_time': random.uniform(max(self.segment_retry_time,900),max(self.segment_retry_time+300,1200))} for key in range(self.latest_sequence, new_latest) if key not in self.already_downloaded})
-            self.latest_sequence = new_latest
-            self.logger.debug("Latest sequence: {0}".format(self.latest_sequence))
-            
-        if stream_url_info is not None and stream_url_info.get('Content-Type', None) is not None:
-            self.type, self.ext = str(stream_url_info.get('Content-Type')).split('/')
-            
-        if stream_url_info is not None and stream_url_info.get("X-Head-Time-Sec", None) is not None:
-            self.estimated_segment_duration = int(stream_url_info.get("X-Head-Time-Sec"))/max(self.latest_sequence,1)
-        
-        if self.livestream_coordinator:
-            self.livestream_coordinator.stats.setdefault(self.type, {})["latest_sequence"] = self.latest_sequence
-    """
-    def get_Headers(self, url, client=None):
-        # Overrides base method to add 401 handling
-        if client is None:
-            client = httpx.Client(timeout=10, proxy=self.process_proxies_for_httpx(self.proxies), http1=True, http2=self.http2_available(), follow_redirects=True)
-        try:
-            response = requests.get(url, timeout=30, proxies=self.proxies)
-            if response.status_code == 200 or response.status_code == 204:
-                self.is_403 = False
-                self.is_401 = False
-            elif response.status_code == 403:
-                self.is_403 = True
-            elif response.status_code == 401:
-                self.is_401 = True # <-- Specific to StreamRecovery
-            else:
-                self.logger.warning("Error retrieving headers: {0}".format(response.status_code))
-                self.logger.debug(json.dumps(dict(response.headers), indent=4))
-            return response.headers
-            
-        except httpx.TimeoutException as e:
-            self.logger.debug("Timed out updating fragments: {0}".format(e))
-            return None
-        
-        except Exception as e:
-            self.logger.exception("\033[31m{0}\033[0m".format(e))
-            return None
-            """
-    """
-    def download_segment(self, segment_url, segment_order):
-        # Overrides base method to add User-Agent rotation
-        # and more detailed exception handling for recovery
-        self.check_kill()
-
-        adapter = HTTPAdapter(max_retries=self.retry_strategy)
-        session = requests.Session()
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        
-        # Key difference: Use random User-Agent
-        user_agent = random.choice(user_agents)
-        headers = {
-            "User-Agent": user_agent,
-        }
-        
-        try:            
-            response = session.get(segment_url, timeout=30, headers=headers, proxies=self.proxies)
-            if response.status_code == 200:
-                self.logger.debug("Downloaded segment {0} of {1} to memory...".format(segment_order, self.format))
-                self.is_403 = False
-                self.is_401 = False
-                return int(response.headers.get("X-Head-Seqnum", -1)), response.content, int(segment_order), response.status_code, response.headers
-            elif response.status_code == 403:
-                self.logger.debug("Received 403 error, marking for URL refresh...")
-                self.is_403 = True
-                return -1, None, segment_order, response.status_code, response.headers
-            else:
-                self.logger.debug("Error downloading segment {0}: {1}".format(segment_order, response.status_code))
-                return -1, None, segment_order, response.status_code, response.headers
-        except requests.exceptions.Timeout as e:
-            self.logger.debug(e)
-            return -1, None, segment_order, None, None
-        except requests.exceptions.RetryError as e:
-            # Key difference: More detailed handling
-            self.logger.debug("Retries exceeded downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            if "(Caused by ResponseError('too many 204 error responses')" in str(e):
-                self.is_403 = False
-                self.is_401 = False
-                return -1, bytes(), segment_order, 204, None
-            elif "(Caused by ResponseError('too many 403 error responses')" in str(e):
-                self.is_403 = True
-                self.count_403s.update({segment_order: (self.count_403s.get(segment_order, 0) + 1)})
-                self.user_agent_full_403s.update({user_agent: (self.user_agent_full_403s.get(user_agent, 0) + 1)})
-                return -1, None, segment_order, 403, None
-            elif "(Caused by ResponseError('too many 401 error responses')" in str(e):
-                self.is_401 = True
-                return -1, None, segment_order, 401, None
-            else:
-                return -1, None, segment_order, None, None
-        except requests.exceptions.ChunkedEncodingError as e:
-            self.logger.debug("No data in request for fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, bytes(), segment_order, None, None
-        except requests.exceptions.ConnectionError as e:
-            self.logger.debug("Connection error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, None, None
-        except requests.exceptions.Timeout as e:
-            self.logger.warning("Timeout while retrieving downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, None, None
-        except requests.exceptions.HTTPError as e:
-            self.logger.warning("HTTP error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, None, None
-        except Exception as e:
-            self.logger.exception("Unknown error downloading fragment {1} of {2}: {0}".format(e, segment_order, self.format))
-            return -1, None, segment_order, None, None
-        """
-            
-    def save_stats(self):
-        # Stats files
-        with open("{0}.{1}_seg_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
-            json.dump(self.count_403s, outfile, indent=4)
-        with open("{0}.{1}_usr_ag_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
-            json.dump(self.user_agent_403s, outfile, indent=4)
-        with open("{0}.{1}_usr_ag_full_403s.json".format(self.file_base_name, self.format), 'w', encoding='utf-8') as outfile:
-            json.dump(self.user_agent_full_403s, outfile, indent=4)
-
-
-
-
-
-
-
