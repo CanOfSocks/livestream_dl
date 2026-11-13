@@ -1,0 +1,6 @@
+# Local virtual environment (not part of the repo or docker image)
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
