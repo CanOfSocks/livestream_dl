@@ -59,7 +59,6 @@ def process_proxies(proxy_string):
     
     if proxy_string is None:
         return None
-    print(proxy_string)
     if proxy_string == "":
         return {
             "http": None, 
@@ -106,7 +105,8 @@ def httpx_proxy(proxy_string: str):
     else:
         return proxy_string
 
-def main(id, resolution='bv+ba/best', options: dict={}, info_dict=None, thread_kill: threading.Event=kill_all):
+def main(id, resolution='bv+ba/best', options: dict = None, info_dict=None, thread_kill: threading.Event = kill_all):
+    options = options if options is not None else {}
     file_options = {}
     if options.get("log_rotate_when"):
         file_options = {
@@ -114,7 +114,9 @@ def main(id, resolution='bv+ba/best', options: dict={}, info_dict=None, thread_k
             "interval": options.get("log_rotate_interval", 1),
             "backupCount": options.get("log_backup_count", 30)
         }
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=id, redact_ips=options.get("redact_ips", False), file_options=file_options)
+    # Log with the bare video ID even if a URL was given
+    log_id = getUrls.extract_video_id(id) or id
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=log_id, redact_ips=options.get("redact_ips", False), file_options=file_options)
 
     if options.get("cookies", None):
         from pathlib import Path
@@ -123,11 +125,12 @@ def main(id, resolution='bv+ba/best', options: dict={}, info_dict=None, thread_k
     # Initialise yt-dlp logger
     #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
     
-    # Convert additional options to dictionary, if it exists
-    if options.get('ytdlp_options', None) is not None:        
+    # Convert additional options to dictionary, if it exists (it may already be a dict when
+    # called from the channel monitor, which deep copies already parsed options)
+    if isinstance(options.get('ytdlp_options', None), str):
         print("JSON for ytdlp_options: {0}".format(options.get('ytdlp_options', None)))
         options['ytdlp_options'] = json.loads(options.get('ytdlp_options'))
-    else:
+    elif options.get('ytdlp_options', None) is None:
         options['ytdlp_options'] = {}
     
     if options.get("ytdlp_command_line_options"):
@@ -144,8 +147,9 @@ def main(id, resolution='bv+ba/best', options: dict={}, info_dict=None, thread_k
     downloader = download_Live.LiveStreamDownloader(kill_all=kill_all, logger=logger)
     downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
 
-def monitor_channel(options={}):
+def monitor_channel(options: dict = None):
     import copy
+    options = options if options is not None else {}
     file_options = {}
     if options.get("log_rotate_when"):
         file_options = {
@@ -159,7 +163,10 @@ def monitor_channel(options={}):
         from pathlib import Path
         if not Path(options.get("cookies")).exists():
             logger.warning("Cookie file does not exist. Check --cookies option")
-    import monitor_channel
+    try:
+        import monitor_channel
+    except ModuleNotFoundError:
+        from . import monitor_channel
     from typing import Dict
     threads: Dict[str, threading.Thread] = {}
     last_check = time()
@@ -188,7 +195,8 @@ def monitor_channel(options={}):
                 threads.pop(id)
         logger.debug("Searching for streams for channel {0}".format(channel_id))
         try:
-            videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options, logger=logger)
+            # Videos already being downloaded are skipped so they aren't extracted again
+            videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options, logger=logger, skip_ids=threads.keys())
             for video_id in videos_to_get:
                 if threads.get(video_id, None) is not None:
                     continue
@@ -214,14 +222,59 @@ def monitor_channel(options={}):
         last_check=time()
 
 def parse_time_to_seconds(time_str):
+    """
+    Parse [-]hh:mm:ss, [-]mm:ss or [-]ss into seconds.
+    A leading '-' means "before the live edge" (e.g. -10:00 is 10 minutes before the live edge
+    at the time recording starts) and is returned as a negative number.
+    """
     if not time_str:
         return None
+    time_str = str(time_str).strip()
+    negative = time_str.startswith('-')
+    if negative:
+        time_str = time_str[1:]
     try:
         parts = time_str.split(':')
+        if not parts or len(parts) > 3 or any(part.strip() == "" or int(part) < 0 for part in parts):
+            raise ValueError
         parts.reverse()
-        return sum(int(part) * (60 ** i) for i, part in enumerate(parts))
+        seconds = sum(int(part) * (60 ** i) for i, part in enumerate(parts))
     except ValueError:
-        raise argparse.ArgumentTypeError(f"Invalid time format: '{time_str}'. Expected format is hh:mm:ss, mm:ss, or ss.")
+        raise argparse.ArgumentTypeError(f"Invalid time format: '{time_str}'. Expected format is [-]hh:mm:ss, [-]mm:ss, or [-]ss.")
+    # Relative times are returned as negative floats so that "-00:00" (exactly the live edge) keeps
+    # its sign as -0.0 (see download_Live.is_relative_time)
+    return -float(seconds) if negative else seconds
+
+
+# Options whose values may legitimately start with '-' (negative times)
+_NEGATIVE_VALUE_OPTIONS = ("--start-time", "--end-time")
+
+
+def join_negative_option_values(argv: list[str]) -> list[str]:
+    """
+    argparse treats a value such as '-10:00' as an unknown option. Rewrite
+    ['--start-time', '-10:00'] into ['--start-time=-10:00'] so it parses as a value.
+    """
+    import re
+    result: list[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in _NEGATIVE_VALUE_OPTIONS and i + 1 < len(argv) and re.match(r'^-\d', argv[i + 1]):
+            result.append(f"{arg}={argv[i + 1]}")
+            i += 2
+            continue
+        result.append(arg)
+        i += 1
+    return result
+
+
+def validate_time_window(start_time, end_time) -> None:
+    """End must be after start. Mixed signs can only be checked once the live edge is known."""
+    if start_time is None or end_time is None:
+        return
+    if download_Live.is_relative_time(start_time) == download_Live.is_relative_time(end_time) and end_time <= start_time:
+        raise argparse.ArgumentTypeError("--end-time must be after --start-time")
 
 
 
@@ -354,15 +407,21 @@ if __name__ == "__main__":
     ip_group.add_argument("--ipv4", action="store_true", help="Force IPv4 only")
     ip_group.add_argument("--ipv6", action="store_true", help="Force IPv6 only")
     
-    parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. This is useful if waiting for chat to end causes hanging. Onl works with chat-downloader live chat downloads.")
+    parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. This is useful if waiting for chat to end causes hanging. The chat downloaded so far is kept.")
     
     parser.add_argument('--new-line', action='store_true', help="Console messages always print to new line. (Currently only ensured for stats output)")
 
     parser.add_argument('--ytdlp-command-line-options', type=str, default=None, help='Pass yt-dlp command line options. This must be passed as a single string, recommended --ytdlp-command-line-options="options..." e.g. --ytdlp-command-line-options="--cookies-from-browser firefox" . Only currently works for yt-dlp extractor. Requires https://github.com/yt-dlp/yt-dlp/blob/master/devscripts/cli_to_api.py to be available. (EXPERIMENTAL)')
 
-    parser.add_argument('--start-time', type=parse_time_to_seconds, default=None, help="Start time of the recording in hh:mm:ss format (based on stream duration) (EXPERIMENTAL).")
-    
-    parser.add_argument('--end-time', type=parse_time_to_seconds, default=None, help="End time of the recording in hh:mm:ss format (based on stream duration) (EXPERIMENTAL).")
+    parser.add_argument('--start-time', type=parse_time_to_seconds, default=None, help="Start time of the recording in hh:mm:ss format (based on stream duration). A negative value (e.g. -10:00) is relative to the live edge when recording starts, i.e. 10 minutes ago (EXPERIMENTAL).")
+
+    parser.add_argument('--end-time', type=parse_time_to_seconds, default=None, help="End time of the recording in hh:mm:ss format (based on stream duration). A negative value (e.g. -09:00) is relative to the live edge when recording starts (EXPERIMENTAL).")
+
+    parser.add_argument('--url-refresh-interval', type=int, default=None, help="Fixed interval in seconds to refresh stream URLs with yt-dlp. By default URLs are refreshed shortly before they expire (~30 minutes before expiry), which minimises yt-dlp requests.")
+
+    parser.add_argument('--url-refresh-jitter', type=int, default=300, help="Maximum random number of seconds to bring each scheduled URL refresh forward, so that many downloads started together don't refresh at the same time.")
+
+    parser.add_argument('--temp-db-journal', type=str.lower, choices=["wal", "truncate"], default="wal", help="SQLite journal mode for the temporary segment database. 'wal' is the most robust against crashes; 'truncate' (rollback journal) writes roughly half as much data to disk but has a small risk of corruption if the OS crashes or loses power.")
 
     monitor_group = parser.add_argument_group('Channel Monitor Options')
 
@@ -377,7 +436,18 @@ if __name__ == "__main__":
     monitor_group.add_argument('--playlist-items', type=int, default=10, help="Maximum number of playlist items to check.")
     
     # Parse the arguments
-    args = parser.parse_args()
+    import sys
+    args = parser.parse_args(join_negative_option_values(sys.argv[1:]))
+    try:
+        validate_time_window(args.start_time, args.end_time)
+    except argparse.ArgumentTypeError as e:
+        parser.error(str(e))
+
+    # A JSON proxy string (multiple proxies) is converted to a dict once here
+    try:
+        args.proxy = httpx_proxy(args.proxy)
+    except ValueError as e:
+        parser.error(f"--proxy: {e}")
 
     if args.ipv4:
         force_ipv4()

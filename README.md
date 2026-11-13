@@ -104,6 +104,17 @@ python runner.py --live-chat --threads 4 --embed-thumbnail VIDEO_ID
 
 ```
 
+**Download part of a stream (issue #20):**
+
+```bash
+# From 1h to 1h30m into the stream
+python runner.py --start-time 01:00:00 --end-time 01:30:00 VIDEO_ID
+# The 10 minutes before the live edge at the time the download starts
+python runner.py --start-time -10:00 --end-time -00:00 VIDEO_ID
+# From 10 minutes ago until the stream ends
+python runner.py --start-time -10:00 VIDEO_ID
+```
+
 **Monitor a channel for streams:**
 
 ```bash
@@ -156,7 +167,9 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--keep-temp-files` | `False` | Keep all temporary files (database and TS files) after finishing. |
 | `--keep-ts-files` | `False` | Keep the intermediate TS files but delete the database. |
 | `--live-chat` | `False` | Download live chat (requires `yt-dlp` or `chat-downloader`). |
-| `--stop-chat-when-done` | `300` | Max seconds to wait for chat download to finish after stream ends. |
+| `--stop-chat-when-done` | `300` | Max seconds to wait for chat download to finish after stream ends. Chat downloaded so far is still saved if the timeout is reached. |
+| `--start-time` | `None` | Start of the recording in `hh:mm:ss`, `mm:ss` or `ss` (stream time). A negative value such as `-10:00` is relative to the live edge when the download starts. Works with the default, `--direct-to-ts` and `--recovery` modes. (EXPERIMENTAL) |
+| `--end-time` | `None` | End of the recording, same format as `--start-time` (negative values are relative to the live edge when the download starts). (EXPERIMENTAL) |
 | `--disable-graceful-shutdown` | `False` | Disable graceful shutdown for downloader. Useful for testing when you don't want merging/muxing to be triggered on a keyboard interrupt. |
 
 ### Database & Storage Modes
@@ -166,6 +179,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--database-in-memory` | `False` | Keep the segment database in RAM. High memory usage; not recommended for long streams. |
 | `--direct-to-ts` | `False` | Write directly to a `.ts` file instead of using a SQLite database. See "Downloader methods" below. |
 | `--keep-database-file` | `False` | Keep the database file after completion. If using `--direct-to-ts`, keeps the state file. |
+| `--temp-db-journal` | `wal` | SQLite journal mode for the temporary database: `wal` (most crash-safe) or `truncate` (rollback journal, writes roughly half as much data to disk, small corruption risk on an OS crash or power loss). |
 
 ### Recovery & Resilience
 
@@ -174,13 +188,15 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--recovery` | `False` | Puts the downloader directly into stream recovery mode. |
 | `--force-recover-merge` | `False` | Forces merging to the final file even if not all segments were successfully recovered. |
 | `--recovery-failure-tolerance` | `0` | Max number of fragments allowed to fail during recovery without throwing a final error. |
+| `--url-refresh-interval` | `None` | Fixed interval (seconds) to refresh stream URLs with yt-dlp. By default URLs are refreshed ~30 minutes before they expire, minimising yt-dlp requests. |
+| `--url-refresh-jitter` | `300` | Maximum random number of seconds each scheduled URL refresh is brought forward, so many downloads started together don't refresh simultaneously. |
 | `--wait-limit` | `1800` | Max wait intervals (~10s each) for new segments after a download has started. If `0`, waits until status changes to `post_live` or `was_live`. Defaults to ~5 hours to avoid URL expiry errors. |
 
 ### Network & Logging
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--proxy` | `None` | Proxy URL (string) or JSON string for multiple methods. First proxy used for `yt-dlp`/chat. |
+| `--proxy` | `None` | Proxy URL (string) or JSON string for multiple methods (used for segment downloads too). First proxy used for `yt-dlp`/chat. |
 | `--ipv4` | `False` | Force IPv4 only. |
 | `--ipv6` | `False` | Force IPv6 only. |
 | `--log-level` | `INFO` | Logging level: `DEBUG`, `VERBOSE`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. `Verbose` logging is a custom level that includes the `INFO` logs of `yt-dlp`. |
@@ -302,14 +318,24 @@ options:
   --ipv4                Force IPv4 only (default: False)
   --ipv6                Force IPv6 only (default: False)
   --stop-chat-when-done STOP_CHAT_WHEN_DONE
-                        Wait a maximum of X seconds after a stream is finished to download live chat. This is useful if waiting for chat to end causes hanging. Onl works with chat-downloader live chat downloads. (type: int) (default: 300)
+                        Wait a maximum of X seconds after a stream is finished to download live chat. This is useful if waiting for chat to end causes hanging. The chat downloaded so far is kept. (type: int) (default: 300)
   --new-line            Console messages always print to new line. (Currently only ensured for stats output) (default: False)
   --ytdlp-command-line-options YTDLP_COMMAND_LINE_OPTIONS
                         Pass yt-dlp command line options. This must be passed as a single string, recommended --ytdlp-command-line-options="options..." e.g. --ytdlp-command-line-options="--cookies-from-browser firefox" . Only currently works for yt-dlp extractor. Requires
                         https://github.com/yt-dlp/yt-dlp/blob/master/devscripts/cli_to_api.py to be available. (EXPERIMENTAL) (type: str)
   --start-time START_TIME
-                        Start time of the recording in hh:mm:ss format (based on stream duration) (EXPERIMENTAL). (type: parse_time_to_seconds)
-  --end-time END_TIME   End time of the recording in hh:mm:ss format (based on stream duration) (EXPERIMENTAL). (type: parse_time_to_seconds)
+                        Start time of the recording in hh:mm:ss format (based on stream duration). A negative value (e.g. -10:00) is relative to the live edge when recording starts, i.e. 10 minutes ago
+                        (EXPERIMENTAL). (type: parse_time_to_seconds)
+  --end-time END_TIME   End time of the recording in hh:mm:ss format (based on stream duration). A negative value (e.g. -09:00) is relative to the live edge when recording starts (EXPERIMENTAL). (type:
+                        parse_time_to_seconds)
+  --url-refresh-interval URL_REFRESH_INTERVAL
+                        Fixed interval in seconds to refresh stream URLs with yt-dlp. By default URLs are refreshed shortly before they expire (~30 minutes before expiry), which minimises yt-dlp requests.
+                        (type: int)
+  --url-refresh-jitter URL_REFRESH_JITTER
+                        Maximum random number of seconds to bring each scheduled URL refresh forward, so that many downloads started together don't refresh at the same time. (type: int) (default: 300)
+  --temp-db-journal {wal,truncate}
+                        SQLite journal mode for the temporary segment database. 'wal' is the most robust against crashes; 'truncate' (rollback journal) writes roughly half as much data to disk but has a
+                        small risk of corruption if the OS crashes or loses power. (type: lower) (default: wal)
 
 Channel Monitor Options:
   --monitor-channel     Use monitor channel feature (Alpha). Specify channel ID in 'ID' argument (e.g. UCxsZ6NCzjU_t4YSxQLBcM5A). Not using the channel ID will attempt to resolve the channel ID. (default: False)
@@ -341,6 +367,8 @@ For regular livestream recording that doesn't experience frequent segment downlo
 
 The SQLite downloader method is used to improve handling of non-sequential successful segment downloads. This works by creating and using a basic table of the segment number as an ID and a blob to store the segment data. Once all segments are downloaded, a query is executed to sort all of the downloaded segments into the correct order and saved to a .ts file. This helps significantly to manage downloaded segments when failures occur often, such as unavailable stream recovery. By writing to the database and a final .ts file, this will require 2 full writes of the downloaded data, which may increase wear on flash-based systems. For most users, this increased wear will not be significant in the long-term.
 This improves over saving individual segment files like [ytarchive-raw-go](https://www.google.com/search?q=https://github.com/Kethsar/ytarchive%5D(https://github.com/HoloArchivists/ytarchive-raw-go)) as all the downloaded segments are encapsilated into a single file, making it easier for the file system to handle.
+Segments are committed to the database in batches (`--batch-size`), and every commit is verified by reading back the committed segment IDs and sizes; a segment only counts as downloaded once it is confirmed to be in the database. If committing keeps failing (e.g. the disk is full), segments stay in memory, no new downloads are started until they can be written, and any segments that were never committed are still included when merging.
+When merging, FFmpeg writes the final file directly into the output folder (using a temporary `.merging` name until it completes), so the merged file is not copied again when `--temp-folder` is on a different drive.
 In the SQLite method, the existence of a downloaded segment is checked before it is downloaded. This allows failed segments to be "looped back to" later without causing other slowdowns, and ensures some information is saved for a segment (even if it is empty, as is the case sometimes).
 
 ---
