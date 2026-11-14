@@ -127,6 +127,9 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
         'no_warnings': True,
         'cookiefile': options.get("cookies", None),
         'playlist_items': f"1-{options.get('playlist_items', 10)}",
+        # A stream past its scheduled start ("This live event will begin in a few moments") has no
+        # formats yet. Return its info (live_status / release_timestamp) instead of raising.
+        'ignore_no_formats_error': True,
         "logger": YTDLPLogger(logger=logger),
     }
     ytdlp_proxy = proxy_for_ytdlp(options.get("proxy"))
@@ -170,7 +173,9 @@ def _with_live_status(ydl: YoutubeDL, video: dict, cache: VideoStatusCache, look
         logger.debug(f"({video_id}) Skipping re-extraction, status cached")
         return None
     try:
-        full_video = ydl.extract_info(video.get('url'), download=False)
+        # process=False skips format selection: only the status and start time are needed, and an
+        # upcoming stream has no formats ("Requested format is not available")
+        full_video = ydl.extract_info(video.get('url'), download=False, process=False) or {}
     except Exception as e:
         logger.error(f"Unable to find availability information for video {video.get('url')}: {e!s}")
         return None

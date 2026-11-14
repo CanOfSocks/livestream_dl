@@ -494,6 +494,40 @@ class MonitorCacheTests(unittest.TestCase):
         self.assertEqual(monitor_channel._lookahead_hours({"upcoming_lookahead": 5}), 5)
         self.assertEqual(monitor_channel._lookahead_hours({}), 24)
 
+    def test_late_upcoming_stream_is_found(self):
+        """A stream past its scheduled start has no formats yet; it must not be dropped as an error."""
+        from unittest import mock
+        from yt_dlp import YoutubeDL
+        from yt_dlp.extractor.common import InfoExtractor
+
+        class FakeVideoIE(InfoExtractor):
+            _VALID_URL = r'fakevideo:(?P<id>.+)'
+
+            def _real_extract(self, url):
+                video_id = self._match_id(url)
+                self.raise_no_formats("This live event will begin in a few moments.", expected=True)
+                return {'id': video_id, 'title': 'late', 'formats': [],
+                        'live_status': 'is_upcoming', 'release_timestamp': 1}
+
+        class FakePlaylistIE(InfoExtractor):
+            _VALID_URL = r'https://www\.youtube\.com/playlist\?list=.+'
+
+            def _real_extract(self, url):
+                # Flat listing without a live status, so the video is extracted on its own
+                return self.playlist_result([self.url_result('fakevideo:late1', FakeVideoIE)], 'UUx')
+
+        class FakeYDL(YoutubeDL):
+            def __init__(self, params=None, *args, **kwargs):
+                super().__init__(params, auto_init=False)
+                self.add_info_extractor(FakePlaylistIE())
+                self.add_info_extractor(FakeVideoIE())
+
+        with mock.patch.object(monitor_channel, "YoutubeDL", FakeYDL), \
+                self.assertNoLogs(level=logging.ERROR):
+            videos = monitor_channel.get_upcoming_or_live_videos(
+                "UCx", tab="streams", options={}, cache=monitor_channel.VideoStatusCache())
+        self.assertEqual(videos, ["late1"])
+
 
 if __name__ == "__main__":
     unittest.main()
