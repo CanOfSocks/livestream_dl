@@ -43,7 +43,7 @@ import struct
 import threading
 import time
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterable, Optional, Union
+from typing import Any, BinaryIO, Callable, Iterable, NamedTuple, Optional, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -65,8 +65,27 @@ except ModuleNotFoundError:
 setup_logging = setup_logger.setup_logging
 
 LoggerLike = Union[logging.Logger, logging.LoggerAdapter]
-# Result tuple returned by download_segment: (head sequence, data, segment number, HTTP status, headers)
-SegmentResult = tuple[int, Optional[bytes], int, Optional[int], Optional[httpx.Headers]]
+
+
+class SegmentResult(NamedTuple):
+    """The outcome of one segment request (returned by StreamDownloaderBase.download_segment)."""
+    head_seq: int                       # newest segment the server reported (X-Head-Seqnum), -1 if unknown
+    data: Optional[bytes]               # segment bytes; b"" for a 204 response, None if the download failed
+    seg: int                            # the segment (sequence) number that was requested
+    status: Optional[int]               # HTTP status code, None if no response was received
+    headers: Optional[httpx.Headers]    # response headers, None if no response was received
+
+    @classmethod
+    def failed(cls, seg: int, status: Optional[int] = None) -> "SegmentResult":
+        return cls(-1, None, int(seg), status, None)
+
+
+class RefreshOutcome(enum.Enum):
+    """What happened when a stream downloader refreshed its URL (see StreamDownloaderBase.refresh_url)."""
+    IN_PROGRESS = "in progress"     # a background refresh is still running (only when wait=False)
+    NEW_MANIFEST = "new manifest"   # the stream restarted with a new manifest, now downloaded by another thread
+    ENDED = "ended"                 # the stream is no longer live
+    STILL_LIVE = "still live"       # refreshed (or the refresh failed) and the stream is still live
 
 # --- Tunables ---------------------------------------------------------------------------------
 # Seconds before a URL's "expire" time at which it is refreshed (default refresh mode)
@@ -762,6 +781,46 @@ class LoopAction(enum.Enum):
     BREAK = 2      # leave the download loop
 
 
+class BackgroundRefresh:
+    """
+    A yt-dlp URL refresh running in a background thread, so segment downloads continue while
+    yt-dlp works (an extraction can take many seconds). At most one runs per stream downloader.
+    """
+    def __init__(self) -> None:
+        self._thread: Optional[threading.Thread] = None
+        self._result: Optional[tuple[dict, str]] = None
+        self._error: Optional[BaseException] = None
+
+    @property
+    def started(self) -> bool:
+        """True from start() until the result is collected (even if the thread already finished)."""
+        return self._thread is not None
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self, fetch: Callable[[], tuple[dict, str]]) -> None:
+        def run() -> None:
+            try:
+                self._result = fetch()
+            except BaseException as e:  # KeyboardInterrupt from an interrupted wait is also stored
+                self._error = e
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def wait(self, timeout: Optional[float] = None) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def collect(self) -> tuple[Optional[tuple[dict, str]], Optional[BaseException]]:
+        """Wait for the refresh to finish and return (result, error), ready for the next refresh."""
+        self.wait()
+        result, error = self._result, self._error
+        self._thread = self._result = self._error = None
+        return result, error
+
+
 class StreamPaths:
     """All file paths used for one format of one stream."""
     def __init__(self, options: dict, video_id: str, format_id: str, in_memory: bool):
@@ -865,7 +924,7 @@ class StreamDownloaderBase:
         self.is_members_error: bool = False
         self.refresh_retries: int = 0
         self.following_manifest_thread: Optional[threading.Thread] = None
-        self._refresh_state: dict = {}
+        self._background_refresh = BackgroundRefresh()
         self._last_head_time: Optional[float] = None
         self.sqlite_thread = threading.get_ident()
 
@@ -1033,7 +1092,7 @@ class StreamDownloaderBase:
 
         for attempt in range(total_retries + 1):
             if self._graceful_stop_requested():
-                return -1, None, segment_order, None, None
+                return SegmentResult.failed(segment_order)
             if client is None or client.is_closed:
                 # Previously a new client was created here but never assigned
                 client = self._ensure_client()
@@ -1072,12 +1131,12 @@ class StreamDownloaderBase:
                                 raise httpx.TimeoutException(f"Download exceeded hard limit of {self.MAX_SEGMENT_DURATION}")
                             chunks.append(chunk)
                         # A single join is the only copy of the data
-                        return head_seq, b"".join(chunks), int(segment_order), status, headers
+                        return SegmentResult(head_seq, b"".join(chunks), int(segment_order), status, headers)
                     elif status == 204:
-                        return head_seq, bytes(), int(segment_order), status, headers
+                        return SegmentResult(head_seq, b"", int(segment_order), status, headers)
                     else:
                         self.logger.warning(f"({self.format}) Unexpected status returned {status}")
-                        return head_seq, None, int(segment_order), status, headers
+                        return SegmentResult(head_seq, None, int(segment_order), status, headers)
 
             except httpx.ConnectTimeout:
                 if attempt >= total_retries:
@@ -1086,18 +1145,18 @@ class StreamDownloaderBase:
                 if attempt >= total_retries:
                     self.logger.warning(f"({self.format}) Unexpected error downloading segment {segment_order} file after {attempt} attempts {e}")
                     response = getattr(e, 'response', None) if isinstance(e, httpx.HTTPStatusError) else None
-                    return -1, None, segment_order, getattr(response, 'status_code', None), None
+                    return SegmentResult.failed(segment_order, getattr(response, 'status_code', None))
             except KeyboardInterrupt:
                 raise
             except Exception as e:
                 self.logger.exception(f"Unknown error: {e}")
                 if attempt >= total_retries:
-                    return -1, None, segment_order, None, None
+                    return SegmentResult.failed(segment_order)
 
             # Exponential backoff with jitter so parallel workers don't retry in lock-step
             sleep_time = min(backoff_max, backoff_factor * (2 ** attempt)) * random.uniform(0.75, 1.0)
             self.smart_sleep(sleep_time)
-        return -1, None, segment_order, None, None
+        return SegmentResult.failed(segment_order)
 
     def _apply_head_headers(self, headers: Optional[httpx.Headers], set_type_from_content: bool = False) -> None:
         """Update latest sequence, segment duration and extension from response headers."""
@@ -1194,8 +1253,11 @@ class StreamDownloaderBase:
         self.next_refresh_at: float = next_refresh_time(time.time(), self.get_expire_time(self.stream_url),
                                                         self.url_refresh_interval, self.url_refresh_jitter)
 
-    def refresh_Check(self, wait: bool = True):
-        """Refresh URLs if a periodic refresh is due, 403s persist, or no unexpired URL remains."""
+    def refresh_Check(self, wait: bool = True) -> Optional[RefreshOutcome]:
+        """
+        Refresh URLs if a periodic refresh is due, 403s persist, or no unexpired URL remains.
+        Returns None if no refresh was needed, otherwise the outcome of refresh_url.
+        """
         now = time.time()
         self.stream_urls = [url for url in self.unique_stream_urls(self.stream_urls) if self._url_is_valid(url, now)]
 
@@ -1216,83 +1278,50 @@ class StreamDownloaderBase:
                 update_threshold=min(900.0, time.time() - self.url_checked), id=self.id, proxy=self.proxies, **common)
         return getUrls.get_Video_Info(self.id, wait=False, proxy=self.proxies, **common)
 
-    def refresh_url(self, follow_manifest: bool = True, wait: bool = True, ignore_no_formats: bool = False):
+    def refresh_url(self, follow_manifest: bool = True, wait: bool = True, ignore_no_formats: bool = False) -> RefreshOutcome:
         """
-        Refresh the stream URL (yt-dlp extraction), possibly in a background thread.
+        Refresh the stream URL with a yt-dlp extraction, which runs in a background thread.
 
-        Returns:
-            "IN_PROGRESS" - a background refresh is running (only when wait=False)
-            True          - a new manifest was detected and is being followed by another thread
-            False         - the stream is no longer live
-            None          - refreshed (or failed to refresh) and the stream is still live
+        With wait=False this returns IN_PROGRESS while the extraction runs; call it again on a later
+        loop iteration to collect the result. With wait=True it blocks until the result is in.
         """
-        exc = res = None
-        state = self._refresh_state
-        if not state:
-            state.update({'thread': None, 'status': 'IDLE', 'result': None, 'exc': None})
-
-        # 1. Check if the background thread is currently running
-        if state.get('status') == 'IN_PROGRESS':
-            thread = state.get('thread')
-            if thread and thread.is_alive():
-                if wait:
-                    thread.join()
-                    state['status'] = 'DONE'
-                else:
-                    return "IN_PROGRESS"
-            else:
-                state['status'] = 'DONE'
-
-        # 2. If the thread finished, grab the results and reset the state
-        if state.get('status') == 'DONE':
-            exc, res = state.get('exc'), state.get('result')
-            state.update({'thread': None, 'status': 'IDLE', 'result': None, 'exc': None})
-
-        # Only start a refresh if a manifest-follow thread isn't active
-        elif self.following_manifest_thread is None and not self._graceful_stop_requested():
-            # 3. Otherwise we are IDLE: start the background thread
+        refresh = self._background_refresh
+        # No new extraction while a manifest-follow thread is active or the download is stopping
+        if not refresh.started and self.following_manifest_thread is None and not self._graceful_stop_requested():
             self.logger.info(f"Starting background URL refresh for {self.format}")
-            state['status'] = 'IN_PROGRESS'
+            refresh.start(lambda: self._fetch_refreshed_info(ignore_no_formats))
 
-            def fetch_url_data():
-                try:
-                    state['result'] = self._fetch_refreshed_info(ignore_no_formats)
-                except BaseException as e:  # KeyboardInterrupt from an interrupted wait is also stored
-                    state['exc'] = e
+        result = error = None
+        if refresh.started:
+            if refresh.is_running() and not wait:
+                return RefreshOutcome.IN_PROGRESS
+            result, error = refresh.collect()
 
-            state['thread'] = threading.Thread(target=fetch_url_data, daemon=True)
-            state['thread'].start()
-
-            if not wait:
-                return "IN_PROGRESS"
-            state['thread'].join()
-            exc, res = state.get('exc'), state.get('result')
-            state.update({'thread': None, 'status': 'IDLE', 'result': None, 'exc': None})
-
-        # 4. Process the retrieved results
-        if self.following_manifest_thread is None and (exc is not None or res is not None):
-            if self._process_refresh_result(res, exc, follow_manifest):
-                return True
+        if self.following_manifest_thread is None and (error is not None or result is not None):
+            if self._process_refresh_result(result, error, follow_manifest):
+                return RefreshOutcome.NEW_MANIFEST
 
         self.url_checked = time.time()
         self._schedule_next_refresh()
 
         if self.live_status not in ['is_live', 'is_upcoming']:
             self.logger.debug("Livestream has ended.")
-            return False
+            return RefreshOutcome.ENDED
 
         expire = self.get_expire_time(self.stream_url)
         if expire is not None and expire < time.time():
             raise TimeoutError(f"Video is unavailable and stream url for {self.format} has expired, unable to continue...")
 
-        return None
+        return RefreshOutcome.STILL_LIVE
 
-    def _process_refresh_result(self, res, exc, follow_manifest: bool) -> bool:
+    def _process_refresh_result(self, result: Optional[tuple[dict, str]], error: Optional[BaseException],
+                                follow_manifest: bool) -> bool:
         """Apply a refresh result. Returns True if a new manifest was detected."""
         try:
-            if exc:
-                raise exc
-            info_dict, live_status = res
+            if error:
+                # Re-raised so the extraction errors below are handled in one place
+                raise error
+            info_dict, live_status = result
 
             if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
                 return True
@@ -1487,25 +1516,26 @@ class StreamDownloaderBase:
                 error = e
             try:
                 if result is not None:
-                    self.logger.debug(f"\x1b[92mFormat: {self.format}, Segnum: {result[2]}, Status: {result[3]}, Data: {('None' if result[1] is None else f'{len(result[1])} bytes')}\x1b[0m")
-                    self._apply_head_headers(result[4])
-                    if result[0] is not None and result[0] > self.latest_sequence:
-                        self.logger.debug(f"More segments available: {result[0]}, previously {self.latest_sequence}")
-                        self._on_head_advanced(self.latest_sequence, result[0])
-                        self.latest_sequence = result[0]
+                    size = "None" if result.data is None else f"{len(result.data)} bytes"
+                    self.logger.debug(f"\x1b[92mFormat: {self.format}, Segnum: {result.seg}, Status: {result.status}, Data: {size}\x1b[0m")
+                    self._apply_head_headers(result.headers)
+                    if result.head_seq > self.latest_sequence:
+                        self.logger.debug(f"More segments available: {result.head_seq}, previously {self.latest_sequence}")
+                        self._on_head_advanced(self.latest_sequence, result.head_seq)
+                        self.latest_sequence = result.head_seq
                 elif isinstance(error, httpx.ConnectTimeout):
                     self.logger.warning(f'({self.format}) Experienced connection timeout while fetching segment {seg}')
                 elif isinstance(error, KeyboardInterrupt):
                     pass
                 elif error is not None:
                     self.logger.error(f"An unknown error occurred downloading segment {seg}: {error}", exc_info=error)
-                self._on_segment_result(result[2] if result is not None else seg, result, error)
+                self._on_segment_result(result.seg if result is not None else seg, result, error)
             except Exception:
                 self.logger.exception(f"An unknown error occurred processing segment {seg}")
             finally:
                 self.submitted_segments.discard(seg)
                 if result is not None:
-                    self.submitted_segments.discard(result[2])
+                    self.submitted_segments.discard(result.seg)
         return len(done), len(not_done)
 
     def _submit_segments(self, executor: concurrent.futures.ThreadPoolExecutor, done_count: int, not_done_count: int) -> None:
@@ -1690,8 +1720,8 @@ class DownloadStream(StreamDownloaderBase):
     def _on_segment_result(self, seg: Optional[int], result: Optional[SegmentResult], error: Optional[BaseException]) -> None:
         if seg is None:
             return
-        status = result[3] if result is not None else None
-        data = result[1] if result is not None else None
+        status = result.status if result is not None else None
+        data = result.data if result is not None else None
 
         # Track success of optimistic (beyond the known head) requests
         if seg >= self.optimistic_seg and status != 200:
@@ -1775,10 +1805,10 @@ class DownloadStream(StreamDownloaderBase):
         self._before_evaluate()
         self._submit_optimistic()
 
-        if self._refresh_result == "IN_PROGRESS":
-            if not self._has_queued_work() and not self.submitted_segments and self._refresh_state.get("thread") is not None:
+        if self._refresh_result is RefreshOutcome.IN_PROGRESS:
+            if not self._has_queued_work() and not self.submitted_segments:
                 # Wait up to 0.5 seconds if there's no work, to prevent excessive loop processing
-                self._refresh_state.get("thread").join(0.5)
+                self._background_refresh.wait(0.5)
             return LoopAction.PROCEED
 
         if self.is_private and (self._has_queued_work() or self._exhausted):
@@ -1822,10 +1852,10 @@ class DownloadStream(StreamDownloaderBase):
             elif self.is_members_error:
                 self.logger.debug("Video turned members only, not accessible and no more segments are available. Ending...")
                 return LoopAction.BREAK
-            elif refresh is False:
+            elif refresh is RefreshOutcome.ENDED:
                 self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
                 return LoopAction.BREAK
-            elif refresh is True:
+            elif refresh is RefreshOutcome.NEW_MANIFEST:
                 self.logger.info(self.new_manifest_message)
                 return LoopAction.BREAK
             elif previous_url != self.stream_url:
@@ -1843,14 +1873,14 @@ class DownloadStream(StreamDownloaderBase):
         self.logger.warning("All remaining segments have exceeded the retry threshold, attempting URL refresh...")
         previous_url = self.stream_url
         refresh = self.refresh_url(ignore_no_formats=True)
-        if refresh is True:
+        if refresh is RefreshOutcome.NEW_MANIFEST:
             self.logger.info(self.new_manifest_message)
             return LoopAction.BREAK
         if previous_url != self.stream_url:
             # If stream URL has changed, refresh retry count and continue
             self._reset_retries("New stream URL detected")
             return LoopAction.CONTINUE
-        if self.is_private or refresh is False or self.is_members_error:
+        if self.is_private or refresh is RefreshOutcome.ENDED or self.is_members_error:
             if self.future_to_seg:
                 # Let in-flight requests finish first
                 return LoopAction.PROCEED
@@ -2148,7 +2178,7 @@ class StreamRecovery(StreamDownloaderBase):
         if seg is None:
             return
         self._order_dirty = True
-        data = result[1] if result is not None else None
+        data = result.data if result is not None else None
         if data is not None:
             self.store.add(seg, data)
             self.segments_retries.pop(seg, None)
