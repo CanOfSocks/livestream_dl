@@ -490,6 +490,20 @@ class MonitorCacheTests(unittest.TestCase):
         self.assertFalse(cache.should_skip("c", now=now))
         self.assertFalse(cache.should_skip("a", now=now), "oldest entry evicted when full")
 
+    def test_video_extraction_options(self):
+        playlist_opts = {'extract_flat': True, 'playlist_items': '1-10', 'quiet': True, 'cookiefile': 'c.txt'}
+        opts = monitor_channel._video_ydl_opts(playlist_opts)
+        self.assertNotIn('extract_flat', opts)
+        self.assertNotIn('playlist_items', opts)
+        self.assertTrue(opts['ignore_no_formats_error'], "upcoming/late streams must not raise for missing formats")
+        self.assertEqual(opts['cookiefile'], 'c.txt')
+        self.assertTrue(playlist_opts['extract_flat'], "playlist options are not modified")
+
+    def test_late_upcoming_stream_is_downloaded(self):
+        # A stream past its scheduled start ("will begin in a few moments") is still is_upcoming
+        late = {'live_status': 'is_upcoming', 'release_timestamp': 1_000_000}
+        self.assertTrue(monitor_channel._should_download(late, 24))
+
     def test_lookahead_option(self):
         self.assertEqual(monitor_channel._lookahead_hours({"upcoming_lookahead": 5}), 5)
         self.assertEqual(monitor_channel._lookahead_hours({}), 24)

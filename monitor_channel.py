@@ -137,7 +137,7 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
         ydl_opts['proxy'] = ytdlp_proxy
 
     try:
-        with YoutubeDL(ydl_opts) as ydl:
+        with YoutubeDL(ydl_opts) as ydl, YoutubeDL(_video_ydl_opts(ydl_opts)) as video_ydl:
             url = _playlist_url(channel_id, tab, options)
             # extract_flat: only the playlist page is fetched, entries are not extracted individually
             info = ydl.extract_info(url, download=False) or {}
@@ -148,7 +148,7 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
                     continue
                 if video.get('id') in skip:
                     continue
-                video = _with_live_status(ydl, video, cache, lookahead, logger)
+                video = _with_live_status(video_ydl, video, cache, lookahead, logger)
                 if video is not None and _should_download(video, lookahead):
                     logger.debug(f"({video.get('id')}) live_status = {video.get('live_status')}")
                     logger.debug(json.dumps(video, default=str))
@@ -158,6 +158,18 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
     except Exception:
         logger.exception("An unexpected error occurred when trying to fetch videos")
         raise
+
+
+def _video_ydl_opts(playlist_opts: dict) -> dict:
+    """
+    Options for extracting a single video found in the playlist. Not flat, and with
+    ignore_no_formats_error so an upcoming stream (including one that is late, "This live event
+    will begin in a few moments") returns its info (live_status / release_timestamp) instead of
+    raising because it has no formats yet.
+    """
+    opts = {k: v for k, v in playlist_opts.items() if k not in ('extract_flat', 'playlist_items')}
+    opts['ignore_no_formats_error'] = True
+    return opts
 
 
 def _with_live_status(ydl: YoutubeDL, video: dict, cache: VideoStatusCache, lookahead: float, logger) -> Optional[dict]:
