@@ -3109,7 +3109,9 @@ class LiveStreamDownloader:
             chat_url = f"https://www.youtube.com/watch?v={info_dict.get('id')}"
             self.logger.debug("Attempting to download with chat downloader")
             chat_download = ChatDownloader(cookies=options.get('cookies', None), proxy=proxy)
-            chat = chat_download.get_chat(chat_url, output=livechat_filename, overwrite=False)
+            # interruptible_retry=False: otherwise chat-downloader waits between retries by polling
+            # stdin for "press Enter", which raises PermissionError when stdin is /dev/null (Docker).
+            chat = chat_download.get_chat(chat_url, output=livechat_filename, overwrite=False, interruptible_retry=False)
             # chat-downloader writes each message to the file as it is iterated. These stop/timeout
             # checks only run when a message arrives, so the coordinator also enforces the timeout
             # independently (see _wait_for_live_chat).
