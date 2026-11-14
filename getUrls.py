@@ -152,7 +152,7 @@ def parse_wait(string: str) -> tuple[int, Optional[int]]:
 # --- URL helpers ---
 
 # YouTube video IDs are 11 characters from the URL-safe base64 alphabet
-_VIDEO_ID_RE = re.compile(r'^[0-9A-Za-z_-]{11}$')
+_VIDEO_ID_RE = re.compile(r'^[0-9A-Za-z_-]{10}[048AEIMQUYcgkosw]$')
 _YOUTUBE_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
     "youtube-nocookie.com", "www.youtube-nocookie.com",
