@@ -235,17 +235,16 @@ def get_Video_Info(
     """
     Extract video info with yt-dlp. Returns ``(info_dict, live_status)``.
     Raises one of the custom exceptions above for well-known failure states.
+
+    wait: how long to wait for an upcoming stream to start, see _wait_for_video_option.
+    additional_options / kwargs: extra yt-dlp options (they override the defaults below).
+    return_format / sort: unused, kept for compatibility with older callers.
     """
-    # Setup Logger
     if logger is None:
         logger = logging.getLogger()
-
     url = normalize_video_url(str(id))
+    extraction_logger = ExtractionLogger(logger=logger, wait=True)
 
-    # Initialize custom logger with the passed retry limit
-    yt_dlpLogger = ExtractionLogger(logger=logger, wait=True)
-
-    # Base Options
     ydl_opts: dict[str, Any] = {
         'retries': 10,  # Socket retries
         'skip_download': True,
@@ -253,71 +252,86 @@ def get_Video_Info(
         'writesubtitles': True,
         'subtitlesformat': 'json',
         'subtitleslangs': ['live_chat'],
-        'logger': yt_dlpLogger,
+        'logger': extraction_logger,
         'ignore_no_formats_error': ignore_no_formats,
     }
+    wait_for_video = _wait_for_video_option(wait)
+    if wait_for_video is not None:
+        ydl_opts['wait_for_video'] = wait_for_video
+    # The logger treats some warnings differently while yt-dlp waits for a stream to start
+    extraction_logger.wait = bool(ydl_opts.get("wait_for_video", None))
 
-    # Handle Wait Logic. yt-dlp expects wait_for_video as a (min, max) tuple; max may be None.
-    if isinstance(wait, tuple):
-        if not (0 < len(wait) <= 2):
-            raise ValueError("Wait tuple must contain 1 or 2 values")
-        # A single value tuple previously produced a bare int here, which yt-dlp cannot unpack
-        ydl_opts['wait_for_video'] = (wait[0], wait[1] if len(wait) >= 2 else None)
-    elif isinstance(wait, bool):
-        # bool must be checked before int as bool is a subclass of int
-        if wait is True:
-            ydl_opts['wait_for_video'] = (5, 300)
-    elif isinstance(wait, int):
-        ydl_opts['wait_for_video'] = (wait, None)
-    elif isinstance(wait, str):
-        ydl_opts['wait_for_video'] = parse_wait(wait)
-
-    yt_dlpLogger.wait = True if ydl_opts.get("wait_for_video", None) else False
-
-    # Handle Options Merging. Deep copy so the caller's options (which are reused for every URL
-    # refresh) are never mutated - previously the extractor_args skip list grew on every call.
+    # Deep copy so the caller's options (which are reused for every URL refresh) are never
+    # mutated - previously the extractor_args skip list grew on every call.
     merged_additional = copy.deepcopy(additional_options) if additional_options else {}
     merged_additional.update(kwargs)
     if merged_additional:
         ydl_opts.update(merged_additional)
 
-    # Handle Proxy
     ytdlp_proxy = proxy_for_ytdlp(proxy)
     if ytdlp_proxy:
         ydl_opts['proxy'] = ytdlp_proxy
+    _set_youtube_format_args(ydl_opts, include_dash=include_dash, include_m3u8=include_m3u8)
 
-    # Handle Formats
+    # wait=False always disables waiting, even if the additional options asked for it
+    if wait is False:
+        ydl_opts['wait_for_video'] = None
+
+    return _extract_live_info(ydl_opts, url, id, clean_info_dict)
+
+
+def _wait_for_video_option(wait: Union[bool, int, tuple, str, None]) -> Optional[tuple]:
+    """
+    Convert the `wait` argument into yt-dlp's wait_for_video option, a (min, max) tuple of
+    seconds where max may be None. Returns None if yt-dlp should not wait.
+
+        True -> (5, 300)    False -> None    600 -> (600, None)
+        (60,) -> (60, None) (60, 300) -> (60, 300)    "60-300" -> parse_wait("60-300")
+    """
+    if isinstance(wait, tuple):
+        if not (0 < len(wait) <= 2):
+            raise ValueError("Wait tuple must contain 1 or 2 values")
+        # A single value tuple previously produced a bare int here, which yt-dlp cannot unpack
+        return (wait[0], wait[1] if len(wait) >= 2 else None)
+    # bool must be checked before int as bool is a subclass of int
+    if isinstance(wait, bool):
+        return (5, 300) if wait else None
+    if isinstance(wait, int):
+        return (wait, None)
+    if isinstance(wait, str):
+        return parse_wait(wait)
+    return None
+
+
+def _set_youtube_format_args(ydl_opts: dict, include_dash: bool, include_m3u8: bool) -> None:
+    """Ask the YouTube extractor for incomplete (live) formats and skip DASH / HLS unless wanted."""
     youtube_args: dict = ydl_opts.setdefault("extractor_args", {}).setdefault("youtube", {})
     youtube_args.update({"formats": ["incomplete", "duplicate"]})
-
     skip_list: list = youtube_args.setdefault("skip", [])
     if not include_dash and "dash" not in skip_list:
         skip_list.append("dash")
     if not include_m3u8 and "hls" not in skip_list:
         skip_list.append("hls")
 
-    if wait is False:
-        ydl_opts['wait_for_video'] = None
 
+def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool) -> tuple[dict[str, Any], str]:
+    """Run the yt-dlp extraction. Only upcoming, live and post-live (unprocessed) videos are accepted."""
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
+            # Lets the Ctrl+C handler in runner.py interrupt yt-dlp (see extraction_event)
             extraction_event.set()
-            # extract_info is main entry point
             info_dict = ydl.extract_info(url, download=False)
             extraction_event.clear()
 
-            # 2. Success Processing
             info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
 
             # Cleanup fragments if present (can be very large for post_live DASH formats)
             for stream_format in info_dict.get('formats', []) or []:
                 stream_format.pop('fragments', None)
 
-            # Check live status
             live_status = info_dict.get('live_status')
             if live_status not in ['is_upcoming', 'is_live', 'post_live']:
                 raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
-
             return info_dict, live_status
 
         except yt_dlp.utils.DownloadError as e:
@@ -328,7 +342,6 @@ def get_Video_Info(
             raise classified from e
         finally:
             extraction_event.clear()
-
 
 def _classify_download_error(e: Exception, id: str) -> Exception:
     """Map a yt-dlp DownloadError message to one of the custom exceptions (order matters)."""

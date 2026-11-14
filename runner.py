@@ -1,225 +1,286 @@
-import socket
+"""
+Command line entry point.
+
+    python runner.py <video URL or ID> [options]               download one livestream
+    python runner.py --monitor-channel <channel> [options]     watch a channel, download each stream
+
+main() downloads one video; monitor_channel() runs main() in a new thread for each stream it finds.
+"""
 import argparse
+import copy
+import json
+import logging
+import platform
+import re
+import shlex
+import signal
+import socket
+import sys
+import threading
+from pathlib import Path
+from time import sleep, time
+from urllib.parse import urlparse
+
 try:
     import getUrls
     import download_Live
     import YoutubeURL
-except ModuleNotFoundError as e:
+except ModuleNotFoundError:
     from . import getUrls
     from . import download_Live
     from . import YoutubeURL
-#import ast
-import json
 
-
-import threading
+# Set on Ctrl+C / SIGTERM: stops every download started by this process
 kill_all = threading.Event()
 
-import signal
-from time import sleep, time
-import platform
+
+# ==============================================================================================
+# Signal handling
+# ==============================================================================================
 
 # Preserve original keyboard interrupt logic as true behaviour is known
 original_sigint = signal.getsignal(signal.SIGINT)
 
+
 def handle_shutdown(signum, frame):
+    # While yt-dlp is extracting (it may be waiting for a stream to start), Ctrl+C only interrupts
+    # yt-dlp through the original handler instead of stopping all downloads
     if not getUrls.extraction_event.is_set():
         kill_all.set()
     sleep(0.5)
     if callable(original_sigint):
         original_sigint(signum, frame)
 
-# common
-signal.signal(signal.SIGINT, handle_shutdown)
 
+signal.signal(signal.SIGINT, handle_shutdown)
 if platform.system() == "Windows":
-    # SIGTERM won’t fire — but SIGBREAK will on Ctrl-Break
+    # SIGTERM won't fire on Windows, but SIGBREAK will on Ctrl+Break
     signal.signal(signal.SIGBREAK, handle_shutdown)
 else:
-    # normal POSIX termination
     signal.signal(signal.SIGTERM, handle_shutdown)
 
+
+# ==============================================================================================
+# Network helpers
+# ==============================================================================================
+
 _original_getaddrinfo = socket.getaddrinfo
+
 
 def force_ipv4():
     """Modify getaddrinfo to use only IPv4."""
     def ipv4_getaddrinfo(host, port, family=socket.AF_INET, *args, **kwargs):
         return _original_getaddrinfo(host, port, socket.AF_INET, *args, **kwargs)
-    
+
     socket.getaddrinfo = ipv4_getaddrinfo
+
 
 def force_ipv6():
     """Modify getaddrinfo to use only IPv6."""
     def ipv6_getaddrinfo(host, port, family=socket.AF_INET6, *args, **kwargs):
         return _original_getaddrinfo(host, port, socket.AF_INET6, *args, **kwargs)
-    
+
     socket.getaddrinfo = ipv6_getaddrinfo
 
-def process_proxies(proxy_string):
-    
-    if proxy_string is None:
-        return None
-    if proxy_string == "":
-        return {
-            "http": None, 
-            "https": None
-        }
-    
-    proxy_string = str(proxy_string)
-    if proxy_string.startswith('{'):
-        return json.loads(proxy_string)
-    
-    from urllib.parse import urlparse
-    parsed = urlparse(proxy_string)
-    
-    # Extract components
-    scheme = parsed.scheme  # socks5
-    username = parsed.username  # user
-    password = parsed.password  # pass
-    hostname = parsed.hostname  # 127.0.0.1
-    port = parsed.port  # 1080
-    
-    auth = f"{username}:{password}@" if username and password else ""
-    
-    # Adjust scheme for SOCKS
-    if scheme.startswith("socks") and not scheme.startswith("socks5h"):
-        scheme += "h"  # Ensure DNS resolution via proxy
-        
-    # Construct final proxy string
-    proxy_address = f"{scheme}://{auth}{hostname}:{port}"
-    
-    return {
-        "https": proxy_address,
-        "http": proxy_address,        
-    }
 
 def httpx_proxy(proxy_string: str):
+    """--proxy value: a single proxy URL string, or a JSON object of httpx proxy mounts (returned as a dict)."""
     if not proxy_string:
         return None
     proxy_string = proxy_string.strip()
     if proxy_string.startswith('{'):
         try:
             return json.loads(proxy_string)
-        except Exception as e:
+        except Exception:
             raise ValueError("Input is not valid JSON string")
-    else:
-        return proxy_string
+    return proxy_string
 
-def main(id, resolution='bv+ba/best', options: dict = None, info_dict=None, thread_kill: threading.Event = kill_all):
-    options = options if options is not None else {}
-    file_options = {}
-    if options.get("log_rotate_when"):
-        file_options = {
-            "when": options.get("log_rotate_when"),
-            "interval": options.get("log_rotate_interval", 1),
-            "backupCount": options.get("log_backup_count", 30)
+
+def process_proxies(proxy_string):
+    """requests-style {"http": ..., "https": ...} proxy mapping. Not used by livestream_dl itself."""
+    if proxy_string is None:
+        return None
+    if proxy_string == "":
+        return {
+            "http": None,
+            "https": None
         }
-    # Log with the bare video ID even if a URL was given
-    log_id = getUrls.extract_video_id(id) or id
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=log_id, redact_ips=options.get("redact_ips", False), file_options=file_options)
 
-    if options.get("cookies", None):
-        from pathlib import Path
-        if not Path(options.get("cookies")).exists():
-            logger.warning("Cookie file does not exist. Check --cookies option")
-    # Initialise yt-dlp logger
-    #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
-    
-    # Convert additional options to dictionary, if it exists (it may already be a dict when
-    # called from the channel monitor, which deep copies already parsed options)
+    proxy_string = str(proxy_string)
+    if proxy_string.startswith('{'):
+        return json.loads(proxy_string)
+
+    parsed = urlparse(proxy_string)
+    scheme = parsed.scheme  # socks5
+    username = parsed.username  # user
+    password = parsed.password  # pass
+    hostname = parsed.hostname  # 127.0.0.1
+    port = parsed.port  # 1080
+
+    auth = f"{username}:{password}@" if username and password else ""
+
+    # Adjust scheme for SOCKS
+    if scheme.startswith("socks") and not scheme.startswith("socks5h"):
+        scheme += "h"  # Ensure DNS resolution via proxy
+
+    proxy_address = f"{scheme}://{auth}{hostname}:{port}"
+    return {
+        "https": proxy_address,
+        "http": proxy_address,
+    }
+
+
+# ==============================================================================================
+# Downloading
+# ==============================================================================================
+
+def _log_file_options(options: dict) -> dict:
+    """Log rotation settings for setup_logging (empty = no rotation)."""
+    if not options.get("log_rotate_when"):
+        return {}
+    return {
+        "when": options.get("log_rotate_when"),
+        "interval": options.get("log_rotate_interval", 1),
+        "backupCount": options.get("log_backup_count", 30)
+    }
+
+
+def _warn_if_cookie_file_missing(options: dict, logger) -> None:
+    if options.get("cookies", None) and not Path(options.get("cookies")).exists():
+        logger.warning("Cookie file does not exist. Check --cookies option")
+
+
+def _load_ytdlp_options(options: dict, logger) -> None:
+    """Turn --ytdlp-options (JSON) and --ytdlp-command-line-options into the options['ytdlp_options'] dict."""
+    # It may already be a dict when called from the channel monitor, which deep copies already parsed options
     if isinstance(options.get('ytdlp_options', None), str):
-        print(f"JSON for ytdlp_options: {options.get('ytdlp_options', None)}")
+        logger.debug(f"JSON for ytdlp_options: {options.get('ytdlp_options', None)}")
         options['ytdlp_options'] = json.loads(options.get('ytdlp_options'))
     elif options.get('ytdlp_options', None) is None:
         options['ytdlp_options'] = {}
-    
+
     if options.get("ytdlp_command_line_options"):
-        import shlex
-        options.setdefault('ytdlp_options', {}).update(getUrls.cli_to_ytdlp_options(shlex.split(options.get("ytdlp_command_line_options", ""))))
+        cli_options = getUrls.cli_to_ytdlp_options(shlex.split(options.get("ytdlp_command_line_options", "")))
+        options.setdefault('ytdlp_options', {}).update(cli_options)
+
+
+def main(id, resolution='bv+ba/best', options: dict = None, info_dict=None, thread_kill: threading.Event = kill_all):
+    """
+    Download one video. `id` is a video URL or ID. If `info_dict` is given (or --json-file is set)
+    the yt-dlp extraction is skipped. Setting `thread_kill` stops the download.
+    """
+    options = options if options is not None else {}
+    # Log with the bare video ID even if a URL was given
+    log_id = getUrls.extract_video_id(id) or id
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True),
+                                         file=options.get('log_file', None), logger_name="Live-DL Downloader", video_id=log_id,
+                                         redact_ips=options.get("redact_ips", False), file_options=_log_file_options(options))
+    _warn_if_cookie_file_missing(options, logger)
+    _load_ytdlp_options(options, logger)
 
     if options.get('json_file', None) is not None:
         with open(options.get('json_file'), 'r', encoding='utf-8') as file:
             info_dict = json.load(file)
-    elif info_dict:
-        pass
-    else:        
-        info_dict, live_status = getUrls.get_Video_Info(id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None), proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False), include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)), logger=logger, clean_info_dict=options.get('clean_info_json', False))
+    elif not info_dict:
+        info_dict, _live_status = getUrls.get_Video_Info(
+            id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None),
+            proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False),
+            include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)), logger=logger,
+            clean_info_dict=options.get('clean_info_json', False))
     downloader = download_Live.LiveStreamDownloader(kill_all=kill_all, logger=logger)
     downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
 
-def monitor_channel(options: dict = None):
-    import copy
-    options = options if options is not None else {}
-    file_options = {}
-    if options.get("log_rotate_when"):
-        file_options = {
-            "when": options.get("log_rotate_when"),
-            "interval": options.get("log_rotate_interval", 1),
-            "backupCount": options.get("log_backup_count", 30)
-        }
-    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), logger_name="Monitor", redact_ips=options.get("redact_ips", False), file_options=file_options)
-    #download_Live.setup_logging(log_level=options.get('ytdlp_log_level', logger.getEffectiveLevel()), console=(not options.get('no_console', False)), file=options.get('log_file', None), file_options=options.get("log_file_options",{}), logger_name="yt-dlp", video_id=options.get("ID"), metadata={"log_type", "default"})
-    if options.get("cookies", None):
-        from pathlib import Path
-        if not Path(options.get("cookies")).exists():
-            logger.warning("Cookie file does not exist. Check --cookies option")
+
+# ==============================================================================================
+# Channel monitor
+# ==============================================================================================
+
+def _import_channel_monitor():
     try:
-        import monitor_channel
+        import monitor_channel as channel_monitor
     except ModuleNotFoundError:
-        from . import monitor_channel
-    from typing import Dict
-    threads: Dict[str, threading.Thread] = {}
-    last_check = time()
-    channel_id: str = options.get("ID")
+        from . import monitor_channel as channel_monitor
+    return channel_monitor
+
+
+def monitor_channel(options: dict = None):
+    """Watch a channel and start a download thread (main) for every upcoming or live stream. Runs forever."""
+    options = options if options is not None else {}
+    logger = download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True),
+                                         file=options.get('log_file', None), logger_name="Monitor",
+                                         redact_ips=options.get("redact_ips", False), file_options=_log_file_options(options))
+    _warn_if_cookie_file_missing(options, logger)
+    channel_monitor = _import_channel_monitor()
+
     tab = "membership" if options.get("members_only", False) else "streams"
     if not options.get("wait_for_video", None):
         options["wait_for_video"] = (60, None)
+    # Seconds between channel checks: the largest number in --wait-for-video (300 if there is none)
     wait = max((num for num in options.get("wait_for_video", []) if isinstance(num, (int, float))), default=300)
-    while not channel_id.startswith("UC"):
-        new_channel_id = monitor_channel.resolve_channel(channel_id) or ""
-        logger.debug(f"Found channel ID: {new_channel_id}")
-        # Break if resolved and start search
-        if new_channel_id.startswith("UC"):
-            channel_id = new_channel_id
-            logger.debug(f"Found channel ID: {channel_id}")
-            break
-        time_to_next = max(wait-(time()-last_check),1)
-        logger.debug(f"Sleeping for {time_to_next:.2f}s for next URL resolve attempt")
-        sleep(time_to_next)
-        last_check=time()
+    channel_id = _resolve_channel_id(options.get("ID"), wait, logger, channel_monitor)
 
     logger.debug(f"Starting runner for channel: '{channel_id}' on tab: '{tab}'")
+    threads: dict[str, threading.Thread] = {}
+    last_check = time()
     while True:
-        for id, thread in list(threads.items()):
+        # Forget downloads that have finished
+        for video_id, thread in list(threads.items()):
             if not thread.is_alive():
-                threads.pop(id)
+                threads.pop(video_id)
         logger.debug(f"Searching for streams for channel {channel_id}")
         try:
-            # Videos already being downloaded are skipped so they aren't extracted again
-            videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options, logger=logger, skip_ids=threads.keys())
-            for video_id in videos_to_get:
-                if threads.get(video_id, None) is not None:
-                    continue
-                video_options = copy.deepcopy(options)
-                t = threading.Thread(
-                    target=main,
-                    args=(video_id,),
-                    kwargs={
-                        'resolution': video_options.get("resolution"),
-                        'options': video_options,
-                        'thread_kill': kill_all
-                    },
-                    daemon=True
-                )
-                t.start()
-                threads[video_id] = t  # store the thread in a dictionary
-        except Exception as e:
+            _start_downloads_for_new_streams(channel_monitor, channel_id, tab, options, logger, threads)
+        except Exception:
             logger.exception("An error occurred fetching upcoming streams")
-        time_to_next = max(wait-(time()-last_check),1)
+        time_to_next = max(wait - (time() - last_check), 1)
         logger.debug(f"Active threads: {list(threads.keys())}")
         logger.debug(f"Sleeping for {time_to_next:.2f}s for next stream check")
         sleep(time_to_next)
-        last_check=time()
+        last_check = time()
+
+
+def _resolve_channel_id(channel: str, wait: float, logger, channel_monitor) -> str:
+    """Turn a channel URL or handle into its channel ID (UC...), retrying every `wait` seconds until it resolves."""
+    last_check = time()
+    while not channel.startswith("UC"):
+        new_channel_id = channel_monitor.resolve_channel(channel) or ""
+        logger.debug(f"Found channel ID: {new_channel_id}")
+        if new_channel_id.startswith("UC"):
+            return new_channel_id
+        time_to_next = max(wait - (time() - last_check), 1)
+        logger.debug(f"Sleeping for {time_to_next:.2f}s for next URL resolve attempt")
+        sleep(time_to_next)
+        last_check = time()
+    return channel
+
+
+def _start_downloads_for_new_streams(channel_monitor, channel_id: str, tab: str, options: dict, logger,
+                                     threads: dict[str, threading.Thread]) -> None:
+    # Videos already being downloaded are skipped so they aren't extracted again
+    videos_to_get = channel_monitor.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options,
+                                                                logger=logger, skip_ids=threads.keys())
+    for video_id in videos_to_get:
+        if threads.get(video_id, None) is not None:
+            continue
+        # Each download gets its own copy, as main() modifies its options
+        video_options = copy.deepcopy(options)
+        thread = threading.Thread(
+            target=main,
+            args=(video_id,),
+            kwargs={
+                'resolution': video_options.get("resolution"),
+                'options': video_options,
+                'thread_kill': kill_all
+            },
+            daemon=True
+        )
+        thread.start()
+        threads[video_id] = thread
+
+
+# ==============================================================================================
+# Command line
+# ==============================================================================================
 
 def parse_time_to_seconds(time_str):
     """
@@ -255,7 +316,6 @@ def join_negative_option_values(argv: list[str]) -> list[str]:
     argparse treats a value such as '-10:00' as an unknown option. Rewrite
     ['--start-time', '-10:00'] into ['--start-time=-10:00'] so it parses as a value.
     """
-    import re
     result: list[str] = []
     i = 0
     while i < len(argv):
@@ -277,9 +337,6 @@ def validate_time_window(start_time, end_time) -> None:
         raise argparse.ArgumentTypeError("--end-time must be after --start-time")
 
 
-
-import argparse
-
 class VerboseHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
     """
     Formatter that:
@@ -293,7 +350,7 @@ class VerboseHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
         if action.type and hasattr(action.type, '__name__'):
             type_name = action.type.__name__
             help_text += f" (type: {type_name})"
-        
+
         # 2. Handle the Default info (Logic from ArgumentDefaultsHelpFormatter)
         # We only append the default if it's NOT None and NOT suppressed
         if action.default is not argparse.SUPPRESS and action.default is not None:
@@ -301,55 +358,55 @@ class VerboseHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
             # to ensure the formatting stays consistent.
             if '%(default)' not in help_text:
                 help_text += ' (default: %(default)s)'
-                
+
         return help_text
-    
-if __name__ == "__main__":
-    # Create the parser
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Download YouTube livestreams (https://github.com/CanOfSocks/livestream_dl)", formatter_class=VerboseHelpFormatter)
 
     parser.add_argument('ID', type=str, nargs='?', default=None, help='The video URL or ID')
-    
+
     parser.add_argument('--resolution', type=str, default=None, dest='resolution', help="""Resolution selection criteria. Based off yt-dlp's format selection: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#format-selection. A value of "bv+ba/best" is recommended for most people.""")
-    
+
     parser.add_argument('--custom-sort', type=str, default=None, help="Custom sorting algorithm for formats based off yt-dlp's format sorting: https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#sorting-formats")
-    
+
     parser.add_argument('--threads', type=int, default=2, help="Number of download threads per format. This will be 2x for an video and audio download.")
-    
+
     parser.add_argument('--batch-size', type=int, default=5, help="Number of segments before the temporary database is committed to disk. This is useful for reducing disk access instances.")
-    
+
     parser.add_argument('--segment-retries', type=int, default=10, help="Number of times to retry grabbing a segment.")
 
     parser.add_argument('--disable-graceful-shutdown', action='store_true', help="Disable graceful shutdown for downloader. Useful for testing when you don't want merging to be triggered on a keyboard interrupt.")
-    
+
     parser.add_argument('--no-merge', action='store_false', dest='merge', help="Don't merge video using ffmpeg")
 
     parser.add_argument('--merge', action='store_true', dest='merge', help="Merge video using ffmpeg, overrides --no-merge")
-    
+
     parser.add_argument('--cookies', type=str, default=None, help="Path to cookies file")
-    
+
     parser.add_argument('--output', type=str, default="%(fulltitle)s (%(id)s)", help="Path/file name for output files. Supports yt-dlp output formatting")
 
     parser.add_argument('--ext', type=str, default=None, help="Force extension of video file. E.g. '.mp4'")
 
-    parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files. Supports yt-dlp output formatting")    
-    
+    parser.add_argument('--temp-folder', type=str, default=None, dest='temp_folder', help="Path for temporary files. Supports yt-dlp output formatting")
+
     parser.add_argument('--write-thumbnail', action='store_true', help="Write thumbnail to file")
-    
+
     parser.add_argument('--embed-thumbnail', action='store_true', help="Embed thumbnail into final file. Ignored if --no-merge is used")
-    
+
     parser.add_argument('--write-info-json', action='store_true', help="Write info.json to file")
-    
+
     parser.add_argument('--write-description', action='store_true', help="Write description to file")
-    
+
     parser.add_argument('--keep-temp-files', action='store_true', help="Keep all temp files i.e. database and/or ts files")
-    
+
     parser.add_argument('--keep-ts-files', action='store_true', help="Keep all ts files")
-    
+
     parser.add_argument('--live-chat', action='store_true', help="Get Live chat")
-    
+
     parser.add_argument('--keep-database-file', action='store_true', help="Keep database file. If using with --direct-to-ts, this keeps the state file")
-    
+
     parser.add_argument('--recovery', action='store_true', help="Puts downloader into stream recovery mode")
 
     parser.add_argument('--force-recover-merge', action='store_true', help="Forces merging to final file even if all segements could not be recovered")
@@ -357,28 +414,28 @@ if __name__ == "__main__":
     parser.add_argument('--recovery-failure-tolerance', type=int, default=0, help="Maximum number of fragments that fail to download (exceed the retry limit) and not throw an error. May cause unexpected issues when merging to .ts file and remuxing.")
 
     parser.add_argument('--wait-limit', type=int, default=1800, help="Set maximum number of wait intervals for new segments. Each wait interval is ~10s (e.g. a value of 20 would be 200s). A mimimum of value of 20 is recommended. Stream URLs are refreshed every 10 intervals. A value of 0 wait until the video moves into 'was_live' or 'post_live' status.")
-    
+
     parser.add_argument('--database-in-memory', action='store_true', help="Keep stream segments database in memory. Requires a lot of RAM (Not recommended)")
-    
+
     parser.add_argument('--direct-to-ts', action='store_true', help="Write directly to ts file instead of database. May use more RAM if a segment is slow to download. This overwrites most database options")
-    
+
     parser.add_argument("--wait-for-video", type=getUrls.parse_wait, default=None, help="Wait time (int) or Minimum and maximum (min:max) interval to wait for a video")
-    
+
     parser.add_argument('--json-file', type=str, default=None, help="Path to existing yt-dlp info.json file. Overrides ID and skips retrieving URLs")
-    
+
     parser.add_argument('--remove-ip-from-json', action='store_true', help="Replaces IP entries in info.json with 0.0.0.0")
-    
+
     parser.add_argument('--clean-urls', action='store_true', help="Removes stream URLs from info.json that contain potentially identifiable information. These URLs are usually useless once they have expired")
 
     parser.add_argument('--clean-info-json', action='store_true', help="Enables yt-dlp's 'clean-info-json' option")
-    
-    parser.add_argument("--log-level", type=str, 
+
+    parser.add_argument("--log-level", type=str,
                         choices=["DEBUG", "VERBOSE", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         default="INFO",
                         help="Set the logging level. Default is INFO. Verbose logging is a custom level that includes the INFO logs of yt-dlp.")
-    
+
     parser.add_argument("--no-console", action="store_false", help="Do not log messages to the console.")
-    
+
     parser.add_argument("--log-file", type=str, help="Path to the log file where messages will be saved.")
 
     parser.add_argument("--log-rotate-when", type=str, default=None, help="Type of interval for log rotation (S, M, H, D, midnight, W0-W6). If not set, rotation is disabled.")
@@ -388,9 +445,9 @@ if __name__ == "__main__":
     parser.add_argument('--redact-ips', action='store_true', help="Remove IP addresses from logs. Warning: May be imperfect, so check logs to make sure IP information has been redacted.")
 
     parser.add_argument('--write-ffmpeg-command', action='store_true', help="Writes FFmpeg command to a txt file")
-    
+
     parser.add_argument('--stats-as-json', action='store_true', help="Prints stats as a JSON formatted string. Bypasses logging and prints regardless of log level")
-    
+
     parser.add_argument('--ytdlp-options', type=str, default=None, help="""Additional yt-dlp options as a JSON string. Overwrites any options that are already defined by other options. Available options: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py#L183. E.g. '{"extractor_args": {"youtube": {"player_client": ["web_creator"]}, "youtubepot-bgutilhttp":{ "base_url": ["http://10.1.1.40:4416"]}}}' if you have installed the potoken plugin""")
 
     parser.add_argument('--ytdlp-log-level', type=str, choices=["DEBUG", "VERBOSE", "INFO", "WARNING", "ERROR", "CRITICAL"], default=None, help="### NOT IMPLEMENTED ### Optional alternative log level for yt-dlp module tasks (such as video extraction or format selection). Uses main logger if not set")
@@ -406,9 +463,9 @@ if __name__ == "__main__":
     ip_group = parser.add_mutually_exclusive_group()
     ip_group.add_argument("--ipv4", action="store_true", help="Force IPv4 only")
     ip_group.add_argument("--ipv6", action="store_true", help="Force IPv6 only")
-    
+
     parser.add_argument("--stop-chat-when-done", type=int, default=300, help="Wait a maximum of X seconds after a stream is finished to download live chat. This is useful if waiting for chat to end causes hanging. The chat downloaded so far is kept.")
-    
+
     parser.add_argument('--new-line', action='store_true', help="Console messages always print to new line. (Currently only ensured for stats output)")
 
     parser.add_argument('--ytdlp-command-line-options', type=str, default=None, help='Pass yt-dlp command line options. This must be passed as a single string, recommended --ytdlp-command-line-options="options..." e.g. --ytdlp-command-line-options="--cookies-from-browser firefox" . Only currently works for yt-dlp extractor. Requires https://github.com/yt-dlp/yt-dlp/blob/master/devscripts/cli_to_api.py to be available. (EXPERIMENTAL)')
@@ -434,10 +491,14 @@ if __name__ == "__main__":
     monitor_group.add_argument('--upcoming-lookahead', type=int, default=24, help="Maximum time (in hours) to start a downloader instance for a video.")
 
     monitor_group.add_argument('--playlist-items', type=int, default=10, help="Maximum number of playlist items to check.")
-    
-    # Parse the arguments
-    import sys
-    args = parser.parse_args(join_negative_option_values(sys.argv[1:]))
+
+    return parser
+
+
+def parse_options(argv: list[str]) -> dict:
+    """Parse and validate the command line into the options dict used by main() and monitor_channel()."""
+    parser = build_parser()
+    args = parser.parse_args(join_negative_option_values(argv))
     try:
         validate_time_window(args.start_time, args.end_time)
     except argparse.ArgumentTypeError as e:
@@ -448,58 +509,52 @@ if __name__ == "__main__":
         args.proxy = httpx_proxy(args.proxy)
     except ValueError as e:
         parser.error(f"--proxy: {e}")
+    return vars(args)
 
-    if args.ipv4:
-        force_ipv4()
-    elif args.ipv6:
-        force_ipv6() 
 
-    # Access the 'ID' value
-    options: dict = vars(args)
-    
+def _prompt_for_missing_options(options: dict) -> None:
+    """Ask for the video and resolution if they weren't given on the command line."""
     if options.get('ID', None) is None and options.get('json_file', None) is None:
         options['ID'] = str(input("Please enter a video URL: ")).strip()
 
     if options.get('resolution', None) is None and (options.get('video_format', None) is None or options.get('audio_format', None) is None):
         resolution_input = str(input("Please enter resolution (default: bv+ba/best): ")).strip()
         options['resolution'] = resolution_input or "bv+ba/best"
-        
-    id = options.get('ID')
-    resolution = options.get('resolution')
 
-    alias: dict = YoutubeURL.quality_aliases.get(resolution, None)
-    if alias:
-        options['resolution'] = alias.get("format")
-        resolution = options.get('resolution')
-        if alias.get("sort"):
-            options['custom_sort'] = f"{options.get('custom_sort')},{alias.get("sort")}" if options.get('custom_sort') else alias.get("sort")
 
-    file_options = {}
-    if options.get("log_rotate_when"):
-        file_options = {
-            "when": options.get("log_rotate_when"),
-            "interval": options.get("log_rotate_interval", 1),
-            "backupCount": options.get("log_backup_count", 30)
-        }
-    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True), file=options.get('log_file', None), force=True, redact_ips=options.get("redact_ips", False), file_options=file_options)
+def _apply_quality_alias(options: dict) -> None:
+    """Replace a quality alias (see YoutubeURL.quality_aliases) with its format selector and sort order."""
+    alias: dict = YoutubeURL.quality_aliases.get(options.get('resolution'), None)
+    if not alias:
+        return
+    options['resolution'] = alias.get("format")
+    if alias.get("sort"):
+        options['custom_sort'] = f"{options.get('custom_sort')},{alias.get('sort')}" if options.get('custom_sort') else alias.get("sort")
 
+
+def run_cli(argv: list[str] = None) -> None:
+    options = parse_options(sys.argv[1:] if argv is None else argv)
+    if options.get("ipv4"):
+        force_ipv4()
+    elif options.get("ipv6"):
+        force_ipv6()
+    _prompt_for_missing_options(options)
+    _apply_quality_alias(options)
+
+    download_Live.setup_logging(log_level=options.get('log_level', "INFO"), console=options.get('no_console', True),
+                                file=options.get('log_file', None), force=True, redact_ips=options.get("redact_ips", False),
+                                file_options=_log_file_options(options))
     if options.get("redact_ips", False):
-        import logging
-        loggers = [logging.getLogger(), logging.getLogger("httpx")]
         scrubber = download_Live.setup_logger.IPAddressScrubber()
-        for logger in loggers:
+        for logger in (logging.getLogger(), logging.getLogger("httpx")):
             if not any(isinstance(f, download_Live.setup_logger.IPAddressScrubber) for f in logger.filters):
                 logger.addFilter(scrubber)
-    # For testing
-    
-    #options['batch_size'] = 5
-    #options['write_thumbnail'] = True
-    #options['write_description'] = True
-    #options['write_info_json'] = True
 
-    
-    
     if options.get("monitor_channel", False) is True:
         monitor_channel(options=options)
     else:
-        main(id=id, resolution=resolution, options=options)
+        main(id=options.get('ID'), resolution=options.get('resolution'), options=options)
+
+
+if __name__ == "__main__":
+    run_cli()

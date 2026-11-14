@@ -117,6 +117,32 @@ def video_base_url(url: str) -> str:
     ))
 
 
+def _videoplayback_path_params(path: str) -> dict[str, str]:
+    """
+    Parameters encoded in the path of a "restful" URL: /videoplayback/key1/value1/key2/value2...
+    A trailing key without a value is stored under "flag".
+    """
+    if "/videoplayback/" not in path:
+        return {}
+    segments = path.split("/videoplayback/", 1)[1].strip("/").split("/")
+    params = {segments[i]: unquote(segments[i + 1]) for i in range(0, len(segments) - 1, 2)}
+    if len(segments) % 2 != 0:
+        params["flag"] = unquote(segments[-1])
+    return params
+
+
+def _segment_url_prefix(base: str) -> str:
+    """
+    Everything of a segment URL up to and including "sq=", so a segment URL is prefix + number.
+    Produces the same URL as YoutubeURL.add_url_param("sq", n) would.
+    """
+    parsed_base = urlparse(base)
+    base_query = {k: v for k, v in parse_qs(parsed_base.query).items() if k != "sq"}
+    query_prefix = urlencode(base_query, doseq=True)
+    query_prefix = f"{query_prefix}&sq=" if query_prefix else "sq="
+    return urlunparse(parsed_base._replace(query=query_prefix))
+
+
 def _none_if_none_string(value: Any) -> Optional[str]:
     """yt-dlp uses the literal string 'none' for missing codecs; normalise that to None."""
     return None if value is None or str(value).lower() == 'none' else value
@@ -158,17 +184,7 @@ class YoutubeURL:
             self.base = video_base_url(url=url)
         self._u = urlparse(url)
         self._q = parse_qs(self._u.query)
-        # --- Parse /-style path parameters ---
-        self._path_params: dict[str, str] = {}
-        path = self._u.path
-        if "/videoplayback/" in path:
-            param_str = path.split("/videoplayback/", 1)[1]
-            segments = param_str.strip("/").split("/")
-            self._path_params = {segments[i]: unquote(segments[i + 1])
-                                 for i in range(0, len(segments) - 1, 2)}
-            if len(segments) % 2 != 0:
-                self._path_params["flag"] = unquote(segments[-1])
-
+        self._path_params: dict[str, str] = _videoplayback_path_params(self._u.path)
         # Merge path params with query params (query overrides path)
         merged = {**self._path_params, **{k: v[0] for k, v in self._q.items()}}
 
@@ -190,14 +206,8 @@ class YoutubeURL:
         self.format_id = format_id or str(self.itag)
 
         self.url_parameters = merged
-
-        # Pre-compute everything up to "sq=" once, as segment() is called for every segment.
-        # This produces the same URL as add_url_param("sq", n) would.
-        parsed_base = urlparse(self.base)
-        base_query = {k: v for k, v in parse_qs(parsed_base.query).items() if k != "sq"}
-        query_prefix = urlencode(base_query, doseq=True)
-        query_prefix = f"{query_prefix}&sq=" if query_prefix else "sq="
-        self._segment_prefix: str = urlunparse(parsed_base._replace(query=query_prefix))
+        # Computed once, as segment() is called for every segment
+        self._segment_prefix: str = _segment_url_prefix(self.base)
 
     @classmethod
     def from_format(cls, format_info: dict, logger: logging.Logger | logging.LoggerAdapter | None = None,

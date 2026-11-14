@@ -137,32 +137,17 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
     try:
         with YoutubeDL(ydl_opts) as ydl:
             url = _playlist_url(channel_id, tab, options)
+            # extract_flat: only the playlist page is fetched, entries are not extracted individually
             info = ydl.extract_info(url, download=False) or {}
             upcoming_or_live_videos = []
             for video in info.get('entries') or []:
                 if not video:
                     # Unavailable playlist entries can be returned as None
                     continue
-                video_id = video.get('id')
-                if video_id in skip:
+                if video.get('id') in skip:
                     continue
-
-                # Fallback if video availability doesn't exist in extracted info
-                if video.get('live_status', None) is None and video.get('duration') is None:
-                    if video_id and cache.should_skip(video_id):
-                        logger.debug(f"({video_id}) Skipping re-extraction, status cached")
-                        continue
-                    try:
-                        video = ydl.extract_info(video.get('url'), download=False)
-                    except Exception as e:
-                        logger.error(f"Unable to find availability information for video {video.get('url')}: {e!s}")
-                        continue
-                    if video_id:
-                        cache.record(video_id, video.get('live_status'), video.get('release_timestamp'), lookahead)
-
-                if (video.get('live_status') == 'is_live' or video.get('live_status') == 'post_live'
-                        or (video.get('live_status') == 'is_upcoming' and withinFuture(video.get('release_timestamp', None), lookahead=lookahead))):
-
+                video = _with_live_status(ydl, video, cache, lookahead, logger)
+                if video is not None and _should_download(video, lookahead):
                     logger.debug(f"({video.get('id')}) live_status = {video.get('live_status')}")
                     logger.debug(json.dumps(video, default=str))
                     upcoming_or_live_videos.append(video.get('id'))
@@ -171,6 +156,36 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
     except Exception:
         logger.exception("An unexpected error occurred when trying to fetch videos")
         raise
+
+
+def _with_live_status(ydl: YoutubeDL, video: dict, cache: VideoStatusCache, lookahead: float, logger) -> Optional[dict]:
+    """
+    Flat playlist entries don't always include the live status. Then the video is extracted on its
+    own (one yt-dlp request), unless the cache says its status can't have changed.
+    Returns None if the video should be skipped.
+    """
+    if video.get('live_status', None) is not None or video.get('duration') is not None:
+        return video
+    video_id = video.get('id')
+    if video_id and cache.should_skip(video_id):
+        logger.debug(f"({video_id}) Skipping re-extraction, status cached")
+        return None
+    try:
+        full_video = ydl.extract_info(video.get('url'), download=False)
+    except Exception as e:
+        logger.error(f"Unable to find availability information for video {video.get('url')}: {e!s}")
+        return None
+    if video_id:
+        cache.record(video_id, full_video.get('live_status'), full_video.get('release_timestamp'), lookahead)
+    return full_video
+
+
+def _should_download(video: dict, lookahead: float) -> bool:
+    """Live and post-live videos, and upcoming ones scheduled within the lookahead (hours)."""
+    live_status = video.get('live_status')
+    if live_status in ('is_live', 'post_live'):
+        return True
+    return live_status == 'is_upcoming' and withinFuture(video.get('release_timestamp', None), lookahead=lookahead)
 
 
 def resolve_channel(url: str, logger: logging.Logger = None):
