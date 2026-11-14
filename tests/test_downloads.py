@@ -206,6 +206,29 @@ class LiveDownloadTests(ScenarioBase):
         self.assertGreaterEqual(self.extraction_calls, 1)
 
 
+class StreamEndRefreshTests(ScenarioBase):
+    def test_post_live_dash_formats_without_base_url_mark_stream_ended(self):
+        """
+        Regression: at stream end the refreshed info only had DASH formats without a
+        fragment_base_url. Building a URL from one raised a TypeError that skipped the live
+        status update, so the downloader never learned the stream had ended.
+        """
+        post_live = make_info_dict(self.server, live_status="post_live")
+        post_live["formats"] = [
+            {"format_id": "399", "protocol": "http_dash_segments", "url": "https://h/api/manifest/dash/id/x",
+             "ext": "mp4", "vcodec": "av01.0.08M.08", "acodec": "none", "height": 1080, "tbr": 3000},
+            {"format_id": "140", "protocol": "http_dash_segments", "url": "https://h/api/manifest/dash/id/x",
+             "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128, "tbr": 128},
+        ]
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options(dash=True)) as stream:
+            with self.assertNoLogs(stream.logger, level="ERROR"):
+                new_manifest = stream._process_refresh_result((post_live, "post_live"), None, follow_manifest=False)
+            self.assertFalse(new_manifest)
+            self.assertEqual(stream.live_status, "post_live")
+            self.assertEqual(stream.stream_url, url)
+
+
 class TimeWindowTests(ScenarioBase):
     total_segments = 40
     initial_head = 30

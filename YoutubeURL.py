@@ -168,6 +168,10 @@ class YoutubeURL:
                  format_note=None, language=None, ext=None):
         self.logger = logger or logging.getLogger()
         self.protocol = protocol
+        # Raise ValueError (which format searches handle) rather than failing later with a TypeError:
+        # urlparse(None) returns bytes, which broke the path checks below
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError(f"Format {format_id} ({protocol}) has no stream URL")
 
         self.format_note = format_note or "Unknown"
 
@@ -189,13 +193,18 @@ class YoutubeURL:
 
         # Extract id and manifest. The "id" parameter looks like "<video hash>.<manifest number>"
         # optionally followed by "~<extra>". The manifest number changes when a stream is restarted.
+        if not merged.get("id") or not merged.get("itag"):
+            raise ValueError(f"Format {format_id} ({protocol}) URL is not a stream segment URL (no id/itag parameter)")
         id_manifest = merged["id"]
         if "~" in id_manifest:
             id_manifest = id_manifest[:id_manifest.index("~")]
         self.id, _, manifest = id_manifest.partition(".")
         self.manifest = manifest or 0
 
-        self.itag = int(merged["itag"])
+        try:
+            self.itag = int(merged["itag"])
+        except ValueError:
+            raise ValueError(f"Format {format_id} ({protocol}) URL has an invalid itag: {merged['itag']!r}") from None
 
         try:
             self.expire = int(merged["expire"]) if merged.get("expire") else None
@@ -221,6 +230,11 @@ class YoutubeURL:
                       format_note=format_info.get("format_note"), language=format_info.get('language'),
                       ext=format_info.get('ext'))
         if protocol == "http_dash_segments":
+            if not format_info.get('fragment_base_url'):
+                # Only live DASH formats have a fragment_base_url. After a stream ends, yt-dlp can
+                # return DASH formats with a fragment list instead, which can't be downloaded by
+                # sequence number.
+                raise ValueError(f"DASH format {format_info.get('format_id')} has no fragment_base_url (not a live DASH stream)")
             return cls(format_info.get('fragment_base_url'), **common)
         if protocol == "m3u8_native":
             stream_url = Formats(logger=logger).getM3u8Url(format_info.get('url'), client=m3u8_client)

@@ -1426,9 +1426,14 @@ class StreamDownloaderBase:
     def _use_refreshed_url(self, info_dict: dict) -> None:
         """Switch to the fresh URL of this stream's format from a new extraction."""
         resolution = self._same_format_selector()
-        stream_url = YoutubeURL.Formats(logger=self.logger).getFormatURL(
-            info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash,
-            include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type, logger=self.logger)
+        try:
+            stream_url = YoutubeURL.Formats(logger=self.logger).getFormatURL(
+                info_json=info_dict, resolution=resolution, sort=self.yt_dlp_sort, include_dash=self.include_dash,
+                include_m3u8=self.include_m3u8, force_m3u8=self.force_m3u8, stream_type=self.type, logger=self.logger)
+        except (yt_dlp.utils.ExtractorError, ValueError) as e:
+            # Expected once a stream has ended: its live formats are no longer listed
+            self.logger.debug(f"No refreshed URL for format {self.format}: {e}")
+            stream_url = None
         if stream_url is None:
             self.logger.warning(f"Unable to refresh URLs for {self.id} on format {resolution} ({self.format})")
             return

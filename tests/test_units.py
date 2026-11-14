@@ -218,6 +218,21 @@ class YoutubeURLTests(unittest.TestCase):
         self.assertEqual(len(dash_urls), 1)
         self.assertIsInstance(dash_urls[0], YoutubeURL.YoutubeURL)
 
+    def test_missing_or_unusable_url_raises_value_error(self):
+        # urlparse(None) returns bytes, which used to surface as a confusing TypeError
+        for url in (None, "", "https://h/api/manifest/dash/expire/1/sparams/x"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                YoutubeURL.YoutubeURL(url, protocol="https")
+        with self.assertRaises(ValueError):
+            YoutubeURL.YoutubeURL("https://h/videoplayback?id=Abc&itag=abc", protocol="https")
+
+    def test_post_live_dash_format_without_fragment_base_url(self):
+        # After a stream ends yt-dlp may list DASH formats with a fragment list but no fragment_base_url
+        fmt = {"format_id": "399", "protocol": "http_dash_segments", "url": "https://h/api/manifest/dash/id/x",
+               "vcodec": "av01", "acodec": "none"}
+        with self.assertRaisesRegex(ValueError, "fragment_base_url"):
+            YoutubeURL.YoutubeURL.from_format(fmt)
+
 
 class AtomCleaningTests(unittest.TestCase):
     def test_matches_previous_implementation(self):
