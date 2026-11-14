@@ -10,7 +10,7 @@ This tool focuses on using `yt-dlp` for stream information extraction, ensuring 
 * **Robust Downloading:** Uses `yt-dlp` for extraction, minimizing breakage from YouTube updates.
 * **Stream Recovery:** capable of recovering streams that go private during recording (requires specific configuration).
 * **Dual Write Modes:** Supports both direct `.ts` file writing (low disk IO) and SQLite-backed downloading (safer for unstable connections).
-* **Live Chat:** Integrated support for downloading live chat (via `yt-dlp` or `chat-downloader`) and bundling it into a ZIP file.
+* **Live Chat:** Integrated support for downloading live chat with `yt-dlp` and bundling it into a ZIP file. An interrupted chat download is resumed instead of starting over.
 * **Channel Monitoring:** Automated monitoring of channels for upcoming or live streams.
 * **Protocol Fallbacks:** Optional support for DASH and HLS (m3u8) protocols to avoid modifying `yt-dlp` source code.
 
@@ -23,9 +23,6 @@ This tool focuses on using `yt-dlp` for stream information extraction, ensuring 
 * [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Must be installed via pip)
 * [deno](https://deno.com/) Required for yt-dlp
 * Dependencies listed in `requirements.txt`
-
-### Optional
-* [chat-downloader](https://github.com/xenova/chat-downloader) - For robust chat downloading with resume capabilities.
 
 ## Installation
 ### Clone Repository (**Recommended**)
@@ -166,7 +163,7 @@ python runner.py --monitor-channel --threads 4 --dash --m3u8 --wait-for-video 60
 | `--write-description` | `False` | Write the video description to a separate text file. |
 | `--keep-temp-files` | `False` | Keep all temporary files (database and TS files) after finishing. |
 | `--keep-ts-files` | `False` | Keep the intermediate TS files but delete the database. |
-| `--live-chat` | `False` | Download live chat (requires `yt-dlp` or `chat-downloader`). |
+| `--live-chat` | `False` | Download live chat with `yt-dlp`. A chat already downloaded for the same video in the temp folder is continued rather than overwritten. |
 | `--stop-chat-when-done` | `300` | Max seconds to wait for chat download to finish after stream ends. Chat downloaded so far is still saved if the timeout is reached. |
 | `--start-time` | `None` | Start of the recording in `hh:mm:ss`, `mm:ss` or `ss` (stream time). A negative value such as `-10:00` is relative to the live edge when the download starts. Works with the default, `--direct-to-ts` and `--recovery` modes. (EXPERIMENTAL) |
 | `--end-time` | `None` | End of the recording, same format as `--start-time` (negative values are relative to the live edge when the download starts). (EXPERIMENTAL) |
@@ -376,6 +373,5 @@ In the SQLite method, the existence of a downloaded segment is checked before it
 
 * **Concurrent Futures:** The downloader uses `concurrent.futures` for thread management. While robust, stopping the downloader gracefully (e.g., via Keyboard Interrupt) can sometimes be delayed if a thread is stuck on a request.
 * **Stream Recovery:** This feature is currently in a "semi-broken" state and may not work reliably for all stream types.
-* **Chat Downloader:** The `chat-downloader` dependency occasionally breaks due to YouTube updates; the tool may fall back to `yt-dlp` for chat extraction which has different output formatting.
 
 

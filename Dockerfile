@@ -41,8 +41,6 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     python -c "import urllib.request; urllib.request.urlretrieve('https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/devscripts/cli_to_api.py', 'cli_to_api.py')"
 
 
-#RUN sed -i "s/socs.value.startswith('CAA')/str(socs).startswith('CAA')/g" /usr/local/lib/python*/site-packages/chat_downloader/sites/youtube.py
-
 RUN mkdir -p /app/temp /app/downloads && chmod +x *.py
 
 WORKDIR /app/downloads

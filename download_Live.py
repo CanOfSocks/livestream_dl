@@ -77,11 +77,13 @@ try:
     import YoutubeURL
     import setup_logger
     import headers as customheaders
+    import live_chat
 except ModuleNotFoundError:
     from . import getUrls
     from . import YoutubeURL
     from . import setup_logger
     from . import headers as customheaders
+    from . import live_chat
 
 # Backward compatibility
 setup_logging = setup_logger.setup_logging
@@ -2550,7 +2552,6 @@ class LiveStreamDownloader:
         self.kill_all: threading.Event = kill_all or threading.Event()
         self.cleanup: threading.Event = cleanup or threading.Event()
         self.live_chat_result = None
-        self.chat_timeout: Optional[float] = None
         # File name dictionary
         self.file_names: dict = {
             'databases': [],
@@ -2956,15 +2957,13 @@ class LiveStreamDownloader:
     def _wait_for_live_chat(self, live_chat_thread: Optional[threading.Thread], info_dict: dict, options: dict) -> None:
         """
         Wait for the live chat download after the media finished, for at most --stop-chat-when-done
-        seconds. The timeout is enforced here because the downloaders only check it when a chat
-        message arrives (chat-downloader) or not at all (yt-dlp), which could block forever.
+        seconds. The timeout is enforced here (by setting chat_stop) because the chat download only
+        checks for it between chat requests, and a request could hang.
         """
         if not (live_chat_thread and live_chat_thread.is_alive()):
             return
         self.logger.info("Media downloads finished, waiting for live chat to end...")
         timeout = options.get('stop_chat_when_done', None)
-        if timeout:
-            self.chat_timeout = time.time()
         deadline = time.monotonic() + timeout if timeout else None
         while live_chat_thread.is_alive() and not (self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set()):
             live_chat_thread.join(3.0)
@@ -3079,7 +3078,8 @@ class LiveStreamDownloader:
 
     def download_live_chat(self, info_dict, options):
         """
-        Download the live chat with chat-downloader (falling back to yt-dlp), then zip it.
+        Download the live chat with yt-dlp, continuing an earlier download of it in the temp folder
+        (see live_chat.py), then zip it.
         Runs in its own thread until the chat ends or it is told to stop (see _wait_for_live_chat).
         """
         if info_dict.get("live_status", info_dict.get("status", "")) == "post_live":
@@ -3091,98 +3091,65 @@ class LiveStreamDownloader:
 
         # A failed live chat download must not fail the whole download
         try:
-            if not self._download_chat_with_chat_downloader(info_dict, options, livechat_filename, proxy):
-                livechat_filename = self._download_chat_with_ytdlp(info_dict, options, base_output, livechat_filename, proxy)
+            self._restore_packaged_live_chat(base_output, livechat_filename)
+            self._download_chat_with_ytdlp(info_dict, options, livechat_filename, proxy)
         except Exception as e:
             self.logger.exception(colour(e, RED))
 
         time.sleep(1)
-        live_chat = self._package_live_chat(base_output, livechat_filename=livechat_filename)
-        if live_chat:
-            return live_chat, 'live_chat'
+        live_chat_file = self._package_live_chat(base_output, livechat_filename=livechat_filename)
+        if live_chat_file:
+            return live_chat_file, 'live_chat'
         return None
 
     def _chat_should_stop(self) -> bool:
         return self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set() or self.chat_stop.is_set()
 
-    def _download_chat_with_chat_downloader(self, info_dict: dict, options: dict, livechat_filename: str, proxy) -> bool:
+    def _restore_packaged_live_chat(self, base_output: str, livechat_filename: str) -> None:
         """
-        Download the chat with chat-downloader. Returns False if chat-downloader isn't installed or
-        can't parse the chat, so the caller falls back to yt-dlp.
+        If an earlier run already zipped this chat (and removed its sources), unzip it so the
+        download continues it instead of a new zip replacing it.
         """
+        zip_filename = base_output + ".live_chat.zip"
+        if not os.path.exists(zip_filename) or os.path.exists(livechat_filename) or os.path.exists(livechat_filename + ".part"):
+            return
+        member = os.path.basename(livechat_filename)
         try:
-            import chat_downloader
-            from chat_downloader import ChatDownloader
-        except ImportError:
-            self.logger.warning("Unable to import chat-downloader, using yt-dlp")
-            return False
-        try:
-            chat_url = f"https://www.youtube.com/watch?v={info_dict.get('id')}"
-            self.logger.debug("Attempting to download with chat downloader")
-            chat_download = ChatDownloader(cookies=options.get('cookies', None), proxy=proxy)
-            # interruptible_retry=False: otherwise chat-downloader waits between retries by polling
-            # stdin for "press Enter", which raises PermissionError when stdin is /dev/null (Docker).
-            chat = chat_download.get_chat(chat_url, output=livechat_filename, overwrite=False, interruptible_retry=False)
-            # chat-downloader writes each message to the file as it is iterated. These stop/timeout
-            # checks only run when a message arrives, so the coordinator also enforces the timeout
-            # independently (see _wait_for_live_chat).
-            stop_after = options.get('stop_chat_when_done', 300)
-            for _message in chat:
-                if self._chat_should_stop():
-                    self.logger.debug("Killing live chat downloader")
-                    break
-                if self.chat_timeout is not None and time.time() - self.chat_timeout >= stop_after:
-                    self.logger.warning(f"Stopping chat download for {info_dict.get('id', 'N/A')}, timeout ({stop_after}s) exceeded")
-                    break
-            chat_download.close()
-            return True
-        # Fallback for the known issue of chat-downloader not working after YouTube changes
-        except chat_downloader.errors.ParsingError:
-            self.logger.exception("Unable to parse live chat using chat-downloader, using yt-dlp")
-            return False
+            with zipfile.ZipFile(zip_filename) as zipf, zipf.open(member) as src, open(livechat_filename + ".part", 'wb') as dest:
+                shutil.copyfileobj(src, dest, WRITE_BUFFER_SIZE)
+            self.logger.info(f"Continuing the live chat already saved in {zip_filename}")
+        except (KeyError, zipfile.BadZipFile, OSError) as e:
+            self.logger.warning(f"Unable to read the existing live chat zip {zip_filename} ({e}), starting a new live chat file")
+            _remove_file(livechat_filename + ".part", self.logger)
 
-    def _download_chat_with_ytdlp(self, info_dict: dict, options: dict, base_output: str, livechat_filename: str, proxy) -> str:
-        """Download the chat as yt-dlp's 'live_chat' subtitle. Returns the path of the chat file."""
+    def _download_chat_with_ytdlp(self, info_dict: dict, options: dict, livechat_filename: str, proxy) -> None:
+        """Download the chat with yt-dlp's live chat downloader, resuming an existing chat file."""
         ydl_opts = {
-            'skip_download': True,               # Skip downloading video/audio
+            # Only stops yt-dlp warning that the chat download blocks a video download
+            'skip_download': True,
             'logger': YoutubeURL.PrefixedYTDLPLogger("live-chat", logger=self.logger),
             'cookiefile': options.get('cookies', None),
             'retries': 25,
-            'concurrent_fragment_downloads': 3,
-            'writesubtitles': True,              # Extract subtitles (live chat)
-            'subtitlesformat': 'json',           # Set format to JSON
-            'subtitleslangs': ['live_chat'],     # Only extract live chat subtitles
-            'outtmpl': base_output               # Save to a JSON file
         }
-        self.logger.debug(options.get('ytdlp_options', {}))
         ydl_opts.update(options.get('ytdlp_options') or {})
         if proxy:
             ydl_opts['proxy'] = proxy
-
-        def stop_hook(_progress):
-            # yt-dlp's live chat download only ends when the chat does. Raising DownloadCancelled
-            # from a progress hook (called for every chat fragment) is yt-dlp's supported way to
-            # stop it, which also closes its files so they can be zipped and removed normally.
-            if self._chat_should_stop():
-                raise yt_dlp.utils.DownloadCancelled("Live chat download stopped")
-        ydl_opts['progress_hooks'] = [*(ydl_opts.get('progress_hooks') or []), stop_hook]
-
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                result = ydl.process_ie_result(info_dict)
-                try:
-                    if (result.get('requested_subtitles') or {}).get('live_chat', {}).get('filepath', None):
-                        livechat_filename = result['requested_subtitles']['live_chat']['filepath']
-                except Exception:
-                    self.logger.warning("Unable to find live chat path, remaining with existing path")
+                # yt-dlp's live chat download only ends when the chat does; it checks
+                # _chat_should_stop before each chat request and raises DownloadCancelled
+                if live_chat.download_live_chat(ydl, info_dict, livechat_filename,
+                                                should_stop=self._chat_should_stop, logger=self.logger):
+                    self.logger.info("Live chat download finished")
+                else:
+                    self.logger.warning("Live chat download failed, keeping the chat downloaded so far")
         except yt_dlp.utils.DownloadCancelled:
             self.logger.info("Live chat download stopped, keeping the chat downloaded so far")
-        except Exception as e:
-            self.logger.exception(colour(e, RED))
+        except live_chat.LiveChatUnavailable as e:
+            self.logger.warning(f"Unable to download live chat: {e}")
         # After a cancellation yt-dlp's open .part file is only reachable through a reference
         # cycle (exception traceback frames); collect it so the file is closed and can be removed
         gc.collect()
-        return livechat_filename
 
     # --- info.json helpers ---
 
