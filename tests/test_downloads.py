@@ -228,6 +228,21 @@ class StreamEndRefreshTests(ScenarioBase):
             self.assertEqual(stream.live_status, "post_live")
             self.assertEqual(stream.stream_url, url)
 
+    def test_ended_stream_skips_manifest_search_without_warnings(self):
+        """
+        Once a refresh reports the stream has ended, its live formats are gone. The live status
+        must be applied before the new-manifest search, which is skipped, so no warnings are logged.
+        """
+        ended = make_info_dict(self.server, live_status="was_live")
+        ended["formats"] = []
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            with self.assertNoLogs(stream.logger, level="WARNING"):
+                new_manifest = stream._process_refresh_result((ended, "was_live"), None, follow_manifest=False)
+            self.assertFalse(new_manifest)
+            self.assertEqual(stream.live_status, "was_live")
+            self.assertEqual(stream.stream_url, url)
+
 
 class TimeWindowTests(ScenarioBase):
     total_segments = 40

@@ -1395,12 +1395,16 @@ class StreamDownloaderBase:
                 raise error
             info_dict, live_status = result
 
-            if self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
-                return True
-
             if live_status:
                 self.live_status = live_status
-            self._use_refreshed_url(info_dict)
+            # Only a live (or upcoming) stream can have a new manifest. Once it has ended its live
+            # formats are no longer listed, so searching for one would only fail with warnings.
+            still_live = self.live_status in ('is_live', 'is_upcoming')
+
+            if still_live and self.detect_manifest_change(info_json=info_dict, follow_manifest=follow_manifest) is True:
+                return True
+
+            self._use_refreshed_url(info_dict, expected=still_live)
             if info_dict:
                 self.info_dict = info_dict
 
@@ -1423,8 +1427,11 @@ class StreamDownloaderBase:
             self.logger.exception(f"Error: {e}")
         return False
 
-    def _use_refreshed_url(self, info_dict: dict) -> None:
-        """Switch to the fresh URL of this stream's format from a new extraction."""
+    def _use_refreshed_url(self, info_dict: dict, expected: bool = True) -> None:
+        """
+        Switch to the fresh URL of this stream's format from a new extraction.
+        expected=False (the stream has ended) logs a missing URL at debug rather than as a warning.
+        """
         resolution = self._same_format_selector()
         try:
             stream_url = YoutubeURL.Formats(logger=self.logger).getFormatURL(
@@ -1435,7 +1442,11 @@ class StreamDownloaderBase:
             self.logger.debug(f"No refreshed URL for format {self.format}: {e}")
             stream_url = None
         if stream_url is None:
-            self.logger.warning(f"Unable to refresh URLs for {self.id} on format {resolution} ({self.format})")
+            message = f"Unable to refresh URLs for {self.id} on format {resolution} ({self.format})"
+            if expected:
+                self.logger.warning(message)
+            else:
+                self.logger.debug(message)
             return
         self.stream_url = stream_url
         self.stream_urls.append(stream_url)
