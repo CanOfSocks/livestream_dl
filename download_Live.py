@@ -2387,6 +2387,9 @@ class LiveStreamDownloader:
         self.chat_stop = threading.Event()
         self._live_chat_lock = threading.Lock()
         self._live_chat_packaged = False
+        # Bytes taken from each live chat source file when an abandoned chat was zipped
+        self._live_chat_snapshot: dict[str, int] = {}
+        self._live_chat_source: Optional[tuple[str, str]] = None
 
         self._time_reference: Optional[float] = None
         self._time_reference_lock = threading.Lock()
@@ -2655,7 +2658,9 @@ class LiveStreamDownloader:
         self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options)
 
         self.stats["status"] = "Moving"
+        self._refresh_live_chat_snapshot()
         self.move_to_final(options=options, output_file=outputFile, file_names=self.file_names)
+        self._cleanup_live_chat_sources(f"{outputFile}.live_chat.zip")
         self.stats["status"] = "Finished"
 
     def output_filename(self, info_dict, outtmpl) -> str:
@@ -2754,39 +2759,106 @@ class LiveStreamDownloader:
                     self._package_live_chat(base_output_path(options, info_dict), snapshot=True)
                 break
 
-    def _package_live_chat(self, base_output: str, livechat_filename: Optional[str] = None, snapshot: bool = False) -> Optional[dict]:
+    def _package_live_chat(self, base_output: str, livechat_filename: Optional[str] = None, snapshot: bool = False,
+                           refresh: bool = False) -> Optional[dict]:
         """
         Zip the live chat JSON (appending any .part file) and register it. Runs at most once, as it
         may be called both by an abandoned chat thread and by the coordinator after a timeout.
-        `snapshot` leaves the source files in place because they may still be written to.
+
+        snapshot: the chat thread may still be writing, so the source files are left in place and
+                  the number of bytes taken from each is recorded (see _cleanup_live_chat_sources).
+        refresh:  rebuild an existing snapshot so it includes chat written since the last one.
         """
         import zipfile
         livechat_filename = livechat_filename or base_output + ".live_chat.json"
         part_file = "{0}.part".format(livechat_filename)
         with self._live_chat_lock:
-            if self._live_chat_packaged:
+            if self._live_chat_packaged and not (refresh and self._live_chat_snapshot):
                 return None
             if not (os.path.exists(livechat_filename) or os.path.exists(part_file)):
                 self.logger.warning("No live chat file found at {0}".format(livechat_filename))
                 return None
+            zip_filename = base_output + ".live_chat.zip"
+            # Build the zip under a temporary name so a failure never corrupts an existing snapshot
+            tmp_zip = zip_filename + ".tmp"
             try:
-                zip_filename = base_output + ".live_chat.zip"
-                with zipfile.ZipFile(zip_filename, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
+                included: dict[str, int] = {}
+                with zipfile.ZipFile(tmp_zip, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
                     with zipf.open(os.path.basename(livechat_filename), 'w', force_zip64=True) as dest:
                         for source in (livechat_filename, part_file):
                             if os.path.exists(source):
-                                with open(source, 'rb') as src:
-                                    shutil.copyfileobj(src, dest, WRITE_BUFFER_SIZE)
-                if not snapshot:
-                    _remove_file(livechat_filename, self.logger)
-                    _remove_file(part_file, self.logger)
-                live_chat = {'live_chat': FileInfo(zip_filename, file_type='live_chat')}
-                self.file_names.update(live_chat)
-                self._live_chat_packaged = True
-                return live_chat
+                                included[source] = self._copy_counting(source, dest)
+                os.replace(tmp_zip, zip_filename)
             except Exception as e:
                 self.logger.exception("\033[31m{0}\033[0m".format(e))
+                _remove_file(tmp_zip, self.logger)
                 return None
+
+            if snapshot:
+                self._live_chat_snapshot = included
+                self._live_chat_source = (base_output, livechat_filename)
+            else:
+                # Sources that can't be removed yet (still open) are retried after the final move
+                leftovers: dict[str, int] = {}
+                for source, size in included.items():
+                    try:
+                        os.remove(source)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as e:
+                        self.logger.debug("Unable to remove {0} yet ({1}), retrying after the final move".format(source, e))
+                        leftovers[source] = size
+                self._live_chat_snapshot = leftovers
+                self._live_chat_source = None
+            live_chat = {'live_chat': FileInfo(zip_filename, file_type='live_chat')}
+            self.file_names.update(live_chat)
+            self._live_chat_packaged = True
+            return live_chat
+
+    @staticmethod
+    def _copy_counting(source: str, dest: BinaryIO) -> int:
+        """Copy a file into dest and return the exact number of bytes copied (it may be growing)."""
+        copied = 0
+        with open(source, 'rb') as src:
+            while chunk := src.read(WRITE_BUFFER_SIZE):
+                dest.write(chunk)
+                copied += len(chunk)
+        return copied
+
+    def _refresh_live_chat_snapshot(self) -> None:
+        """Re-zip an abandoned live chat right before the final move, to include anything written since."""
+        # Only for a snapshot taken by the coordinator (a finished chat thread clears _live_chat_source)
+        if self._live_chat_snapshot and self._live_chat_source:
+            base_output, livechat_filename = self._live_chat_source
+            self._package_live_chat(base_output, livechat_filename=livechat_filename, snapshot=True, refresh=True)
+
+    def _cleanup_live_chat_sources(self, final_zip: str) -> None:
+        """
+        Delete the source files of an abandoned live chat download, but only once the zip that
+        contains them is in its final location, and only files that haven't grown since they were
+        zipped (anything newer is not in the zip). yt-dlp's raw '.part-FragN' fragment files are
+        never zipped, so they are left in the temp folder.
+        """
+        if not self._live_chat_snapshot:
+            return
+        if not os.path.exists(final_zip):
+            self.logger.warning("Live chat zip not found at {0}, keeping live chat source files".format(final_zip))
+            return
+        for path, included_bytes in self._live_chat_snapshot.items():
+            try:
+                current_size = os.path.getsize(path)
+            except FileNotFoundError:
+                continue
+            if current_size != included_bytes:
+                self.logger.warning("{0} changed after it was zipped, keeping it in the temp folder".format(path))
+                continue
+            try:
+                os.remove(path)
+                self.logger.debug("Removed live chat source file {0} (included in {1})".format(path, final_zip))
+            except OSError as e:
+                # e.g. on Windows a file still held open by the abandoned chat thread can't be deleted
+                self.logger.warning("Unable to remove live chat source file {0}: {1}".format(path, e))
+        self._live_chat_snapshot = {}
 
     def download_live_chat(self, info_dict, options):
         if info_dict.get("live_status", info_dict.get("status", "")) == "post_live":
@@ -2843,6 +2915,14 @@ class LiveStreamDownloader:
                 self.logger.warning("Unable to import chat-downloader, using yt-dlp")
             if proxy:
                 ydl_opts['proxy'] = proxy
+
+            def stop_hook(_progress):
+                # yt-dlp's live chat download only ends when the chat does. Raising DownloadCancelled
+                # from a progress hook (called for every chat fragment) is yt-dlp's supported way to
+                # stop it, which also closes its files so they can be zipped and removed normally.
+                if self.chat_stop.is_set() or self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set():
+                    raise yt_dlp.utils.DownloadCancelled("Live chat download stopped")
+            ydl_opts['progress_hooks'] = [*(ydl_opts.get('progress_hooks') or []), stop_hook]
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.process_ie_result(info_dict)
@@ -2851,8 +2931,14 @@ class LiveStreamDownloader:
                             livechat_filename = result['requested_subtitles']['live_chat']['filepath']
                     except Exception:
                         self.logger.warning("Unable to find live chat path, remaining with existing path")
+            except yt_dlp.utils.DownloadCancelled:
+                self.logger.info("Live chat download stopped, keeping the chat downloaded so far")
             except Exception as e:
                 self.logger.exception("\033[31m{0}\033[0m".format(e))
+            # After a cancellation yt-dlp's open .part file is only reachable through a reference
+            # cycle (exception traceback frames); collect it so the file is closed and can be removed
+            import gc
+            gc.collect()
 
         except Exception as e:
             self.logger.exception("\033[31m{0}\033[0m".format(e))

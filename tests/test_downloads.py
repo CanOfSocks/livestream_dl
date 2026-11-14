@@ -324,6 +324,48 @@ class LiveChatTimeoutTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_abandoned_chat_sources_removed_only_once_in_final_zip(self):
+        import zipfile
+        tmp = tempfile.mkdtemp()
+        try:
+            coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
+            base = os.path.join(tmp, "out")
+            json_file, part_file, frag_file = base + ".live_chat.json", base + ".live_chat.json.part", base + ".live_chat.json.part-Frag5"
+            with open(part_file, "wb") as f:
+                f.write(b'{"line": 1}\n')
+            with open(frag_file, "wb") as f:
+                f.write(b'{"responseContext": {}}')
+            coordinator._package_live_chat(base, snapshot=True)
+            self.assertTrue(os.path.exists(part_file), "snapshot must not delete sources")
+
+            # Chat written after the snapshot is picked up by the refresh before the final move
+            with open(part_file, "ab") as f:
+                f.write(b'{"line": 2}\n')
+            coordinator._refresh_live_chat_snapshot()
+
+            final_zip = os.path.join(tmp, "final.live_chat.zip")
+            # Before the zip is in its final location nothing is deleted
+            coordinator._cleanup_live_chat_sources(final_zip)
+            self.assertTrue(os.path.exists(part_file))
+            shutil.move(base + ".live_chat.zip", final_zip)
+            with zipfile.ZipFile(final_zip) as z:
+                self.assertEqual(z.read("out.live_chat.json"), b'{"line": 1}\n{"line": 2}\n')
+
+            # A file that grew after it was zipped is kept (its new data is not in the zip)
+            with open(part_file, "ab") as f:
+                f.write(b'{"line": 3}\n')
+            coordinator._cleanup_live_chat_sources(final_zip)
+            self.assertTrue(os.path.exists(part_file))
+
+            # Unchanged since the snapshot: removed; raw fragment files are never zipped so they stay
+            coordinator._live_chat_snapshot = {part_file: os.path.getsize(part_file)}
+            coordinator._cleanup_live_chat_sources(final_zip)
+            self.assertFalse(os.path.exists(part_file))
+            self.assertFalse(os.path.exists(json_file))
+            self.assertTrue(os.path.exists(frag_file))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
