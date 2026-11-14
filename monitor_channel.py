@@ -39,8 +39,7 @@ def withinFuture(releaseTime=None, lookahead=24) -> bool:
 
 
 def _lookahead_hours(options: dict) -> Optional[float]:
-    # The CLI option is --upcoming-lookahead (dest "upcoming_lookahead"). Previously only
-    # "monitor_lookahead" was read, so the CLI value was silently ignored.
+    # --upcoming-lookahead (dest "upcoming_lookahead"); "monitor_lookahead" is an older key still accepted
     if options.get("upcoming_lookahead") is not None:
         return options.get("upcoming_lookahead")
     return options.get("monitor_lookahead", 24)

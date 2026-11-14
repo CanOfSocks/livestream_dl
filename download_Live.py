@@ -22,6 +22,20 @@ Downloaded segment data is buffered and persisted by a ``SegmentStore``:
     SegmentStore
     ├── SQLiteSegmentStore          batched + verified commits, merged to .ts at the end
     └── DirectTSStore               appends segments in order to the .ts file with a resumable state file
+
+Where to start reading
+----------------------
+1. LiveStreamDownloader.download_segments: the whole download of one video, start to finish.
+2. LiveStreamDownloader._run_stream: runs one stream downloader (live_dl, then finalize).
+3. StreamDownloaderBase.live_dl: the main loop (its class docstring lists the steps).
+4. DownloadStream: how segments are scheduled at the live edge (_evaluate, _on_idle, ...).
+
+Sections of this file, in order: tunables, generic helpers, MP4 atom cleaning, FileInfo,
+segment stores, stream downloaders, FFmpeg merger, coordinator (LiveStreamDownloader).
+
+Threads: the coordinator runs each format's downloader in its own thread, and each downloader
+downloads segments with its own thread pool (--threads). A URL refresh (yt-dlp) runs in a
+background thread so downloads continue meanwhile; the live chat also has its own thread.
 """
 from __future__ import annotations
 
@@ -406,6 +420,11 @@ def should_clean(ext: Optional[str]) -> bool:
 # ==============================================================================================
 
 class FileInfo(Path):
+    """
+    A Path to a produced file that also records what it contains (file_type, e.g. 'video',
+    'thumbnail' or 'merged'; and for streams the format ID, codecs, language and protocol),
+    which the muxing and moving steps use.
+    """
     _file_type: str = None
     _format: str = None
     _acodec: str = None
@@ -869,11 +888,25 @@ class StreamPaths:
 
 class StreamDownloaderBase:
     """
-    Shared lifecycle for downloading the segments of a single format.
+    Shared lifecycle for downloading the segments of a single format (one video or audio stream).
 
-    Subclasses provide the storage (`_make_store`), the scheduling of segments (`_next_segments`),
-    handling of results (`_on_segment_result`) and the decision logic run on every iteration
-    (`_evaluate`). The main loop itself (`live_dl`) is shared.
+    Use as a context manager, then call live_dl() followed by finalize():
+
+        with DownloadStream(info_dict, stream_url, options, livestream_coordinator) as stream:
+            stream.live_dl()
+            ts_file = stream.finalize()
+
+    live_dl() runs the main loop, shared by all subclasses. Each iteration:
+
+        check for kill / graceful stop
+        _pre_iteration()            e.g. start or collect a background URL refresh
+        _collect_results()          wait for finished downloads -> _on_segment_result()
+        store.flush()               persist buffered segments (in batches)
+        _evaluate()                 BREAK / CONTINUE / PROCEED (may wait for new segments)
+        _submit_segments()          start downloads for _next_segments()
+
+    Subclasses provide the storage (_make_store), the scheduling (_next_segments), the handling
+    of results (_on_segment_result), the per-iteration decisions (_evaluate) and finalize().
     """
     timeout_config = httpx.Timeout(10.0, connect=5.0)
     ATOM_BASED_EXTENSIONS = ATOM_BASED_EXTENSIONS
@@ -981,19 +1014,28 @@ class StreamDownloaderBase:
         self._window_seconds: Optional[tuple[float, Optional[float]]] = None
         self._window_resolved: bool = self.start_time is None and self.end_time is None
 
-    # --- Hooks with default implementations ---
+    # --- Construction hooks (called by __init__, overridden by subclasses) ---
 
     def _initial_stream_urls(self, stream_url: Optional[YoutubeURL.YoutubeURL], kwargs: dict) -> list[YoutubeURL.YoutubeURL]:
+        """All URLs this downloader may use. StreamRecovery uses several; the others only one."""
         return [stream_url] if stream_url is not None else []
 
     def _choose_initial_url(self) -> YoutubeURL.YoutubeURL:
+        """The URL used for header probes and (by default) segment downloads."""
         return self.stream_urls[0]
 
     def _validate_urls(self) -> None:
+        """Raise if the URLs can't be used (StreamRecovery: all of them have expired)."""
         pass
 
     def _make_store(self) -> SegmentStore:
-        raise NotImplementedError
+        """Where downloaded segments are stored. Default: the SQLite temp database (or in memory)."""
+        if self.database_in_memory:
+            return SQLiteSegmentStore(':memory:', logger=self.logger, batch_size=self.batch_size)
+        page_size = SQLITE_VIDEO_PAGE_SIZE if self.type == "video" else SQLITE_AUDIO_PAGE_SIZE
+        journal_mode = self.options.get("temp_db_journal") or "wal"
+        return SQLiteSegmentStore(self.paths.temp_db_file, logger=self.logger, batch_size=self.batch_size,
+                                  page_size=page_size, journal_mode=journal_mode)
 
     # --- Context management ---
 
@@ -1045,15 +1087,6 @@ class StreamDownloaderBase:
 
     def unique_stream_urls(self, stream_urls: list) -> list:
         return list({str(stream_url): stream_url for stream_url in stream_urls}.values())
-
-    def should_clean(self, ext=None) -> bool:
-        return should_clean(ext)
-
-    def get_atoms(self, data):
-        return get_atoms(data)
-
-    def clean_segments(self, data, first=True):
-        return clean_segment(data, first=first)
 
     def smart_sleep(self, timeout: float) -> None:
         """Sleep, but wake up early if a graceful stop or kill is requested."""
@@ -1528,34 +1561,49 @@ class StreamDownloaderBase:
                 self.logger.warning(f"Unable to find any stream for {self.id} when searching {description} {search_resolution}")
         return False
 
-    # --- Main loop ---
+    # --- Main loop hooks (called by live_dl, overridden by subclasses) ---
 
     def _on_start(self) -> None:
+        """Called once before the first iteration. Subclasses set up their scheduling state here."""
         self._stats()['status'] = "recording"
 
     def _pre_iteration(self) -> None:
+        """Called at the start of every iteration, before finished downloads are collected."""
         pass
 
     def _on_segment_result(self, seg: Optional[int], result: Optional[SegmentResult], error: Optional[BaseException]) -> None:
+        """
+        Called for every finished download_segment task. `result` is None if the task raised
+        `error`. Store the data (self.store.add) or schedule a retry.
+        """
         raise NotImplementedError
 
     def _evaluate(self) -> LoopAction:
+        """
+        Decide what the loop does next, after results are collected and stored:
+        BREAK to finish, CONTINUE to skip submitting new downloads, PROCEED to submit them.
+        May sleep (e.g. while waiting for new segments at the live edge).
+        """
         raise NotImplementedError
 
     def _next_segments(self, capacity: int) -> list[int]:
+        """Return up to `capacity` segment numbers to download next."""
         raise NotImplementedError
 
     def _url_for_segment(self, seg: int) -> str:
         return self.stream_url.segment(seg)
 
     def _download_args(self, seg: int) -> tuple:
+        """Positional arguments for download_segment."""
         return (self._url_for_segment(seg), seg, self.client)
 
     def _on_finish(self) -> None:
+        """Called once after the loop ends (also after a graceful stop)."""
         if self.following_manifest_thread is not None:
             self.following_manifest_thread.join()
 
     def _loop_result(self):
+        """The value live_dl returns."""
         return True
 
     def _collect_results(self) -> tuple[int, int]:
@@ -1671,43 +1719,18 @@ class StreamDownloaderBase:
     # --- Finalisation ---
 
     def finalize(self) -> FileInfo:
+        """
+        Called once after live_dl() returns: produce the format's .ts file and return its FileInfo
+        (the coordinator then deletes or keeps the temp database, see LiveStreamDownloader._run_stream).
+        """
         raise NotImplementedError
 
     def _file_info(self, file_name: str) -> FileInfo:
         return FileInfo(file_name, file_type=self.type, format=self.format, vcodec=self.stream_url.vcodec,
                         acodec=self.stream_url.acodec, language=self.stream_url.language, protocol=self.stream_url.protocol)
 
-
-class DownloadStream(StreamDownloaderBase):
-    """Downloads a live stream from the live edge (and any available DVR history) into SQLite."""
-    mode_name = "Database"
-    # Whether this mode can hand over to StreamRecovery when the stream turns private
-    supports_recovery_handoff: bool = True
-    new_manifest_message: str = "Video finished downloading via new manifest"
-
-    def _make_store(self) -> SegmentStore:
-        if self.database_in_memory:
-            return SQLiteSegmentStore(':memory:', logger=self.logger, batch_size=self.batch_size)
-        page_size = SQLITE_VIDEO_PAGE_SIZE if self.type == "video" else SQLITE_AUDIO_PAGE_SIZE
-        journal_mode = self.options.get("temp_db_journal") or "wal"
-        return SQLiteSegmentStore(self.paths.temp_db_file, logger=self.logger, batch_size=self.batch_size,
-                                  page_size=page_size, journal_mode=journal_mode)
-
-    # Compatibility wrappers
-    @property
-    def conn(self):
-        return getattr(self.store, "conn", None)
-
-    def commit_segments(self, force: bool = False) -> None:
-        self.store.flush(force=force)
-
-    def commit_batch(self, conn=None) -> None:
-        self.store.flush(force=True)
-
-    def segment_exists_batch(self) -> set:
-        return set(self.store.downloaded)
-
     def combine_segments_to_file(self, output_file: str) -> str:
+        """Write all segments of the SQLite store, in order, to output_file (the format's .ts file)."""
         self._stats()['status'] = "merging"
         self.logger.debug(f"Merging segments to {output_file}")
         self.store.merge_to_file(output_file, clean=should_clean(self.ext))
@@ -1718,8 +1741,40 @@ class DownloadStream(StreamDownloaderBase):
         if isinstance(self.store, SQLiteSegmentStore):
             self.store.delete()
 
-    def delete_ts_file(self) -> None:
-        _remove_file(self.paths.merged_file_name, self.logger)
+    # --- Backward-compatible aliases (not used by livestream_dl itself) ---
+
+    @property
+    def folder(self) -> Optional[str]:
+        return self.paths.folder
+
+    @property
+    def file_base_name(self) -> str:
+        return self.paths.file_base_name
+
+    @property
+    def merged_file_name(self) -> str:
+        return self.paths.merged_file_name
+
+    @property
+    def temp_db_file(self) -> str:
+        return self.paths.temp_db_file
+
+    def should_clean(self, ext=None) -> bool:
+        return should_clean(ext)
+
+    def get_atoms(self, data):
+        return get_atoms(data)
+
+    def clean_segments(self, data, first=True):
+        return clean_segment(data, first=first)
+
+
+class DownloadStream(StreamDownloaderBase):
+    """Downloads a live stream from the live edge (and any available DVR history) into SQLite."""
+    mode_name = "Database"
+    # Whether this mode can hand over to StreamRecovery when the stream turns private
+    supports_recovery_handoff: bool = True
+    new_manifest_message: str = "Video finished downloading via new manifest"
 
     # --- Live edge scheduling ---
 
@@ -1731,8 +1786,8 @@ class DownloadStream(StreamDownloaderBase):
         self.wait: int = 0
         self.segment_retries: dict[int, int] = {}
         # Min-heap of segment numbers waiting to be submitted, plus a membership set. New segment
-        # numbers are added incrementally as the head advances instead of rebuilding the full range
-        # every iteration (which was O(stream length) per loop).
+        # numbers are added incrementally as the head advances, rather than rebuilding the full
+        # range every iteration (which would cost O(stream length) per loop).
         self._queue: list[int] = []
         self._queued: set[int] = set()
         # Segments that exceeded their retries; re-queued if the stream URL changes
@@ -2015,6 +2070,24 @@ class DownloadStream(StreamDownloaderBase):
         file_name = self.combine_segments_to_file(self.paths.merged_file_name)
         return self._file_info(file_name)
 
+    def delete_ts_file(self) -> None:
+        _remove_file(self.paths.merged_file_name, self.logger)
+
+    # --- Backward-compatible aliases (not used by livestream_dl itself) ---
+
+    @property
+    def conn(self):
+        return getattr(self.store, "conn", None)
+
+    def commit_segments(self, force: bool = False) -> None:
+        self.store.flush(force=force)
+
+    def commit_batch(self, conn=None) -> None:
+        self.store.flush(force=True)
+
+    def segment_exists_batch(self) -> set:
+        return set(self.store.downloaded)
+
 
 class DownloadStreamDirect(DownloadStream):
     """Live edge download written directly to the .ts file in sequence order (no database)."""
@@ -2141,13 +2214,6 @@ class StreamRecovery(StreamDownloaderBase):
 
     def _choose_initial_url(self) -> YoutubeURL.YoutubeURL:
         return random.choice(self.stream_urls)
-
-    def _make_store(self) -> SegmentStore:
-        page_size = SQLITE_VIDEO_PAGE_SIZE if self.type == "video" else SQLITE_AUDIO_PAGE_SIZE
-        if self.database_in_memory:
-            return SQLiteSegmentStore(':memory:', logger=self.logger, batch_size=self.batch_size)
-        return SQLiteSegmentStore(self.paths.temp_db_file, logger=self.logger, batch_size=self.batch_size,
-                                  page_size=page_size, journal_mode=self.options.get("temp_db_journal") or "wal")
 
     def _validate_urls(self) -> None:
         self.check_Expiry()
@@ -2278,7 +2344,7 @@ class StreamRecovery(StreamDownloaderBase):
         return LoopAction.PROCEED
 
     def _probe_urls(self) -> None:
-        # Previously every URL was probed on every 0.1s loop iteration while 403s persisted
+        # Probing every URL costs one request per URL, so it happens at most every PROBE_INTERVAL
         if time.monotonic() - self._last_probe < self.PROBE_INTERVAL:
             return
         self._last_probe = time.monotonic()
@@ -2338,23 +2404,12 @@ class StreamRecovery(StreamDownloaderBase):
                 self._order_dirty = True
                 continue
             # Retry a failed segment only after segment_retry_time has passed since its last attempt
-            # (previously compared against the retry count, so failed segments were retried immediately)
             if entry.get('retries', 0) <= self.fragment_retries and now - entry.get('last_retry', 0) > self.segment_retry_time:
                 segments.append(seg)
         return segments
 
     def _loop_result(self) -> int:
         return len(self.segments_retries)
-
-    def combine_segments_to_file(self, output_file: str) -> str:
-        self._stats()['status'] = "merging"
-        self.store.merge_to_file(output_file, clean=should_clean(self.ext))
-        self._stats()['status'] = "merged"
-        return output_file
-
-    def delete_temp_database(self) -> None:
-        if isinstance(self.store, SQLiteSegmentStore):
-            self.store.delete()
 
     def save_stats(self) -> None:
         # Stats files
@@ -2453,6 +2508,17 @@ def _make_merger(ydl, ffmpeg_command_file: FileInfo):
 # ==============================================================================================
 
 class LiveStreamDownloader:
+    """
+    Downloads one video: start with download_segments(info_dict, resolution, options).
+
+    Also holds the state its stream downloaders share: the kill / graceful-stop events, the
+    progress stats (self.stats, printed by print_stats), one shared yt-dlp URL refresh for all
+    formats (refresh_info_json) and the live edge reference for negative start/end times.
+    Produced files are collected in self.file_names:
+
+        {"streams": {<manifest>: {"video": FileInfo, "audio": FileInfo, "merged": ..., "ffmpeg_cmd": ...}},
+         "databases": [FileInfo, ...], "info_json": FileInfo, "thumbnail": FileInfo, "live_chat": FileInfo, ...}
+    """
     # Minimum seconds between yt-dlp URL refresh extractions (doubles after rate limiting)
     MIN_REFRESH_INTERVAL: float = 30.0
 
@@ -2567,7 +2633,7 @@ class LiveStreamDownloader:
             if time.time() - self.refresh_json.get("refresh_time", 0.0) <= update_threshold:
                 return self.refresh_json, self.live_status
 
-            # Previously this slept for the time already elapsed rather than the time remaining
+            # Wait for the rest of the minimum interval since the last extraction
             remaining = self.minimum_refresh_time - (time.monotonic() - self.last_refresh_attempt)
             if remaining > 0:
                 self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Waiting for {remaining:.1f}s before attempting to refresh URL")

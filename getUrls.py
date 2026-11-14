@@ -262,7 +262,7 @@ def get_Video_Info(
     extraction_logger.wait = bool(ydl_opts.get("wait_for_video", None))
 
     # Deep copy so the caller's options (which are reused for every URL refresh) are never
-    # mutated - previously the extractor_args skip list grew on every call.
+    # mutated, otherwise the extractor_args skip list below would grow on every call.
     merged_additional = copy.deepcopy(additional_options) if additional_options else {}
     merged_additional.update(kwargs)
     if merged_additional:
@@ -291,7 +291,7 @@ def _wait_for_video_option(wait: Union[bool, int, tuple, str, None]) -> Optional
     if isinstance(wait, tuple):
         if not (0 < len(wait) <= 2):
             raise ValueError("Wait tuple must contain 1 or 2 values")
-        # A single value tuple previously produced a bare int here, which yt-dlp cannot unpack
+        # yt-dlp always needs a (min, max) pair
         return (wait[0], wait[1] if len(wait) >= 2 else None)
     # bool must be checked before int as bool is a subclass of int
     if isinstance(wait, bool):

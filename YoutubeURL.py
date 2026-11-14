@@ -174,7 +174,6 @@ class YoutubeURL:
         self.vcodec = _none_if_none_string(vcodec)
         self.acodec = _none_if_none_string(acodec)
         self.language = _none_if_none_string(language)
-        # Previously this checked `language` instead of `ext` by mistake
         self.ext = _none_if_none_string(ext)
 
         # If not a dash URL, convert to "parameter" style instead of "restful" style
@@ -373,7 +372,7 @@ class Formats:
             self.logger.debug(response)
             text = response.text
         finally:
-            # Previously the client was never closed, leaking a connection pool per call
+            # Only close a client created here (a caller's client is reused for other requests)
             if own_client:
                 client.close()
 

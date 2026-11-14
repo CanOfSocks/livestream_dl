@@ -1,22 +1,14 @@
 
 import logging
 import logging.handlers
-
-from typing import Union, Optional
+import os
 import re
-import os
-
-import os
-import logging
 from typing import Union
 
 # Verbose setup
 VERBOSE_LEVEL_NUM = 15
 VERBOSE_LEVEL_NAME = "VERBOSE"
 ENV_DISABLE_FLAG = "DISABLE_LIVESTREAM_DL_VERBOSE_LOGGING"
-
-import re
-import logging
 
 class IPAddressScrubber(logging.Filter):
     # Aggressive IPv4: Matches 1-3 digits, dot, 1-3 digits, etc.
