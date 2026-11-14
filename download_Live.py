@@ -2652,7 +2652,7 @@ class LiveStreamDownloader:
                 raise
 
         self.stats["status"] = "Muxing"
-        self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options, output_file=outputFile)
+        self.create_mp4(file_names=self.file_names, info_dict=info_dict, options=options)
 
         self.stats["status"] = "Moving"
         self.move_to_final(options=options, output_file=outputFile, file_names=self.file_names)
@@ -2710,7 +2710,7 @@ class LiveStreamDownloader:
                 stream_output_file = f"{output_file}.{manifest}"
             maybe_move('video', lambda f: f"{stream_output_file}.{f._format}{f.suffix}", file_names_dict=stream)
             maybe_move('audio', lambda f: f"{stream_output_file}.{f._format}{f.suffix}", file_names_dict=stream)
-            # create_mp4 normally writes the merged file in place already (then this is a no-op)
+            # Don't append the extension twice if the output template already ends with it
             maybe_move('merged', lambda f: self._with_ext(stream_output_file, f.suffix), file_names_dict=stream)
             maybe_move('ffmpeg_cmd', lambda f: f"{stream_output_file}.ffmpeg.txt", option_flag='write_ffmpeg_command', file_names_dict=stream)
 
@@ -2994,12 +2994,10 @@ class LiveStreamDownloader:
     def _with_ext(path: str, ext: str) -> str:
         return path if path.endswith(ext) else path + ext
 
-    def create_mp4(self, file_names: dict, info_dict: dict, options: dict, output_file: Optional[str] = None):
+    def create_mp4(self, file_names: dict, info_dict: dict, options: dict):
         """
-        Mux the downloaded .ts files of each manifest with ffmpeg.
-        If `output_file` (final destination, without extension) is given, ffmpeg writes directly into
-        the destination directory under a temporary ".merging" name which is renamed on success. This
-        avoids copying the whole merged file when the temp folder is on another file system.
+        Mux the downloaded .ts files of each manifest with ffmpeg. The merged file is written in the
+        temp folder; move_to_final moves it to the output location once all files are finished.
         """
         import mimetypes
         import subprocess
@@ -3018,10 +3016,8 @@ class LiveStreamDownloader:
             files = []
 
             base_output = base_output_path(options, info_dict)
-            final_base = output_file
             if len(stream_manifests) > 1:
                 base_output = f"{base_output}.{manifest}"
-                final_base = f"{output_file}.{manifest}" if output_file else None
             base_output = self._with_ext(base_output, ext)
 
             ydl_opts = {
@@ -3114,17 +3110,7 @@ class LiveStreamDownloader:
                             self.logger.error("Unable to find info.json file {0}".format(file_names.get("info_json")))
 
                 do_merge = options.get("merge", True)
-                if final_base:
-                    final_path = self._with_ext(final_base, ext)
-                    final_dir = os.path.dirname(final_path)
-                    if final_dir:
-                        os.makedirs(final_dir, exist_ok=True)
-                    # "<name>.merging.<ext>" keeps the real extension so ffmpeg picks the right muxer
-                    working_path = final_path[:-len(ext)] + ".merging" + ext
-                else:
-                    final_path = working_path = base_output
-
-                merged_file = FileInfo(final_path, file_type='merged')
+                merged_file = FileInfo(base_output, file_type='merged')
                 try:
                     if do_merge:
                         self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, f"Merging streams into {merged_file}")
@@ -3132,17 +3118,13 @@ class LiveStreamDownloader:
                         self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Writing ffmpeg command instead of merging")
                     livestream_merger.real_run_ffmpeg(
                         [(path, input_args) for path in files],
-                        [(str(Path(working_path).absolute()), args)], merge=do_merge)
-                    if do_merge and working_path != final_path:
-                        os.replace(working_path, final_path)
+                        [(str(merged_file.absolute()), args)], merge=do_merge)
                 except (subprocess.CalledProcessError, FFmpegPostProcessorError) as e:
                     if isinstance(e, subprocess.CalledProcessError):
                         self.logger.error(e.stderr)
                         self.logger.critical(e)
                     else:
                         self.logger.exception(e)
-                    if do_merge and working_path != final_path:
-                        _remove_file(working_path, self.logger)
                     raise
 
                 if do_merge:
