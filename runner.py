@@ -128,7 +128,7 @@ def main(id, resolution='bv+ba/best', options: dict = None, info_dict=None, thre
     # Convert additional options to dictionary, if it exists (it may already be a dict when
     # called from the channel monitor, which deep copies already parsed options)
     if isinstance(options.get('ytdlp_options', None), str):
-        print("JSON for ytdlp_options: {0}".format(options.get('ytdlp_options', None)))
+        print(f"JSON for ytdlp_options: {options.get('ytdlp_options', None)}")
         options['ytdlp_options'] = json.loads(options.get('ytdlp_options'))
     elif options.get('ytdlp_options', None) is None:
         options['ytdlp_options'] = {}
@@ -177,23 +177,23 @@ def monitor_channel(options: dict = None):
     wait = max((num for num in options.get("wait_for_video", []) if isinstance(num, (int, float))), default=300)
     while not channel_id.startswith("UC"):
         new_channel_id = monitor_channel.resolve_channel(channel_id) or ""
-        logger.debug("Found channel ID: {0}".format(new_channel_id))
+        logger.debug(f"Found channel ID: {new_channel_id}")
         # Break if resolved and start search
         if new_channel_id.startswith("UC"):
             channel_id = new_channel_id
-            logger.debug("Found channel ID: {0}".format(channel_id))
+            logger.debug(f"Found channel ID: {channel_id}")
             break
         time_to_next = max(wait-(time()-last_check),1)
-        logger.debug("Sleeping for {0:.2f}s for next URL resolve attempt".format(time_to_next))
+        logger.debug(f"Sleeping for {time_to_next:.2f}s for next URL resolve attempt")
         sleep(time_to_next)
         last_check=time()
 
-    logger.debug("Starting runner for channel: '{0}' on tab: '{1}'".format(channel_id, tab))
+    logger.debug(f"Starting runner for channel: '{channel_id}' on tab: '{tab}'")
     while True:
         for id, thread in list(threads.items()):
             if not thread.is_alive():
                 threads.pop(id)
-        logger.debug("Searching for streams for channel {0}".format(channel_id))
+        logger.debug(f"Searching for streams for channel {channel_id}")
         try:
             # Videos already being downloaded are skipped so they aren't extracted again
             videos_to_get = monitor_channel.get_upcoming_or_live_videos(channel_id=channel_id, tab=tab, options=options, logger=logger, skip_ids=threads.keys())
@@ -216,8 +216,8 @@ def monitor_channel(options: dict = None):
         except Exception as e:
             logger.exception("An error occurred fetching upcoming streams")
         time_to_next = max(wait-(time()-last_check),1)
-        logger.debug("Active threads: {0}".format(list(threads.keys())))
-        logger.debug("Sleeping for {0:.2f}s for next stream check".format(time_to_next))
+        logger.debug(f"Active threads: {list(threads.keys())}")
+        logger.debug(f"Sleeping for {time_to_next:.2f}s for next stream check")
         sleep(time_to_next)
         last_check=time()
 

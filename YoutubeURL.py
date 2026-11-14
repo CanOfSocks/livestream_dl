@@ -82,7 +82,7 @@ def video_base_url(url: str) -> str:
     Convert a /key/value/... ("restful") URL into a query parameter URL
     and remove any 'sq' parameters, also removing 'sq' from existing query strings.
     """
-    logging.debug("Attempting to parse url: {0}".format(url))
+    logging.debug(f"Attempting to parse url: {url}")
     parsed = urlparse(url)
 
     # Process slash-separated path into key/value pairs. The first path element is the endpoint
@@ -269,12 +269,12 @@ class Formats:
         """Restrict a format selector to adaptive https, with optional DASH / m3u8 fallbacks."""
         resolution = str(resolution).strip()
         if force_m3u8:
-            return "({0})[protocol=m3u8_native]".format(resolution)
-        resolutions = ["({0})[protocol=https]".format(resolution)]
+            return f"({resolution})[protocol=m3u8_native]"
+        resolutions = [f"({resolution})[protocol=https]"]
         if include_dash:
-            resolutions.append("({0})[protocol=http_dash_segments]".format(resolution))
+            resolutions.append(f"({resolution})[protocol=http_dash_segments]")
         if include_m3u8:
-            resolutions.append("({0})[protocol=m3u8_native]".format(resolution))
+            resolutions.append(f"({resolution})[protocol=m3u8_native]")
         return "/".join(resolutions)
 
     def getFormats(self, info_json: dict, resolution, sort=None, raw=False, include_dash=True, include_m3u8=False,
@@ -305,7 +305,7 @@ class Formats:
         if ydl_options:
             ydl_opts.update(ydl_options)
 
-        self.logger.debug("Searching for resolution: {0}".format(resolution))
+        self.logger.debug(f"Searching for resolution: {resolution}")
 
         # Remove any previous selection so yt-dlp performs a fresh one
         info_json.pop("requested_formats", None)
@@ -336,17 +336,17 @@ class Formats:
         if not found_format:
             raise ValueError("No stream matches resolution/format input with a video or audio stream")
 
-        self.logger.debug("Formats: {0}".format(json.dumps(found_format, indent=4, default=str)))
+        self.logger.debug(f"Formats: {json.dumps(found_format, indent=4, default=str)}")
         format_obj = YoutubeURL.from_format(found_format, logger=self.logger)
         if found_format.get('protocol', "") == "m3u8_native" and not self.protocol:
             self.protocol = format_obj.protocol
 
-        self.logger.debug("Got URL: {0}: {1}".format(format_obj.format_id, format_obj.base))
+        self.logger.debug(f"Got URL: {format_obj.format_id}: {format_obj.base}")
 
         # Retrieves all URLs of found format
         if get_all:
             all_urls = self.getAllFormatURL(info_json=info_json, format_obj=format_obj)
-            self.logger.debug("URLs: {0}".format(all_urls))
+            self.logger.debug(f"URLs: {all_urls}")
             return all_urls
 
         return format_obj

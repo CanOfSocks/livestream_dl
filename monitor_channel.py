@@ -90,22 +90,22 @@ status_cache = VideoStatusCache()
 def _playlist_url(channel_id: str, tab: Optional[str], options: dict) -> str:
     if tab == "membership":
         if channel_id.startswith("UUMO"):
-            return "https://www.youtube.com/playlist?list={0}".format(channel_id)
+            return f"https://www.youtube.com/playlist?list={channel_id}"
         elif (channel_id.startswith("UC") or channel_id.startswith("UU")) and not options.get("use_stream_tab", False):
-            return "https://www.youtube.com/playlist?list={0}".format("UUMO" + channel_id[2:])
-        return "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
+            return f"https://www.youtube.com/playlist?list={'UUMO' + channel_id[2:]}"
+        return f"https://www.youtube.com/channel/{channel_id}/{tab}"
 
     if tab == "streams":
         # Note: a "UUMO" (members) playlist ID also starts with "UU", so it is used as-is here.
         # This preserves existing behaviour: passing a members playlist ID monitors that playlist
         # even without --members-only.
         if channel_id.startswith("UU"):
-            return "https://www.youtube.com/playlist?list={0}".format(channel_id)
+            return f"https://www.youtube.com/playlist?list={channel_id}"
         elif channel_id.startswith("UC") and not options.get("use_stream_tab", False):
-            return "https://www.youtube.com/playlist?list={0}".format("UU" + channel_id[2:])
-        return "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
+            return f"https://www.youtube.com/playlist?list={'UU' + channel_id[2:]}"
+        return f"https://www.youtube.com/channel/{channel_id}/{tab}"
 
-    return "https://www.youtube.com/channel/{0}/{1}".format(channel_id, tab)
+    return f"https://www.youtube.com/channel/{channel_id}/{tab}"
 
 
 def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = None, logger: logging.Logger = None,
@@ -127,7 +127,7 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
         'sleep_interval_requests': 1,
         'no_warnings': True,
         'cookiefile': options.get("cookies", None),
-        'playlist_items': '1-{0}'.format(options.get("playlist_items", 10)),
+        'playlist_items': f"1-{options.get('playlist_items', 10)}",
         "logger": YTDLPLogger(logger=logger),
     }
     ytdlp_proxy = proxy_for_ytdlp(options.get("proxy"))
@@ -150,12 +150,12 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
                 # Fallback if video availability doesn't exist in extracted info
                 if video.get('live_status', None) is None and video.get('duration') is None:
                     if video_id and cache.should_skip(video_id):
-                        logger.debug("({0}) Skipping re-extraction, status cached".format(video_id))
+                        logger.debug(f"({video_id}) Skipping re-extraction, status cached")
                         continue
                     try:
                         video = ydl.extract_info(video.get('url'), download=False)
                     except Exception as e:
-                        logger.error("Unable to find availability information for video {0}: {1}".format(video.get('url'), str(e)))
+                        logger.error(f"Unable to find availability information for video {video.get('url')}: {e!s}")
                         continue
                     if video_id:
                         cache.record(video_id, video.get('live_status'), video.get('release_timestamp'), lookahead)
@@ -163,7 +163,7 @@ def get_upcoming_or_live_videos(channel_id, tab=None, options: Optional[dict] = 
                 if (video.get('live_status') == 'is_live' or video.get('live_status') == 'post_live'
                         or (video.get('live_status') == 'is_upcoming' and withinFuture(video.get('release_timestamp', None), lookahead=lookahead))):
 
-                    logger.debug("({1}) live_status = {0}".format(video.get('live_status'), video.get('id')))
+                    logger.debug(f"({video.get('id')}) live_status = {video.get('live_status')}")
                     logger.debug(json.dumps(video, default=str))
                     upcoming_or_live_videos.append(video.get('id'))
 
@@ -183,14 +183,14 @@ def resolve_channel(url: str, logger: logging.Logger = None):
             raise ValueError("Unable to find channel ID")
     except Exception as e:
         if "not currently live" in str(e):
-            logger.log(VERBOSE_LEVEL_NUM, "Channel found, but not live: {0}. Waiting until a live stream is found to resolve channel ID".format(e))
+            logger.log(VERBOSE_LEVEL_NUM, f"Channel found, but not live: {e}. Waiting until a live stream is found to resolve channel ID")
             return None
-        logger.warning("Unable to find channel ID with URL search using '{0}'. Attempting to use youtube search.".format(url))
+        logger.warning(f"Unable to find channel ID with URL search using '{url}'. Attempting to use youtube search.")
         channel_id = get_by_name(channel_name=url, logger=logger)
         if channel_id and str(channel_id).startswith("UC"):
             return channel_id
         else:
-            logger.error("Unable to find channel using search: {0}".format(url))
+            logger.error(f"Unable to find channel using search: {url}")
     return None
 
 
@@ -211,7 +211,7 @@ def get_channel(channel_url: str, logger: logging.Logger = None):
             try:
                 info = ydl.extract_info(info.get('url'), download=False)
             except Exception as e:
-                logger.error("Unable to find availability information for video {0}: {1}".format(info.get('url'), str(e)))
+                logger.error(f"Unable to find availability information for video {info.get('url')}: {e!s}")
 
         return ydl.sanitize_info(info).get("channel_id", None)
 
@@ -236,5 +236,5 @@ def get_by_name(channel_name: str, logger: logging.Logger = None):
             logger.info(f"Found Channel: {first_result.get('uploader')}")
             return first_result.get('channel_id')
 
-    logger.error("No channel found with query: {0}".format(channel_name))
+    logger.error(f"No channel found with query: {channel_name}")
     return None
