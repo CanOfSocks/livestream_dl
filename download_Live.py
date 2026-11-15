@@ -2552,6 +2552,8 @@ class LiveStreamDownloader:
         self.kill_all: threading.Event = kill_all or threading.Event()
         self.cleanup: threading.Event = cleanup or threading.Event()
         self.live_chat_result = None
+        # When the stream started (ms), for the live chat offsets (see live_chat.OffsetRebaser)
+        self._live_chat_stream_start: Optional[int] = None
         # File name dictionary
         self.file_names: dict = {
             'databases': [],
@@ -3000,11 +3002,14 @@ class LiveStreamDownloader:
             tmp_zip = zip_filename + ".tmp"
             try:
                 included: dict[str, int] = {}
+                # Normally the chat was already merged with stream start offsets (live_chat.finalize);
+                # an abandoned chat thread's files are adjusted here instead
+                rebaser = live_chat.OffsetRebaser.for_files(sources, self._live_chat_stream_start)
                 with zipfile.ZipFile(tmp_zip, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as zipf:
                     with zipf.open(os.path.basename(livechat_filename), 'w', force_zip64=True) as dest:
                         for source in sources:
                             if os.path.exists(source):
-                                included[source] = self._copy_counting(source, dest)
+                                included[source] = self._copy_counting(source, dest, rebaser)
                 os.replace(tmp_zip, zip_filename)
             except Exception as e:
                 self.logger.exception(colour(e, RED))
@@ -3033,10 +3038,18 @@ class LiveStreamDownloader:
             return packaged
 
     @staticmethod
-    def _copy_counting(source: str, dest: BinaryIO) -> int:
-        """Copy a file into dest and return the exact number of bytes copied (it may be growing)."""
+    def _copy_counting(source: str, dest: BinaryIO, rebaser: Optional["live_chat.OffsetRebaser"] = None) -> int:
+        """
+        Copy a file into dest and return the exact number of bytes read from it (it may be
+        growing), changing each line's offset with rebaser if given.
+        """
         copied = 0
         with open(source, 'rb') as src:
+            if rebaser is not None:
+                for raw in src:
+                    dest.write(rebaser.line(raw))
+                    copied += len(raw)
+                return copied
             while chunk := src.read(WRITE_BUFFER_SIZE):
                 dest.write(chunk)
                 copied += len(chunk)
@@ -3088,6 +3101,7 @@ class LiveStreamDownloader:
         base_output = base_output_path(options, info_dict)
         livechat_filename = base_output + ".live_chat.json"
         self.logger.info(f"Downloading live chat to: {livechat_filename}")
+        self._live_chat_stream_start = live_chat.stream_start_ms(info_dict)
         proxy = getUrls.proxy_for_ytdlp(options.get('proxy'))
 
         # A failed live chat download must not fail the whole download
@@ -3112,18 +3126,13 @@ class LiveStreamDownloader:
         download continues it instead of a new zip replacing it.
         """
         zip_filename = base_output + ".live_chat.zip"
-        files = live_chat.chat_files(livechat_filename)
-        if not os.path.exists(zip_filename) or any(os.path.exists(path) for path in files):
+        if not os.path.exists(zip_filename):
             return
-        member = os.path.basename(livechat_filename)
-        saved = files[0]
         try:
-            with zipfile.ZipFile(zip_filename) as zipf, zipf.open(member) as src, open(saved, 'wb') as dest:
-                shutil.copyfileobj(src, dest, WRITE_BUFFER_SIZE)
-            self.logger.info(f"Continuing the live chat already saved in {zip_filename}")
+            live_chat.restore_from_zip(livechat_filename, zip_filename, os.path.basename(livechat_filename), self.logger)
         except (KeyError, zipfile.BadZipFile, OSError) as e:
-            self.logger.warning(f"Unable to read the existing live chat zip {zip_filename} ({e}), starting a new live chat file")
-            _remove_file(saved, self.logger)
+            # Keep it from being replaced by the new zip
+            live_chat.move_aside(zip_filename, self.logger, f"could not be read ({e})")
 
     def _download_chat_with_ytdlp(self, info_dict: dict, options: dict, livechat_filename: str, proxy) -> None:
         """Download the chat with yt-dlp's live chat downloader, resuming an existing chat file."""
@@ -3153,7 +3162,8 @@ class LiveStreamDownloader:
             self.logger.info(f"Live chat download stopped, keeping the chat downloaded so far ({counts})")
         else:
             self.logger.warning(f"Live chat download failed, keeping the chat downloaded so far ({counts})")
-        # Not once the coordinator has zipped an abandoned chat: the files are then left as they are
+        # One file with offsets from the stream start. Not once the coordinator has zipped an
+        # abandoned chat: its files are then left as they are (and adjusted while zipping).
         with self._live_chat_lock:
             if not self._live_chat_packaged:
                 live_chat.finalize(download, self.logger)

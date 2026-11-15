@@ -27,12 +27,16 @@ yt-dlp itself is not modified.
 from __future__ import annotations
 
 import collections
+import glob
 import hashlib
 import inspect
 import json
 import logging
 import os
+import re
+import shutil
 import time
+import zipfile
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Iterator, Optional, Union
 
@@ -47,6 +51,8 @@ except ImportError:  # moved or removed in a future yt-dlp; YoutubeDL.dl() is us
 LoggerLike = Union[logging.Logger, logging.LoggerAdapter]
 
 RESUME_SUFFIX = '.resume'
+_TMP_SUFFIX = '.tmp'
+_COMPARE_BLOCK = 1024 * 1024
 # How much of the end of the saved chat is read to recognise chat downloaded again. The chat sent
 # again on resume (the live chat's recent history, or the replay's 5s look-behind) is far smaller.
 RESUME_TAIL_BYTES: int = 8 * 1024 * 1024
@@ -363,6 +369,10 @@ def _first_live_start(path: str, max_lines: int = 2000) -> Optional[int]:
 
 
 # --- Gathering the saved chat ---
+#
+# Every step below can be interrupted by a crash at any point and simply run again by the next
+# download: files are only deleted once their chat is in a file that replaced them atomically or
+# that they were filtered into (and filtering again recognises what was already added).
 
 def _is_chat_file(path: str) -> bool:
     with open(path, 'rb') as f:
@@ -391,38 +401,248 @@ def _truncate_partial_line(path: str, logger: LoggerLike) -> None:
         f.truncate(end)
 
 
-def consolidate(filename: str, logger: Optional[LoggerLike] = None) -> ResumeState:
+def move_aside(path: str, logger: LoggerLike, reason: str) -> str:
+    """Keep a file out of the way as <path>.old (or .old.1, .old.2, ... so none is overwritten)."""
+    target = path + '.old'
+    number = 0
+    while os.path.exists(target):
+        number += 1
+        target = f'{path}.old.{number}'
+    os.replace(path, target)
+    logger.warning(f"{path} {reason}, moved it to {target}")
+    return target
+
+
+def _remove_if_exists(path: str, logger: LoggerLike) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning(f"Unable to remove {path}: {e}")
+
+
+def remove_fragment_files(filename: str, logger: Optional[LoggerLike] = None) -> None:
+    """
+    Delete the files yt-dlp keeps for each chat request (<name>.part-Frag<N>, plus .part while one is
+    being downloaded; <name>-Frag<N> without .part files). Every download numbers them from 0 again,
+    so files left by a crash would be taken by the next download as the answer to its own requests
+    (an old chat position) or resumed halfway.
+    """
+    logger = logger or logging.getLogger(__name__)
+    for pattern in (glob.escape(filename) + '.part-Frag*', glob.escape(filename) + '-Frag*'):
+        for path in glob.glob(pattern):
+            _remove_if_exists(path, logger)
+            logger.debug(f"Removed leftover live chat fragment {path}")
+
+
+def _append_filtered(base: str, source: str, logger: LoggerLike, filtered: bool = False) -> None:
+    """Append the chat of source that base doesn't have yet (all of it if it was filtered already)."""
+    if filtered:
+        _truncate_partial_line(source, logger)
+        with open(base, 'ab') as out, open(source, 'rb') as src:
+            shutil.copyfileobj(src, out, _COMPARE_BLOCK)
+        logger.debug(f"Added {source} to the saved chat")
+        return
+    chat_filter = ChatFilter(read_resume_state(base), run_start=_first_live_start(source))
+    with open(base, 'ab') as out:
+        for raw in _lines(source):
+            out.write(chat_filter.filter_line(raw))
+    logger.info(f"Added {chat_filter.lines} live chat lines from {source} to the saved chat"
+                + (f" ({chat_filter.skipped} already saved chat actions skipped)" if chat_filter.skipped else ""))
+
+
+def consolidate(filename: str, logger: Optional[LoggerLike] = None, new_chat_filtered: bool = False) -> ResumeState:
     """
     Gather all chat saved for filename (chat_files) into <filename>.resume, dropping what was
-    downloaded twice, and return what it contains. Afterwards neither filename nor its .part
-    exist, so yt-dlp starts a new file. A file that isn't in yt-dlp's line format (e.g. one written
-    by chat-downloader) is moved aside to <file>.old rather than mixed in.
+    downloaded twice, and return what it contains. Afterwards neither filename nor its .part (nor
+    yt-dlp's fragment files) exist, so yt-dlp starts a new file. A file that isn't in yt-dlp's line
+    format (e.g. one written by chat-downloader) is moved aside rather than mixed in.
+    new_chat_filtered: filename / its .part were filtered while downloading and are added as they are.
     """
     logger = logger or logging.getLogger(__name__)
     base = filename + RESUME_SUFFIX
+    remove_fragment_files(filename, logger)
+    _remove_if_exists(base + _TMP_SUFFIX, logger)   # an unfinished restore_from_zip
     for path in chat_files(filename):
         if not os.path.exists(path):
             continue
         if not _is_chat_file(path):
-            os.replace(path, path + '.old')
-            logger.warning(f"Existing live chat file {path} is not in yt-dlp's format, moved it to {path}.old")
+            move_aside(path, logger, "is not in yt-dlp's live chat format")
             continue
         if path == base or not os.path.exists(base) or not os.path.getsize(base):
             if path != base:
                 os.replace(path, base)
             _truncate_partial_line(base, logger)
             continue
-        state = read_resume_state(base)
-        chat_filter = ChatFilter(state, run_start=_first_live_start(path))
-        with open(base, 'ab') as out:
-            for raw in _lines(path):
-                out.write(chat_filter.filter_line(raw))
+        _append_filtered(base, path, logger, filtered=new_chat_filtered)
         os.remove(path)
-        logger.info(f"Added {chat_filter.lines} live chat lines from {path} to the saved chat"
-                    + (f" ({chat_filter.skipped} already saved chat actions skipped)" if chat_filter.skipped else ""))
     if os.path.exists(base) and not os.path.getsize(base):
         os.remove(base)
     return read_resume_state(base)
+
+
+class _ConcatReader:
+    """Reads several files as one stream."""
+
+    def __init__(self, paths: Iterable[str]):
+        self._paths = list(paths)
+        self._file = None
+
+    def read(self, size: int) -> bytes:
+        out = bytearray()
+        while len(out) < size:
+            if self._file is None:
+                if not self._paths:
+                    break
+                self._file = open(self._paths.pop(0), 'rb')
+            chunk = self._file.read(size - len(out))
+            if not chunk:
+                self._file.close()
+                self._file = None
+                continue
+            out += chunk
+        return bytes(out)
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def _read_exact(stream, size: int) -> bytes:
+    out = bytearray()
+    while len(out) < size:
+        chunk = stream.read(min(size - len(out), _COMPARE_BLOCK))
+        if not chunk:
+            break
+        out += chunk
+    return bytes(out)
+
+
+def _same_start(a, b, size: int) -> bool:
+    """Whether the next `size` bytes of two streams are equal."""
+    while size > 0:
+        block = min(size, _COMPARE_BLOCK)
+        chunk = _read_exact(a, block)
+        if len(chunk) != block or chunk != _read_exact(b, block):
+            return False
+        size -= block
+    return True
+
+
+def restore_from_zip(filename: str, zip_path: str, member: str, logger: Optional[LoggerLike] = None) -> None:
+    """
+    Bring back chat that an earlier run already zipped into zip_path (as `member`), so the download
+    continues it instead of a new zip replacing it. A crash while zipping or while restoring can
+    leave both the zip and chat files. The chat files are then kept if they continue the zipped
+    chat (a restored chat that was downloaded further), replaced by it if they are part of it (the
+    zipped files were being deleted), and otherwise added after it.
+    Raises KeyError / zipfile.BadZipFile / OSError if the zip can't be read.
+    """
+    logger = logger or logging.getLogger(__name__)
+    base = filename + RESUME_SUFFIX
+    tmp = base + _TMP_SUFFIX
+    _remove_if_exists(tmp, logger)
+    files = [p for p in chat_files(filename) if os.path.exists(p) and _is_chat_file(p)]
+    files_size = sum(os.path.getsize(p) for p in files)
+    contained = False
+    with zipfile.ZipFile(zip_path) as zipf:
+        zipped_size = zipf.getinfo(member).file_size
+        if files and files_size >= zipped_size:
+            with zipf.open(member) as zipped, _ConcatReader(files) as current:
+                if _same_start(zipped, current, zipped_size):
+                    return
+        if files and files_size <= zipped_size:
+            with zipf.open(member) as zipped, _ConcatReader(files) as current:
+                contained = _same_start(current, zipped, files_size)
+            if not contained:
+                with zipf.open(member) as zipped, _ConcatReader(files) as current:
+                    _skip(zipped, zipped_size - files_size)
+                    contained = _same_start(current, zipped, files_size)
+        # Restore under a temporary name, so a crash never leaves a partly restored chat
+        with zipf.open(member) as zipped, open(tmp, 'wb') as out:
+            shutil.copyfileobj(zipped, out, _COMPARE_BLOCK)
+    if files and not contained:
+        logger.warning(f"The live chat files of {filename} don't match the live chat in {zip_path}, combining them")
+        _truncate_partial_line(tmp, logger)
+        for path in files:
+            _append_filtered(tmp, path, logger)
+    os.replace(tmp, base)
+    for path in files:
+        if path != base:
+            _remove_if_exists(path, logger)
+    logger.info(f"Continuing the live chat saved in {zip_path}")
+
+
+def _skip(stream, size: int) -> None:
+    while size > 0:
+        chunk = stream.read(min(size, _COMPARE_BLOCK))
+        if not chunk:
+            return
+        size -= len(chunk)
+
+
+# --- Offsets from the stream start ---
+
+def stream_start_ms(info_dict: dict) -> Optional[int]:
+    """
+    When the stream actually started (ms), from yt-dlp's release_timestamp (the broadcast's start
+    time). None for an upcoming stream, whose release_timestamp is only the scheduled start.
+    """
+    if info_dict.get('live_status') not in ('is_live', 'was_live', 'post_live'):
+        return None
+    value = info_dict.get('release_timestamp')
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        return int(value * 1000)
+    return None
+
+
+# The end of a live line as yt-dlp writes it, to change its offset without parsing the whole line
+_LIVE_LINE_END = re.compile(rb'"videoOffsetTimeMsec": "(-?\d+)", "isLive": true\}\r?\n$')
+
+
+class OffsetRebaser:
+    """
+    Measure live chat offsets from the stream start, like a chat replay, instead of from when the
+    chat download started (yt-dlp's live offsets). Every live line moves by the same amount, so the
+    offsets between lines stay as yt-dlp wrote them. Replay lines (already measured from the start of
+    the video) and lines it doesn't recognise are left alone.
+    """
+
+    def __init__(self, shift: int):
+        self.shift = shift
+
+    @classmethod
+    def for_files(cls, paths: Iterable[str], stream_start: Optional[int]) -> Optional["OffsetRebaser"]:
+        """The rebaser for chat files (whose live offsets share one base), or None if nothing to change."""
+        if stream_start is None:
+            return None
+        for path in paths:
+            if os.path.exists(path):
+                base = _first_live_start(path)
+                if base is not None:
+                    return cls(base - stream_start) if base != stream_start else None
+        return None
+
+    def line(self, raw: bytes) -> bytes:
+        if not raw.endswith(b'\n'):
+            return raw  # a line still being written
+        match = _LIVE_LINE_END.search(raw)
+        if match:
+            offset = int(match.group(1)) + self.shift
+            return raw[:match.start(1)] + str(offset).encode() + raw[match.end(1):]
+        line = _parse_line(raw)
+        if line is None or not line.get('isLive') or _int(line.get('videoOffsetTimeMsec')) is None:
+            return raw
+        line['videoOffsetTimeMsec'] = str(_int(line['videoOffsetTimeMsec']) + self.shift)
+        return json.dumps(line, ensure_ascii=False).encode() + b'\n'
 
 
 # --- Downloading ---
@@ -559,6 +779,7 @@ class ChatDownload:
     filtered: bool              # the new chat was filtered while downloading (see finalize)
     lines: int = 0
     skipped: int = 0
+    stream_start: Optional[int] = None  # ms, see stream_start_ms
 
 
 def download_live_chat(ydl: yt_dlp.YoutubeDL, info_dict: dict, filename: str, *,
@@ -605,17 +826,41 @@ def download_live_chat(ydl: yt_dlp.YoutubeDL, info_dict: dict, filename: str, *,
         status = 'failed'
     filtered = fd is not None and not hooks.failed and _new_chat_size(filename) == hooks.bytes_written
     return ChatDownload(filename, status, resumed=bool(state.lines), filtered=filtered,
-                        lines=hooks.filter.lines, skipped=hooks.filter.skipped)
+                        lines=hooks.filter.lines, skipped=hooks.filter.skipped, stream_start=stream_start_ms(info_dict))
 
 
 def _new_chat_size(filename: str) -> int:
     return sum(os.path.getsize(p) for p in chat_files(filename)[1:] if os.path.exists(p))
 
 
-def finalize(download: ChatDownload, logger: Optional[LoggerLike] = None) -> None:
+def finalize(download: ChatDownload, logger: Optional[LoggerLike] = None) -> Optional[str]:
     """
-    After download_live_chat: if the new chat couldn't be filtered while downloading (a yt-dlp
-    change), filter it into the saved chat now.
+    After download_live_chat: merge all of the chat into one file, <filename>, with live offsets
+    measured from the stream start when it is known (download.stream_start). Chat that couldn't be
+    filtered while downloading (a yt-dlp change) is filtered now. Returns the file, or None if there
+    is no chat. Each step replaces files atomically, so a crash here is recovered by the next
+    download or finalize.
     """
-    if download.resumed and not download.filtered and _new_chat_size(download.filename):
-        consolidate(download.filename, logger)
+    logger = logger or logging.getLogger(__name__)
+    filename = download.filename
+    base = filename + RESUME_SUFFIX
+    if not any(os.path.exists(p) for p in chat_files(filename)):
+        remove_fragment_files(filename, logger)
+        return None
+    if os.path.exists(base) or os.path.exists(filename + '.part'):
+        consolidate(filename, logger, new_chat_filtered=download.filtered or not download.resumed)
+    else:
+        remove_fragment_files(filename, logger)
+        os.replace(filename, base)
+    if not os.path.exists(base):
+        return None
+    rebaser = OffsetRebaser.for_files([base], download.stream_start)
+    if rebaser:
+        tmp = base + _TMP_SUFFIX
+        with open(base, 'rb') as src, open(tmp, 'wb') as out:
+            for raw in src:
+                out.write(rebaser.line(raw))
+        os.replace(tmp, base)
+        logger.info(f"Live chat offsets are now measured from the stream start ({rebaser.shift / 1000:+.1f}s)")
+    os.replace(base, filename)
+    return filename

@@ -5,6 +5,7 @@ FakeChatFD stands in for yt-dlp's YoutubeLiveChatFD: it writes chat fragments th
 (through _download_fragment / _append_fragment into <name>.part, renamed when the chat ends), and
 can be configured to behave like a changed yt-dlp.
 """
+import glob
 import json
 import logging
 import os
@@ -101,9 +102,10 @@ class FakeChatFD:
                     dest.write(fragment)
                 else:
                     self._append_fragment(ctx, fragment)
-        if self.ended:
-            os.replace(tmp, filename)
-        return self.ended, True
+        if not self.ended:
+            raise yt_dlp.utils.DownloadCancelled("stopped")   # how yt-dlp ends a stopped download
+        os.replace(tmp, filename)
+        return True, True
 
 
 class ChatTestBase(unittest.TestCase):
@@ -258,8 +260,8 @@ class DownloadTests(ChatTestBase):
         result = self.download(fake)
         self.assertEqual((result.status, result.resumed, result.filtered), ("ended", True, True))
         self.check_resumed_live_chat()
-        # The saved chat is never handed to yt-dlp
-        self.assertTrue(os.path.exists(self.saved))
+        # Merged into one file once finished
+        self.assertEqual([p for p in live_chat.chat_files(self.filename) if os.path.exists(p)], [self.filename])
 
     def test_yt_dlp_truncating_existing_files_loses_nothing(self):
         self.saved_live_chat()
@@ -340,31 +342,221 @@ class DownloadTests(ChatTestBase):
 
 
 class PackagingTests(ChatTestBase):
-    def test_zipped_chat_is_restored_for_resume(self):
-        base = os.path.join(self.tmp, "out")
-        with zipfile.ZipFile(base + ".live_chat.zip", "w") as z:
-            z.writestr("out.live_chat.json", '{"a": 1}\n')
-        download_Live.LiveStreamDownloader(logger=LOGGER)._restore_packaged_live_chat(base, self.filename)
+    def setUp(self):
+        super().setUp()
+        self.base = os.path.join(self.tmp, "out")
+        self.zip = self.base + ".live_chat.zip"
+
+    def zip_chat(self, data: bytes):
+        with zipfile.ZipFile(self.zip, "w") as z:
+            z.writestr("out.live_chat.json", data)
+
+    def restore(self):
+        download_Live.LiveStreamDownloader(logger=LOGGER)._restore_packaged_live_chat(self.base, self.filename)
+
+    def chat_lines(self, ids_):
+        return dump([replay_line(text_action(f"m{i}", START + 1000 * i), 1000 * i) for i in ids_])
+
+    def test_zipped_chat_is_restored(self):
+        self.zip_chat(b'{"a": 1}\n')
+        self.restore()
         self.assertEqual(self.read(self.saved), b'{"a": 1}\n')
 
-    def test_existing_files_take_precedence_over_the_zip(self):
-        base = os.path.join(self.tmp, "out")
-        with zipfile.ZipFile(base + ".live_chat.zip", "w") as z:
-            z.writestr("out.live_chat.json", '{"old": 1}\n')
-        self.write(self.part, b'{"new": 1}\n')
-        download_Live.LiveStreamDownloader(logger=LOGGER)._restore_packaged_live_chat(base, self.filename)
-        self.assertFalse(os.path.exists(self.saved))
+    def test_files_continuing_the_zipped_chat_are_kept(self):
+        # A restored chat that was downloaded further before the next crash
+        self.zip_chat(self.chat_lines(range(3)))
+        self.write(self.saved, self.chat_lines(range(3)))
+        self.write(self.part, self.chat_lines(range(3, 5)) + b'{"cut')
+        self.restore()
+        self.assertEqual(self.read(self.saved), self.chat_lines(range(3)))
+        self.assertTrue(os.path.exists(self.part))
+
+    def test_crash_while_deleting_zipped_files(self):
+        # Zipped, then the .resume file was deleted before the crash, the .part not yet
+        self.zip_chat(self.chat_lines(range(3)) + self.chat_lines(range(3, 6)))
+        self.write(self.part, self.chat_lines(range(3, 6)))
+        self.restore()
+        self.assertEqual(ids(self.chat()), [f"m{i}" for i in range(6)])
+        self.assertFalse(os.path.exists(self.part))
+
+    def test_crash_while_restoring(self):
+        self.zip_chat(self.chat_lines(range(6)))
+        self.write(self.saved + ".tmp", self.chat_lines(range(2)))
+        self.restore()
+        self.assertEqual(self.read(self.saved), self.chat_lines(range(6)))
+        self.assertFalse(os.path.exists(self.saved + ".tmp"))
+
+    def test_unrelated_files_are_added_after_the_zipped_chat(self):
+        self.zip_chat(self.chat_lines(range(3)))
+        self.write(self.part, self.chat_lines(range(2, 5)))
+        self.restore()
+        self.assertEqual(ids(self.chat()), [f"m{i}" for i in range(5)])
+
+    def test_unreadable_zips_are_kept(self):
+        for expected in (".old", ".old.1"):
+            self.write(self.zip, b"not a zip")
+            self.restore()
+            self.assertTrue(os.path.exists(self.zip + expected))
+        self.assertFalse(os.path.exists(self.zip))
 
     def test_zip_holds_all_chat_files_in_order(self):
-        base = os.path.join(self.tmp, "out")
         self.write(self.saved, b'{"a": 1}\n')
         self.write(self.filename, b'{"b": 2}\n')
         self.write(self.part, b'{"c": 3}\n')
         coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
-        self.assertIsNotNone(coordinator._package_live_chat(base, livechat_filename=self.filename))
-        with zipfile.ZipFile(base + ".live_chat.zip") as z:
+        self.assertIsNotNone(coordinator._package_live_chat(self.base, livechat_filename=self.filename))
+        with zipfile.ZipFile(self.zip) as z:
             self.assertEqual(z.read("out.live_chat.json"), b'{"a": 1}\n{"b": 2}\n{"c": 3}\n')
         self.assertFalse(any(os.path.exists(p) for p in live_chat.chat_files(self.filename)))
+
+
+class RepeatedCrashTests(ChatTestBase):
+    """A live chat download that is interrupted several times, each time leaving different files behind."""
+
+    stream_start = None   # ms; None: unknown, offsets stay measured from the first chat download
+
+    def setUp(self):
+        super().setUp()
+        self.base = os.path.join(self.tmp, "out")
+        self.zip = self.base + ".live_chat.zip"
+        self.info = {"id": "abcdefghijk", "live_status": "is_live"}
+        if self.stream_start is not None:
+            self.info["release_timestamp"] = self.stream_start / 1000
+
+    def coordinator(self):
+        coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
+        coordinator._live_chat_stream_start = live_chat.stream_start_ms(self.info)
+        return coordinator
+
+    def run_download(self, run: int, ended: bool = False, finalize: bool = False):
+        """
+        Download run `run`: it starts 20s after the previous one, sends 5s of chat history first and
+        20 new messages. finalize: the run ended normally (a crash never gets that far).
+        """
+        restart = START + 20_000 * run
+        first = max(0, 20 * run - 5)
+        history = [live_line(text_action(f"m{i}", START + 1000 * i), restart) for i in range(first, 20 * run)]
+        # The welcome message comes last and gets the offset of the line before it
+        last_offset = int(history[-1]["videoOffsetTimeMsec"]) if history else 0
+        history.append(live_line(welcome_action(f"w{run}", restart), restart, offset=last_offset))
+        new = [live_line(text_action(f"m{i}", START + 1000 * i), restart) for i in range(20 * run, 20 * run + 20)]
+        test = self
+
+        class Run(FakeChatFD):
+            fragments = [b"", dump(history), dump(new[:10]), dump(new[10:])]
+
+            def download(self, filename, info_dict, subtitle=False):
+                # yt-dlp would reuse fragment files left by a crash as its own answers
+                test.assertEqual(glob.glob(glob.escape(filename) + "*Frag*"), [])
+                return super().download(filename, info_dict, subtitle)
+
+        Run.ended = ended
+        if os.path.exists(self.zip):
+            self.coordinator()._restore_packaged_live_chat(self.base, self.filename)
+        with mock.patch.object(live_chat, "ResumableLiveChatFD", live_chat.make_resumable(Run)):
+            result = live_chat.download_live_chat(self.ydl, self.info, self.filename, logger=LOGGER)
+        self.assertNotEqual(result.status, "failed")
+        if finalize:
+            self.assertEqual(live_chat.finalize(result, LOGGER), self.filename)
+            # One file
+            self.assertEqual([p for p in live_chat.chat_files(self.filename) if os.path.exists(p)], [self.filename])
+
+    def test_interrupted_five_times(self):
+        # 1. Killed while waiting between chat requests: a partial line and yt-dlp's fragment files remain
+        self.run_download(0)
+        with open(self.part, "ab") as f:
+            f.write(b'{"replayChatItemAction": {"acti')
+        self.write(self.part + "-Frag3", b'{"stale": "response"}')
+        self.write(self.part + "-Frag4.part", b'{"stale')
+
+        # 2. Killed while the saved chat was being gathered (part of the .part already added)
+        self.run_download(1)
+        live_chat.consolidate(self.filename, LOGGER)
+        new_lines = self.read(self.saved).splitlines(keepends=True)
+        self.write(self.part, b"".join(new_lines[-15:]))
+        self.write(self.saved, b"".join(new_lines[:-8]) + new_lines[-8][:10])
+
+        # 3. Chat thread abandoned and zipped by the coordinator, then killed while the zipped
+        #    files were being deleted
+        self.run_download(2)
+        self.coordinator()._package_live_chat(self.base, livechat_filename=self.filename, snapshot=True)
+        os.remove(self.saved)
+
+        # 4. Stopped normally (merged into one file and zipped), then killed while restoring the zip
+        self.run_download(3, finalize=True)
+        self.coordinator()._package_live_chat(self.base, livechat_filename=self.filename)
+        self.write(self.saved + ".tmp", b'{"partly": "restored"}\n')
+
+        # 5. Killed while merging the finished chat (offsets already moved, not renamed yet)
+        self.run_download(4)
+        live_chat.consolidate(self.filename, LOGGER)
+        rebaser = live_chat.OffsetRebaser.for_files([self.saved], live_chat.stream_start_ms(self.info))
+        if rebaser:
+            self.write(self.saved, b"".join(rebaser.line(raw) for raw in self.read(self.saved).splitlines(keepends=True)))
+        self.write(self.saved + ".tmp", b'{"half": "rewritten"}\n')
+
+        self.run_download(5, ended=True, finalize=True)
+        lines = self.chat()
+        chat_ids = [i for i in ids(lines) if not i.startswith("liveChatViewerEngagementMessageRenderer")]
+        self.assertEqual(chat_ids, [f"m{i}" for i in range(120)])
+        self.assertEqual(len(ids(lines)) - len(chat_ids), 1)  # one welcome message
+        # Every offset is measured from the stream start (or the first chat download's start)
+        origin = self.stream_start if self.stream_start is not None else START
+        for line in lines:
+            timestamp = live_chat.action_timestamp(live_chat.line_actions(line)[0])
+            if timestamp is not None:
+                self.assertEqual(int(line["videoOffsetTimeMsec"]), timestamp - origin)
+        self.assertEqual(glob.glob(glob.escape(self.filename) + "*Frag*"), [])
+
+
+class RepeatedCrashWithStreamStartTests(RepeatedCrashTests):
+    stream_start = START - 600_000   # the stream started 10 minutes before the chat download
+
+
+class MergeTests(ChatTestBase):
+    def test_finished_chat_is_one_file_with_stream_start_offsets(self):
+        self.write(self.saved, dump([live_line(text_action(f"m{i}", START + 1000 * i)) for i in range(3)]))
+        self.write(self.part, dump([live_line(text_action(f"m{i}", START + 1000 * i)) for i in range(3, 5)]
+                                   + [live_line(welcome_action("w", START), offset=4000)]))
+        download = live_chat.ChatDownload(self.filename, "ended", resumed=True, filtered=True, stream_start=START - 90_000)
+        self.assertEqual(live_chat.finalize(download, LOGGER), self.filename)
+        self.assertEqual([p for p in live_chat.chat_files(self.filename) if os.path.exists(p)], [self.filename])
+        lines = load([self.filename])
+        self.assertEqual([line["videoOffsetTimeMsec"] for line in lines], ["90000", "91000", "92000", "93000", "94000", "94000"])
+        # Merging again changes nothing
+        before = self.read(self.filename)
+        live_chat.finalize(download, LOGGER)
+        self.assertEqual(self.read(self.filename), before)
+
+    def test_replay_offsets_are_kept(self):
+        data = dump([replay_line(text_action("m1", START), 5000)])
+        self.write(self.filename, data)
+        download = live_chat.ChatDownload(self.filename, "ended", resumed=False, filtered=True, stream_start=START - 90_000)
+        live_chat.finalize(download, LOGGER)
+        self.assertEqual(self.read(self.filename), data)
+
+    def test_upcoming_release_timestamp_is_not_the_start(self):
+        self.assertIsNone(live_chat.stream_start_ms({"live_status": "is_upcoming", "release_timestamp": 1_700_000_000}))
+        self.assertEqual(live_chat.stream_start_ms({"live_status": "was_live", "release_timestamp": 1_700_000_000}), START)
+
+    def test_rebaser_keeps_unknown_and_partial_lines(self):
+        rebaser = live_chat.OffsetRebaser(1000)
+        self.assertEqual(rebaser.line(b'{"x": 1}\n'), b'{"x": 1}\n')
+        self.assertEqual(rebaser.line(b'{"replayChatItemAction": {"actions": []}, "videoOffsetTimeMsec": "5", "isLive": true}'),
+                         b'{"replayChatItemAction": {"actions": []}, "videoOffsetTimeMsec": "5", "isLive": true}')
+        # Not in yt-dlp's key order: parsed instead
+        self.assertEqual(json.loads(rebaser.line(b'{"isLive": true, "videoOffsetTimeMsec": "5", "replayChatItemAction": {}}\n'))["videoOffsetTimeMsec"], "1005")
+
+    def test_abandoned_chat_is_zipped_with_stream_start_offsets(self):
+        base = os.path.join(self.tmp, "out")
+        self.write(self.part, dump([live_line(text_action("m1", START + 1000))]))
+        coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
+        coordinator._live_chat_stream_start = START - 1000
+        coordinator._package_live_chat(base, livechat_filename=self.filename, snapshot=True)
+        with zipfile.ZipFile(base + ".live_chat.zip") as z:
+            self.assertEqual(json.loads(z.read("out.live_chat.json"))["videoOffsetTimeMsec"], "2000")
+        # The source is left for the chat thread, unchanged
+        self.assertEqual(load([self.part])[0]["videoOffsetTimeMsec"], "1000")
 
 
 if __name__ == "__main__":
