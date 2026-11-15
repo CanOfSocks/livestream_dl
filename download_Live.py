@@ -62,7 +62,7 @@ import subprocess
 import threading
 import time
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, NamedTuple, Optional, Union
@@ -140,6 +140,11 @@ RECOVERY_HANDOFF_DELAY: float = 300.0
 PRIVATE_DRAIN_WAIT: float = 5.0
 # How long the live chat thread gets to stop after its timeout before it is abandoned
 LIVE_CHAT_STOP_GRACE: float = 10.0
+# How often a live chat that ended early checks for a newer info.json refresh (see _next_live_chat_info)
+LIVE_CHAT_RETRY_POLL: float = 2.0
+# A live chat that ended is only downloaded again once a segment arrives this long after it ended
+# (segments are at most 5s long, so the stream is still going rather than finishing its last ones)
+LIVE_CHAT_RETRY_SEGMENT_DELAY: float = 20.0
 # Pause in stream recovery when 401 errors are received
 RECOVERY_401_SLEEP: float = 60.0
 # Minimum seconds since the last URL refresh before segments that exhausted their retries trigger another one
@@ -1642,6 +1647,8 @@ class StreamDownloaderBase:
             try:
                 if result is not None:
                     self._learn_from_response(result)
+                    if result.data and self.livestream_coordinator is not None:
+                        self.livestream_coordinator.note_segment_downloaded()
                 else:
                     self._log_download_error(seg, error)
                 self._on_segment_result(result.seg if result is not None else seg, result, error)
@@ -2575,6 +2582,11 @@ class LiveStreamDownloader:
         # Bytes taken from each live chat source file when an abandoned chat was zipped
         self._live_chat_snapshot: dict[str, int] = {}
         self._live_chat_source: Optional[tuple[str, str]] = None
+        # For downloading a live chat again that ended while the stream continues (see
+        # _next_live_chat_info): when a segment was last downloaded (time.time()) and whether all
+        # media downloads have finished
+        self._last_segment_time: float = 0.0
+        self._media_finished = threading.Event()
 
         self._time_reference: Optional[float] = None
         self._time_reference_lock = threading.Lock()
@@ -2626,6 +2638,10 @@ class LiveStreamDownloader:
                 self._time_reference = float(head_time)
                 self.logger.debug(f"Live edge reference for relative start/end times: {self._time_reference:.0f}s")
             return self._time_reference
+
+    def note_segment_downloaded(self) -> None:
+        """Called by the stream downloaders for every segment downloaded with data."""
+        self._last_segment_time = time.time()
 
     def _interruptible_wait(self, seconds: float) -> bool:
         """Wait up to `seconds`. Returns False if a stop/kill was requested during the wait."""
@@ -2765,7 +2781,10 @@ class LiveStreamDownloader:
                 info_dict = formats_info
                 live_chat_thread = self._start_live_chat(info_dict, options)
                 with self.graceful_signal_catcher(disable_graceful=options.get("disable_graceful_shutdown", False)):
-                    self._wait_for_tasks(futures, info_dict, options)
+                    try:
+                        self._wait_for_tasks(futures, info_dict, options)
+                    finally:
+                        self._media_finished.set()
                     self._wait_for_live_chat(live_chat_thread, info_dict, options)
             except KeyboardInterrupt:
                 self._cancel_tasks(executor, futures)
@@ -3135,7 +3154,11 @@ class LiveStreamDownloader:
             live_chat.move_aside(zip_filename, self.logger, f"could not be read ({e})")
 
     def _download_chat_with_ytdlp(self, info_dict: dict, options: dict, livechat_filename: str, proxy) -> None:
-        """Download the chat with yt-dlp's live chat downloader, resuming an existing chat file."""
+        """
+        Download the chat with yt-dlp's live chat downloader, resuming an existing chat file. A chat
+        that ends while the stream is still live and being downloaded is downloaded again (continuing
+        the same file) with the stream downloaders' next info.json refresh (see _next_live_chat_info).
+        """
         ydl_opts = {
             # Only stops yt-dlp warning that the chat download blocks a video download
             'skip_download': True,
@@ -3146,6 +3169,27 @@ class LiveStreamDownloader:
         ydl_opts.update(options.get('ytdlp_options') or {})
         if proxy:
             ydl_opts['proxy'] = proxy
+        while True:
+            download = self._download_chat_once(ydl_opts, info_dict, livechat_filename)
+            if download.status == 'stopped':
+                break
+            info_dict = self._next_live_chat_info(info_dict.get('refresh_time') or 0.0, chat_ended=time.time())
+            if info_dict is None:
+                break
+            self.logger.info("Live chat ended while the stream is still live and downloading, downloading the chat again with the newer info.json")
+            if self._live_chat_stream_start is None:
+                self._live_chat_stream_start = live_chat.stream_start_ms(info_dict)
+        # One file with offsets from the stream start (the first one known, so every download of
+        # the chat uses the same). Not once the coordinator has zipped an abandoned chat: its files
+        # are then left as they are (and adjusted while zipping).
+        if self._live_chat_stream_start is not None:
+            download = replace(download, stream_start=self._live_chat_stream_start)
+        with self._live_chat_lock:
+            if not self._live_chat_packaged:
+                live_chat.finalize(download, self.logger)
+
+    def _download_chat_once(self, ydl_opts: dict, info_dict: dict, livechat_filename: str) -> "live_chat.ChatDownload":
+        """One live chat download with yt-dlp, until the chat ends or the download is stopped."""
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # Runs until the chat ends; _chat_should_stop is checked before each chat request
@@ -3162,11 +3206,37 @@ class LiveStreamDownloader:
             self.logger.info(f"Live chat download stopped, keeping the chat downloaded so far ({counts})")
         else:
             self.logger.warning(f"Live chat download failed, keeping the chat downloaded so far ({counts})")
-        # One file with offsets from the stream start. Not once the coordinator has zipped an
-        # abandoned chat: its files are then left as they are (and adjusted while zipping).
-        with self._live_chat_lock:
-            if not self._live_chat_packaged:
-                live_chat.finalize(download, self.logger)
+        return download
+
+    def _next_live_chat_info(self, used_refresh_time: float, chat_ended: float) -> Optional[dict]:
+        """
+        After the chat download ended (or failed) at chat_ended (time.time()): return the newest
+        info.json refresh made by the stream downloaders to download the chat again with, once there
+        is one newer than the info.json the chat used (refresh_time used_refresh_time; the chat never
+        refreshes it itself) and segments are still being downloaded. yt-dlp reads the chat from the
+        watch page when it starts, so an older refresh still starts at the live point.
+        Segments still being downloaded: one arrived LIVE_CHAT_RETRY_SEGMENT_DELAY after the chat
+        ended (and after the refresh), as a stream that just ended still has its last few to download.
+        Returns None, without waiting further, once the chat is told to stop, the media downloads
+        have finished or the refresh says the stream is no longer live.
+        """
+        logged = False
+        while not (self._chat_should_stop() or self._media_finished.is_set() or self._live_chat_packaged):
+            info = self.refresh_json
+            refreshed = info.get('refresh_time') or 0.0
+            if refreshed > used_refresh_time:
+                if info.get('live_status') != 'is_live':
+                    self.logger.info(f"Live chat: the refreshed info.json says the stream is {info.get('live_status')}, not downloading the chat again")
+                    return None
+                if self._last_segment_time > max(refreshed, chat_ended + LIVE_CHAT_RETRY_SEGMENT_DELAY):
+                    return dict(info)
+            if not logged:
+                self.logger.info("Live chat ended while the media is still downloading, waiting for a newer info.json and segments to see if the stream is still live")
+                logged = True
+            self.chat_stop.wait(LIVE_CHAT_RETRY_POLL)
+        if logged:
+            self.logger.debug("Not downloading the live chat again: the chat was stopped or the media downloads finished")
+        return None
 
     # --- info.json helpers ---
 

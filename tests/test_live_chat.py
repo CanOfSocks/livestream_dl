@@ -11,6 +11,8 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -557,6 +559,170 @@ class MergeTests(ChatTestBase):
             self.assertEqual(json.loads(z.read("out.live_chat.json"))["videoOffsetTimeMsec"], "2000")
         # The source is left for the chat thread, unchanged
         self.assertEqual(load([self.part])[0]["videoOffsetTimeMsec"], "1000")
+
+
+class ChatRetryTests(ChatTestBase):
+    """A live chat that ends while the stream is still being downloaded is downloaded again."""
+
+    def setUp(self):
+        super().setUp()
+        self.coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
+        self.info = {"id": "abcdefghijk", "live_status": "is_live", "release_timestamp": (START - 60_000) / 1000}
+        self.calls = []
+        poll = mock.patch.object(download_Live, "LIVE_CHAT_RETRY_POLL", 0.01)
+        poll.start()
+        self.addCleanup(poll.stop)
+        # The chat never refreshes the info.json itself
+        no_refresh = mock.patch.object(self.coordinator, "refresh_info_json", side_effect=AssertionError("refreshed by the chat"))
+        no_refresh.start()
+        self.addCleanup(no_refresh.stop)
+
+    def refreshed(self, live_status="is_live", age=-60.0):
+        """An info.json refresh made `-age` seconds after now (the chat ends now)."""
+        return dict(self.info, live_status=live_status, refresh_time=time.time() - age, title="refreshed")
+
+    def run_chat(self, *after_runs):
+        """
+        Run the chat thread's download. Run i writes messages m(10i)..m(10i+9) (with the last two of
+        the run before it again), then after_runs[i]() is called, as if while it ran.
+        """
+        test = self
+
+        class Run(FakeChatFD):
+            def download(self, filename, info_dict, subtitle=False):
+                run = len(test.calls)
+                test.calls.append(info_dict)
+                restart = START + 10_000 * run
+                first = max(0, 10 * run - 2)
+                type(self).fragments = [dump([live_line(text_action(f"m{i}", START + 1000 * i), restart)
+                                              for i in range(first, 10 * run + 10)])]
+                result = super().download(filename, info_dict, subtitle)
+                if run < len(after_runs):
+                    after_runs[run]()
+                return result
+
+        self.infos = []
+        original = live_chat.download_live_chat
+
+        def recording(ydl, info_dict, *args, **kwargs):
+            self.infos.append(info_dict)
+            return original(ydl, info_dict, *args, **kwargs)
+
+        self.coordinator._live_chat_stream_start = live_chat.stream_start_ms(self.info)
+        with mock.patch.object(live_chat, "ResumableLiveChatFD", live_chat.make_resumable(Run)), \
+                mock.patch.object(live_chat, "download_live_chat", recording):
+            self.coordinator._download_chat_with_ytdlp(self.info, {}, self.filename, None)
+
+    def segments_continue(self, seconds=120.0):
+        self.coordinator._last_segment_time = time.time() + seconds
+
+    def test_downloaded_again_with_newer_refresh_while_live_and_downloading(self):
+        def first():
+            self.coordinator.refresh_json = self.refreshed()
+            self.segments_continue()
+
+        self.run_chat(first, self.coordinator._media_finished.set)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual([info.get("title") for info in self.infos], [None, "refreshed"])
+        # One file, every message once, offsets from the stream start
+        self.assertEqual([p for p in live_chat.chat_files(self.filename) if os.path.exists(p)], [self.filename])
+        lines = load([self.filename])
+        self.assertEqual(ids(lines), [f"m{i}" for i in range(20)])
+        self.assertEqual([int(line["videoOffsetTimeMsec"]) for line in lines], [60_000 + 1000 * i for i in range(20)])
+
+    def test_downloaded_again_for_each_newer_refresh(self):
+        def again():
+            self.coordinator.refresh_json = self.refreshed()
+            self.segments_continue()
+
+        self.run_chat(again, again, self.coordinator._media_finished.set)
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(ids(load([self.filename])), [f"m{i}" for i in range(30)])
+
+    def test_not_again_when_the_stream_is_no_longer_live(self):
+        for status in ("post_live", "was_live", None):
+            with self.subTest(status=status):
+                self.calls.clear()
+                self.coordinator.refresh_json = {}
+
+                def ended(status=status):
+                    self.coordinator.refresh_json = self.refreshed(live_status=status)
+                    self.segments_continue()
+
+                self.run_chat(ended)
+                self.assertEqual(len(self.calls), 1)
+
+    def test_not_again_without_segments_after_the_refresh(self):
+        def stalled():
+            self.coordinator.refresh_json = self.refreshed()
+            self.coordinator._last_segment_time = time.time()   # before the refresh
+            threading.Timer(0.2, self.coordinator._media_finished.set).start()
+
+        self.run_chat(stalled)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_downloaded_again_with_a_refresh_from_before_the_chat_ended(self):
+        # Newer than the info.json the chat used is enough: yt-dlp starts at the live point anyway
+        def earlier_refresh():
+            self.coordinator.refresh_json = self.refreshed(age=10.0)
+            self.segments_continue()
+
+        self.run_chat(earlier_refresh, self.coordinator._media_finished.set)
+        self.assertEqual([info.get("title") for info in self.infos], [None, "refreshed"])
+
+    def test_not_again_without_a_newer_refresh(self):
+        self.info["refresh_time"] = time.time() + 3600   # the newest refresh already
+
+        def same_refresh():
+            self.coordinator.refresh_json = dict(self.info)
+            self.segments_continue()
+            threading.Timer(0.2, self.coordinator._media_finished.set).start()
+
+        self.run_chat(same_refresh)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_not_again_when_segments_stop_soon_after_the_chat_ended(self):
+        # The stream's last few segments, still downloaded after the chat ended with the stream
+        def last_segments():
+            self.coordinator.refresh_json = self.refreshed(age=10.0)
+            self.coordinator._last_segment_time = time.time() + download_Live.LIVE_CHAT_RETRY_SEGMENT_DELAY / 2
+            threading.Timer(0.2, self.coordinator._media_finished.set).start()
+
+        self.run_chat(last_segments)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_waiting_ends_when_the_chat_is_stopped(self):
+        threading.Timer(0.2, self.coordinator.chat_stop.set).start()
+        self.run_chat()
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(ids(load([self.filename])), [f"m{i}" for i in range(10)])
+
+    def test_stopped_chat_is_not_downloaded_again(self):
+        self.coordinator.refresh_json = self.refreshed(age=-3600.0)
+        self.segments_continue(7200.0)
+
+        class Stopped(FakeChatFD):
+            ended = False
+            fragments = [dump([live_line(text_action("m0", START))])]
+
+        calls = []
+        original = live_chat.download_live_chat
+
+        def counting(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(live_chat, "ResumableLiveChatFD", live_chat.make_resumable(Stopped)), \
+                mock.patch.object(live_chat, "download_live_chat", counting):
+            self.coordinator._download_chat_with_ytdlp(self.info, {}, self.filename, None)
+        self.assertEqual(len(calls), 1)
+
+    def test_media_downloads_mark_finished_and_segments(self):
+        coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
+        before = time.time()
+        coordinator.note_segment_downloaded()
+        self.assertGreaterEqual(coordinator._last_segment_time, before)
+        self.assertFalse(coordinator._media_finished.is_set())
 
 
 if __name__ == "__main__":
