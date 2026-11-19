@@ -5,7 +5,7 @@ FROM denoland/deno:bin AS deno_bin
 FROM gcr.io/distroless/cc AS cc
 
 # Stage 3: Final Image
-FROM python:3.13-alpine
+FROM python:3.15-alpine
 
 ARG PYTHONDONTWRITEBYTECODE=1
 
