@@ -54,6 +54,7 @@ import mimetypes
 import os
 import random
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -2831,8 +2832,9 @@ class FFmpegMuxArgs:
 
 def _make_merger(ydl, ffmpeg_command_file: FileInfo):
     """FFmpegMetadataPP subclass that writes the ffmpeg command and optionally runs it."""
-    from yt_dlp.postprocessor.ffmpeg import (FFmpegMetadataPP, FFmpegPostProcessorError, PostProcessor,
-                                             encodeArgument, shell_quote, variadic, Popen)
+    from yt_dlp.postprocessor import FFmpegMetadataPP, PostProcessor
+    from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessorError
+    from yt_dlp.utils import Popen, encodeArgument, shell_quote, variadic
 
     class LiveStreamDLMerger(FFmpegMetadataPP):
         def __init__(self, downloader, ffmpeg_command_file: FileInfo = None):
@@ -2885,6 +2887,130 @@ def _make_merger(ydl, ffmpeg_command_file: FileInfo):
             return stderr
 
     return LiveStreamDLMerger(downloader=ydl, ffmpeg_command_file=ffmpeg_command_file)
+
+
+class MuxTool:
+    """
+    Runs the final ffmpeg mux. yt-dlp's FFmpegMetadataPP is used first: it finds ffmpeg (honouring
+    --ffmpeg-location), applies yt-dlp's metadata and --postprocessor-args options. Those parts use
+    yt-dlp internals that may change in any release, so each is guarded: if one fails, a warning is
+    logged and livestream_dl builds that part itself (an ffmpeg command with basic metadata), so a
+    yt-dlp change costs metadata at worst, never the merged file.
+    """
+    # Raised by yt-dlp internals that changed (as opposed to ffmpeg itself failing)
+    INTERNAL_ERRORS = (AttributeError, TypeError, ImportError, NameError, KeyError)
+
+    def __init__(self, ydl, ffmpeg_command_file: FileInfo, logger: LoggerLike):
+        self.logger = logger
+        self.ffmpeg_command_file = ffmpeg_command_file
+        self.ytdlp = None
+        try:
+            self.ytdlp = _make_merger(ydl, ffmpeg_command_file)
+        except self.INTERNAL_ERRORS as e:
+            self._fallback_warning("set up yt-dlp's ffmpeg postprocessor", e)
+
+    def _fallback_warning(self, what: str, error: BaseException) -> None:
+        self.logger.warning(f"Unable to {what} ({type(error).__name__}: {error}), probably due to a yt-dlp change. "
+                            f"Using livestream_dl's own ffmpeg command instead")
+
+    @property
+    def add_metadata(self) -> bool:
+        try:
+            return bool(self.ytdlp._add_metadata) if self.ytdlp is not None else True
+        except self.INTERNAL_ERRORS:
+            return True
+
+    @property
+    def add_infojson(self) -> bool:
+        try:
+            return bool(self.ytdlp._add_infojson) if self.ytdlp is not None else False
+        except self.INTERNAL_ERRORS:
+            return False
+
+    def metadata_args(self, info_dict: dict) -> list[str]:
+        if self.ytdlp is not None:
+            try:
+                return [item for pair in self.ytdlp._get_metadata_opts(info_dict) for item in pair]
+            except self.INTERNAL_ERRORS as e:
+                self._fallback_warning("get the metadata options from yt-dlp", e)
+        return basic_metadata_args(info_dict)
+
+    def audio_codec(self, path: str) -> Optional[str]:
+        if self.ytdlp is not None:
+            try:
+                return self.ytdlp.get_audio_codec(path)
+            except self.INTERNAL_ERRORS as e:
+                self.logger.debug(f"yt-dlp's get_audio_codec failed: {e}")
+        return probe_audio_codec(path)
+
+    def run(self, input_path_opts: list[tuple[str, list[str]]], output_path_opts: list[tuple[str, list[str]]], merge: bool = True):
+        if self.ytdlp is not None:
+            try:
+                return self.ytdlp.real_run_ffmpeg(input_path_opts, output_path_opts, merge=merge)
+            except self.INTERNAL_ERRORS as e:
+                self._fallback_warning("run ffmpeg through yt-dlp", e)
+        return self._run_own(input_path_opts, output_path_opts, merge)
+
+    def _run_own(self, input_path_opts, output_path_opts, merge: bool):
+        executable = shutil.which("ffmpeg")
+        if executable is None:
+            raise FileNotFoundError("ffmpeg not found")
+        cmd = [executable, '-y', '-loglevel', 'repeat+info']
+        for path, opts in input_path_opts:
+            cmd += [*opts, '-i', _ffmpeg_path_argument(path)]
+        for path, opts in output_path_opts:
+            cmd += [*opts, '-movflags', '+faststart', _ffmpeg_path_argument(path)]
+        command_string = subprocess.list2cmdline(cmd) if os.name == 'nt' else " ".join(shlex.quote(arg) for arg in cmd)
+        self.logger.debug(f"ffmpeg command line: {command_string}")
+        with open(self.ffmpeg_command_file, 'w', encoding="utf-8") as f:
+            f.write(command_string + "\n")
+        if not merge:
+            return None
+        process = subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True, stdin=subprocess.DEVNULL)
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, cmd, output=process.stdout, stderr=process.stderr)
+        return process.stderr
+
+
+def _ffmpeg_path_argument(path: str) -> str:
+    """A path ffmpeg can't mistake for an option or protocol (as yt-dlp's _ffmpeg_filename_argument)."""
+    path = str(path)
+    return f"file:{path}" if path.startswith('-') or re.match(r'^[A-Za-z][A-Za-z0-9+.-]+:(?![\\/])', path) else path
+
+
+def basic_metadata_args(info_dict: dict) -> list[str]:
+    """Title, artist, date, description and URL metadata (used if yt-dlp's metadata options fail)."""
+    upload_date = str(info_dict.get('upload_date') or info_dict.get('release_date') or '')
+    date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}" if len(upload_date) == 8 else None
+    values = {
+        # yt-dlp's metadata uses 'title' (for a live stream it includes the recording date)
+        'title': info_dict.get('title') or info_dict.get('fulltitle'),
+        'artist': info_dict.get('uploader') or info_dict.get('channel'),
+        'date': date,
+        'description': info_dict.get('description'),
+        'synopsis': info_dict.get('description'),
+        'purl': info_dict.get('webpage_url'),
+        'comment': info_dict.get('webpage_url'),
+    }
+    args: list[str] = []
+    for key, value in values.items():
+        if value:
+            args += ['-metadata', f"{key}={value}"]
+    return args
+
+
+def probe_audio_codec(path: str) -> Optional[str]:
+    """Codec name of the first audio stream according to ffprobe, None if unknown."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+    try:
+        result = subprocess.run([ffprobe, '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name',
+                                 '-of', 'default=noprint_wrappers=1:nokey=1', str(path)],
+                                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        return result.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 # ==============================================================================================
@@ -3801,7 +3927,7 @@ class LiveStreamDownloader:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ffmpeg_command_file = FileInfo(f"{output_path}.ffmpeg.txt", file_type='ffmpeg_command')
             file_names["streams"][manifest]['ffmpeg_cmd'] = ffmpeg_command_file
-            merger = _make_merger(ydl, ffmpeg_command_file)
+            merger = MuxTool(ydl, ffmpeg_command_file, logger=self.logger)
 
             # yt-dlp's metadata helpers read the formats from info_dict["requested_formats"]
             info_dict["requested_formats"] = self._requested_formats(stream)
@@ -3813,9 +3939,9 @@ class LiveStreamDownloader:
             self._add_stream_maps(mux, info_dict["requested_formats"], merger)
             if file_names.get('thumbnail', None) and options.get('embed_thumbnail', True):
                 self._add_thumbnail(mux, file_names, ext)
-            if merger._add_metadata:
-                mux.args.extend(item for pair in merger._get_metadata_opts(info_dict) for item in pair)
-            if merger._add_infojson:
+            if merger.add_metadata:
+                mux.args.extend(merger.metadata_args(info_dict))
+            if merger.add_infojson:
                 self._add_info_json(mux, file_names, ext)
 
             do_merge = options.get("merge", True)
@@ -3826,8 +3952,8 @@ class LiveStreamDownloader:
                 self.logger.log(setup_logger.VERBOSE_LEVEL_NUM, "Writing ffmpeg command instead of merging")
             input_args = ['-thread_queue_size', '1024', "-seekable", "0"]
             try:
-                merger.real_run_ffmpeg([(path, input_args) for path in mux.inputs],
-                                       [(str(merged_file.absolute()), mux.args)], merge=do_merge)
+                merger.run([(path, input_args) for path in mux.inputs],
+                           [(str(merged_file.absolute()), mux.args)], merge=do_merge)
             except (subprocess.CalledProcessError, FFmpegPostProcessorError) as e:
                 if isinstance(e, subprocess.CalledProcessError):
                     self.logger.error(e.stderr)
@@ -3867,7 +3993,7 @@ class LiveStreamDownloader:
                 mux.args.extend(['-map', f'{i}:a:0'])
                 try:
                     # AAC audio from HLS (m3u8) is in ADTS framing, which MP4-style containers can't hold
-                    if fmt['protocol'].startswith('m3u8') and merger.get_audio_codec(fmt['filepath']) == 'aac':
+                    if str(fmt.get('protocol') or '').startswith('m3u8') and merger.audio_codec(fmt['filepath']) == 'aac':
                         mux.args.extend([f'-bsf:a:{mux.audio_streams}', 'aac_adtstoasc'])
                 except Exception as e:
                     self.logger.warning(f"Unable to fix aac: {type(e).__name__}: {e}")

@@ -66,6 +66,37 @@ class FullPipelineTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_download_merge_and_move(self):
+        self._download_merge_and_move()
+
+    def test_merge_without_yt_dlp_internals(self):
+        """A yt-dlp release that changes the private postprocessor parts must not stop the merge."""
+        original = download_Live._make_merger
+
+        def changed_internals(*args, **kwargs):
+            raise AttributeError("'FFmpegMetadataPP' object has no attribute '_configuration_args'")
+
+        download_Live._make_merger = changed_internals
+        try:
+            probe = self._download_merge_and_move()
+        finally:
+            download_Live._make_merger = original
+        self.assertTrue(probe["format"]["tags"].get("title", "").startswith("Test stream"))
+
+    def test_metadata_fallback_when_yt_dlp_metadata_changes(self):
+        from yt_dlp.postprocessor import FFmpegMetadataPP
+        original = FFmpegMetadataPP._get_metadata_opts
+
+        def changed(self, info):
+            raise TypeError("_get_metadata_opts() missing 1 required positional argument")
+
+        FFmpegMetadataPP._get_metadata_opts = changed
+        try:
+            probe = self._download_merge_and_move()
+        finally:
+            FFmpegMetadataPP._get_metadata_opts = original
+        self.assertTrue(probe["format"]["tags"].get("title", "").startswith("Test stream"))
+
+    def _download_merge_and_move(self) -> dict:
         stream = MockStream(total_segments=self.total, initial_head=self.total - 1, segment_duration=0.15,
                             nominal_duration=0.25, segment_provider=lambda itag, sq: self.media[itag][sq])
         out_dir = os.path.join(self.tmp, "output")
@@ -101,6 +132,7 @@ class FullPipelineTest(unittest.TestCase):
         kinds = sorted(s["codec_type"] for s in probe["streams"])
         self.assertEqual(kinds, ["audio", "video"])
         self.assertAlmostEqual(float(probe["format"]["duration"]), 6.0, delta=1.0)
+        return probe
 
 
 if __name__ == "__main__":
