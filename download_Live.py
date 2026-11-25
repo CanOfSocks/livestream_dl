@@ -141,6 +141,9 @@ ENDED_TAIL_STATUSES = frozenset({None, 404, 503})
 # While live, a segment at the head failing a whole submission like that suggests the stream ended:
 # refresh the URL (to learn the live status) if the last refresh is at least this old
 TAIL_FAILURE_REFRESH_MIN_INTERVAL: float = 120.0
+# A refreshed URL is checked with one header probe before replacing the current URL, unless the
+# current URL expires within this many seconds or is already failing (see _refreshed_url_usable)
+REFRESH_VALIDATE_EXPIRY_MARGIN: float = 300.0
 # Minimum wait before requesting the next (optimistic) segment at the live edge
 OPTIMISTIC_MIN_WAIT: float = 2.0
 # Refresh the URL once 403 errors have persisted this long since the last refresh
@@ -1198,32 +1201,80 @@ class StreamDownloaderBase:
 
     # --- HTTP ---
 
+    def _probe_headers(self, client: httpx.Client, url: str) -> httpx.Response:
+        """
+        Request the response headers of `url` (the stream head: X-Head-Seqnum / X-Head-Time-Sec)
+        without downloading a body. Uses HEAD, as yt-dlp and ytarchive do, so no segment bytes are
+        sent and the connection is kept for reuse. Falls back to a GET closed before its body is
+        read if HEAD doesn't report the stream head (remembered for this stream), as with HTTP/1.1
+        closing a GET early discards its connection.
+        """
+        use_head = getattr(self, "_head_probe_ok", None) is not False
+        if use_head:
+            response = client.head(url)
+            status = response.status_code
+            if "X-Head-Seqnum" in response.headers:
+                self._head_probe_ok = True
+                return response
+            # An error status is the answer a GET would give too, once HEAD is known to work
+            if status >= 400 and status not in (405, 501) and (getattr(self, "_head_probe_ok", None) or status not in (401, 403)):
+                return response
+        with client.stream("GET", url) as response:
+            if use_head and "X-Head-Seqnum" in response.headers:
+                self.logger.info(f"({self.format}) HEAD requests don't report the stream head, using GET for header probes")
+                self._head_probe_ok = False
+            return response
+
     def get_Headers(self, url, client: Optional[httpx.Client] = None) -> Optional[httpx.Headers]:
-        """
-        Request `url` and return the response headers without downloading the body.
-        The body (a full media segment) is not needed; closing the streamed response early saves
-        downloading a whole segment every time the live edge is probed.
-        """
+        """Probe `url` for its response headers (see _probe_headers) and track 401/403 responses."""
         client = client if (client is not None and not client.is_closed) else self._ensure_client()
         try:
-            with client.stream("GET", str(url)) as response:
-                # 200 and 204 responses appear to have valid headers so far
-                if response.status_code in (200, 204):
-                    self.is_403 = self.is_401 = False
-                elif response.status_code == 403:
-                    self.logger.warning("Received 403 error, marking for URL refresh...")
-                    self.is_403 = True
-                elif response.status_code == 401:
-                    self.is_401 = True
-                else:
-                    self.logger.debug(f"Error retrieving headers: {response.status_code}")
-                    self.logger.debug(json.dumps(dict(response.headers), indent=4))
-                return response.headers
+            response = self._probe_headers(client, str(url))
+            # 200 and 204 responses appear to have valid headers so far
+            if response.status_code in (200, 204):
+                self.is_403 = self.is_401 = False
+            elif response.status_code == 403:
+                self.logger.warning("Received 403 error, marking for URL refresh...")
+                self.is_403 = True
+            elif response.status_code == 401:
+                self.is_401 = True
+            else:
+                self.logger.debug(f"Error retrieving headers: {response.status_code}")
+                self.logger.debug(json.dumps(dict(response.headers), indent=4))
+            return response.headers
         except httpx.TimeoutException as e:
             self.logger.info(f"Timed out updating fragments: {e}")
         except Exception as e:
             self.logger.exception(colour(e, RED))
         return None
+
+    def _refreshed_url_usable(self, new_url: YoutubeURL.YoutubeURL) -> bool:
+        """
+        Check a refreshed URL before it replaces the current one. A broken extraction (a missing
+        PO token, a client change) often returns URLs that answer 403. While the current URL is
+        unexpired and working, it is kept if the new URL is refused or doesn't report the stream
+        head. If the current URL is expiring or failing there is nothing to lose, so the new one
+        is used. An inconclusive check (network error) accepts the new URL.
+        """
+        now = time.time()
+        if not self._url_is_valid(self.stream_url, now + REFRESH_VALIDATE_EXPIRY_MARGIN) or self.is_403 or self.is_401:
+            return True
+        try:
+            response = self._probe_headers(self._ensure_client(), str(new_url))
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            self.logger.debug(f"({self.format}) Unable to check the refreshed URL ({e}), using it")
+            return True
+        status = response.status_code
+        refused = status in (401, 403, 404, 410)
+        no_head = status in (200, 204) and _int_header(response.headers, "X-Head-Seqnum") is None
+        if refused or no_head:
+            reason = f"answers {status}" if refused else "doesn't report the stream head"
+            expires = datetime.fromtimestamp(int(self.stream_url.expire)).strftime('%Y-%m-%d %H:%M:%S') if self.stream_url.expire else "unknown"
+            self.logger.warning(f"({self.format}) The refreshed URL {reason}; keeping the current URL, which still works (expires {expires})")
+            return False
+        return True
 
     def download_segment(self, segment_url: str, segment_order: int, client: Optional[httpx.Client] = None,
                          immediate_403s: bool = False, max_retries: Optional[int] = None) -> SegmentResult:
@@ -1529,6 +1580,8 @@ class StreamDownloaderBase:
         if stream_url.url_kind != self.stream_url.url_kind:
             # Never expected (the selector matches the kind), but never mix kinds in one download
             self.logger.warning(f"Ignoring refreshed URL of {self.format}: {stream_url.url_kind} URL, downloading {self.stream_url.url_kind}")
+            return
+        if str(stream_url) != str(self.stream_url) and not self._refreshed_url_usable(stream_url):
             return
         if stream_url.protocol != self.stream_url.protocol:
             self.logger.info(f"({self.format}) yt-dlp now lists this format as '{stream_url.protocol}' (was '{self.stream_url.protocol}'), "

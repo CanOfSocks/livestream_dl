@@ -66,6 +66,9 @@ class MockStream:
         self.manifest = 1
         self.requests: list[tuple[int, Optional[int]]] = []
         self.header_only_requests = 0
+        # HEAD requests report the stream head like googlevideo; False answers them with 405
+        self.head_supported = True
+        self.head_requests = 0
 
     def head(self) -> int:
         elapsed = time.monotonic() - self.start
@@ -83,6 +86,25 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):  # silence
         pass
+
+    def do_HEAD(self):
+        stream = self.server.stream
+        parsed = urlparse(self.path)
+        qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        with stream.lock:
+            stream.head_requests += 1
+        head = stream.head()
+        headers = {
+            "X-Head-Seqnum": str(head),
+            "X-Head-Time-Sec": str(int(round(head * stream.nominal_duration))) if head > 0 else "0",
+            "Content-Type": "audio/mp4" if int(qs.get("itag", 0)) == AUDIO_ITAG else "video/mp4",
+        }
+        if not stream.head_supported:
+            return self._send(405, b"", {})
+        expire = qs.get("expire")
+        if stream.private or (expire and int(expire) < time.time()):
+            return self._send(403, b"", headers)
+        return self._send(200, b"", headers)
 
     def do_GET(self):
         stream = self.server.stream

@@ -277,6 +277,58 @@ class StreamEndRefreshTests(ScenarioBase):
             self.assertEqual(stream.stream_url, url)
 
 
+class HeaderProbeTests(ScenarioBase):
+    def _download(self):
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, self.options(), manifest=url.manifest))
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(self.total_segments))))
+
+    def test_head_requests_probe_the_stream_head(self):
+        self._download()
+        self.assertGreater(self.stream.head_requests, 0)
+        # No segment body is requested just for its headers
+        self.assertEqual(self.stream.header_only_requests, 0)
+
+    def test_get_fallback_when_head_unsupported(self):
+        self.stream.head_supported = False
+        self._download()
+        self.assertGreater(self.stream.header_only_requests, 0)
+        # HEAD is given up after the first probe shows GET is needed
+        self.assertLessEqual(self.stream.head_requests, 1)
+
+
+class RefreshValidationTests(ScenarioBase):
+    def _refresh_with(self, stream, info):
+        return stream._process_refresh_result((info, "is_live"), None, follow_manifest=False)
+
+    def test_broken_refresh_keeps_working_url(self):
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        # A broken extraction: its URLs are refused (the mock answers 403 for an expired URL)
+        broken = make_info_dict(self.server, expire=int(time.time()) - 10)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            with self.assertLogs(stream.logger, level="WARNING") as logs:
+                self._refresh_with(stream, broken)
+            self.assertEqual(str(stream.stream_url), str(url))
+            self.assertTrue(any("keeping the current URL" in line for line in logs.output))
+            self.assertNotIn(str(stream_url_for(broken, VIDEO_ITAG)), [str(u) for u in stream.stream_urls])
+
+    def test_working_refresh_is_used(self):
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        fresh = make_info_dict(self.server, expire=int(time.time()) + 9000)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            self._refresh_with(stream, fresh)
+            self.assertEqual(stream.stream_url.expire, stream_url_for(fresh, VIDEO_ITAG).expire)
+
+    def test_unchecked_refresh_used_when_current_url_expiring(self):
+        self.info = make_info_dict(self.server, expire=int(time.time()) + 60)
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        broken = make_info_dict(self.server, expire=int(time.time()) - 10)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            self._refresh_with(stream, broken)
+            self.assertEqual(str(stream.stream_url), str(stream_url_for(broken, VIDEO_ITAG)))
+
+
 class PostLiveTests(ScenarioBase):
     """Streams that have ended: yt-dlp relabels the live adaptive formats (see make_post_live_info)."""
     total_segments = 20
