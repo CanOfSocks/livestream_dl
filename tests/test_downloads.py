@@ -3,6 +3,7 @@ End-to-end download scenarios against the local mock googlevideo server (no YouT
 Each scenario must finish within a time limit, otherwise it is reported as a hang.
 """
 import logging
+import math
 import os
 import shutil
 import sqlite3
@@ -378,8 +379,21 @@ class PostLiveTests(ScenarioBase):
         file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, url, options, manifest=url.manifest), timeout=30)
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(18))))
         # Full retries would be 11 submissions x 11 attempts per segment
-        per_submission = download_Live.OPTIMISTIC_SEGMENT_RETRIES + 1
-        self.assertLessEqual(self._tail_requests(), 2 * download_Live.ENDED_TAIL_MAX_SUBMISSIONS * per_submission + 4)
+        per_submission = download_Live.ENDED_TAIL_REQUEST_RETRIES + 1
+        self.assertLessEqual(self._tail_requests(), 2 * download_Live.ENDED_TAIL_MAX_SUBMISSIONS * per_submission)
+
+    def test_tail_answering_204_like_youtube(self):
+        # YouTube answers the last segments of an ended stream with 204 (no content)
+        self.stream.fail(VIDEO_ITAG, 18, 204, times=10000)
+        self.stream.fail(VIDEO_ITAG, 19, 204, times=10000)
+        self.extraction_behaviour = self._post_live_extraction
+        info = make_post_live_info(self.server)
+        url = stream_url_for(info, VIDEO_ITAG)
+        coordinator = self.coordinator()
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, url, self.options(segment_retries=10), manifest=url.manifest),
+                                   timeout=30)
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(18))))
+        self.assertLessEqual(self._tail_requests(), 2 * download_Live.ENDED_TAIL_MAX_SUBMISSIONS * (download_Live.ENDED_TAIL_REQUEST_RETRIES + 1))
 
     def test_missing_tail_direct_mode(self):
         self.stream.fail(VIDEO_ITAG, 18, 404, times=10000)
@@ -401,6 +415,80 @@ class PostLiveTests(ScenarioBase):
         coordinator = self.coordinator()
         file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, url, self.options(segment_retries=10), manifest=url.manifest))
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(20))))
+
+
+class DvrWindowTests(ScenarioBase):
+    """
+    A stream longer than YouTube's 7-day DVR window. Each segment is reported as 10000 s long, so
+    7 days are about 60 segments: the head (100) is 11.6 days in, segments before 40 are gone.
+    """
+    total_segments = 101
+    initial_head = 100
+    nominal_duration = 10000.0
+
+    def setUp(self):
+        super().setUp()
+        self.stream.oldest_available = 40
+        self.extraction_behaviour = lambda: (make_post_live_info(self.server), "post_live")
+        self.info = make_post_live_info(self.server)
+
+    def _segment_requests(self, below: int) -> int:
+        return sum(1 for itag, sq in self.stream.requests if sq is not None and sq < below)
+
+    def test_oldest_available_segment_found_with_few_requests(self):
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            self.assertEqual(stream._find_dvr_floor(), 40)
+        self.assertLessEqual(len(self.stream.requests), 12)
+
+    def test_database_mode_skips_expired_segments(self):
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, self.options(), manifest=url.manifest))
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(40, 101))))
+        self.assertLessEqual(self._segment_requests(40), 12)
+
+    def test_direct_mode_skips_expired_segments(self):
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream_direct(self.info, url, self.options(), manifest=url.manifest))
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(40, 101))))
+        self.assertLessEqual(self._segment_requests(40), 12)
+
+    def test_formats_share_one_check(self):
+        coordinator = self.coordinator()
+        video, audio = stream_url_for(self.info, VIDEO_ITAG), stream_url_for(self.info, AUDIO_ITAG)
+        for url in (video, audio):
+            run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, self.options(), manifest=url.manifest))
+        self.assertLessEqual(self._segment_requests(40), 12)
+
+    def test_constant_used_when_check_inconclusive(self):
+        # Every old segment answers 403: nothing can be learned, so the 7-day constant is used
+        for sq in range(0, 60):
+            self.stream.fail(VIDEO_ITAG, sq, 403, times=5)
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            expected = 100 - math.ceil(download_Live.DVR_WINDOW_SECONDS / stream.estimated_segment_duration) + 1
+            self.assertEqual(stream._find_dvr_floor(), expected)
+
+    def test_window_option(self):
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options(dvr_window=0)) as stream:
+            self.assertEqual(stream._find_dvr_floor(), 0)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options(dvr_window=24)) as stream:
+            # 24 hours of 10000 s segments: the last 9 segments, no requests needed
+            requests = len(self.stream.requests)
+            self.assertEqual(stream._find_dvr_floor(), 100 - 9 + 1)
+            self.assertEqual(len(self.stream.requests), requests)
+
+    def test_short_stream_needs_no_check(self):
+        self.stream.oldest_available = 0
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        self.stream.nominal_duration = 1000.0  # 100 segments = 1.2 days
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            requests = len(self.stream.requests)
+            self.assertEqual(stream._find_dvr_floor(), 0)
+            self.assertEqual(len(self.stream.requests), requests)
 
 
 class TimeWindowTests(ScenarioBase):

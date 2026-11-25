@@ -377,6 +377,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument('--segment-retries', type=int, default=10, help="Number of times to retry grabbing a segment.")
 
+    parser.add_argument('--dvr-window', type=float, default=None, metavar="HOURS", help="YouTube only keeps the last 7 days (168 hours) of a live stream. Segments older than this are not requested; for streams longer than 5 days the oldest available segment is also checked with a few requests. Set this if YouTube changes the limit, or 0 to request every segment.")
+
     parser.add_argument('--disable-graceful-shutdown', action='store_true', help="Disable graceful shutdown for downloader. Useful for testing when you don't want merging to be triggered on a keyboard interrupt.")
 
     parser.add_argument('--no-merge', action='store_false', dest='merge', help="Don't merge video using ffmpeg")

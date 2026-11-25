@@ -69,6 +69,8 @@ class MockStream:
         # HEAD requests report the stream head like googlevideo; False answers them with 405
         self.head_supported = True
         self.head_requests = 0
+        # Segments before this were dropped from the DVR window: like YouTube, GET answers 500
+        self.oldest_available = 0
 
     def head(self) -> int:
         elapsed = time.monotonic() - self.start
@@ -131,6 +133,8 @@ class _Handler(BaseHTTPRequestHandler):
             status = pending_failures.pop(0) if pending_failures else None
         if status is not None:
             return self._send(status, b"", headers)
+        if sq < stream.oldest_available:
+            return self._send(500, b"", headers)
         if sq > head:
             return self._send(404, b"", headers)
         return self._send(200, stream.segment_provider(itag, sq), headers)

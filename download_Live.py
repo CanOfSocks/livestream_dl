@@ -137,10 +137,22 @@ OPTIMISTIC_FAILS_MAX: int = 10
 # submissions with one of ENDED_TAIL_STATUSES (None = connection error) instead of the full retries.
 ENDED_TAIL_SEGMENTS: int = 2
 ENDED_TAIL_MAX_SUBMISSIONS: int = 2
-ENDED_TAIL_STATUSES = frozenset({None, 404, 503})
+ENDED_TAIL_STATUSES = frozenset({None, 204, 404, 503})
+# Per-request retries for those segments. YouTube answers them with 204 after holding each request
+# for several seconds, so a few attempts are enough to tell
+ENDED_TAIL_REQUEST_RETRIES: int = 2
 # While live, a segment at the head failing a whole submission like that suggests the stream ended:
 # refresh the URL (to learn the live status) if the last refresh is at least this old
 TAIL_FAILURE_REFRESH_MIN_INTERVAL: float = 120.0
+# YouTube keeps the last 7 days of a live stream (checked Nov 2026 on 60-260 day 24/7 streams: segments
+# 6.9 days old answer 200, 7.1 days old answer 500; yt-dlp still assumes 5 days, the ytarchive fork 7).
+# Segments older than --dvr-window (default DVR_WINDOW_SECONDS) are not requested. For streams longer
+# than DVR_PROBE_MIN_SECONDS, the oldest available segment is found with a short binary search between
+# DVR_PROBE_MIN_SECONDS and window + DVR_PROBE_MARGIN_SECONDS, so the constant isn't relied on.
+DVR_WINDOW_SECONDS: float = 7 * 24 * 3600.0
+DVR_PROBE_MIN_SECONDS: float = 5 * 24 * 3600.0
+DVR_PROBE_MARGIN_SECONDS: float = 12 * 3600.0
+DVR_PROBE_MAX_REQUESTS: int = 40
 # A refreshed URL is checked with one header probe before replacing the current URL, unless the
 # current URL expires within this many seconds or is already failing (see _refreshed_url_usable)
 REFRESH_VALIDATE_EXPIRY_MARGIN: float = 300.0
@@ -183,6 +195,13 @@ DIRECT_WRITE_GIVE_UP_SECONDS: float = 120.0
 DIRECT_WRITE_RETRY_SLEEP: float = 1.0
 
 WRITE_BUFFER_SIZE: int = 1024 * 1024
+# File name components are limited to 255 bytes on ext4/ZFS/Btrfs (the Docker image runs on Linux);
+# a Japanese title is 3 bytes per character in UTF-8. The output base name is kept short enough for
+# the longest suffix added to it (e.g. ".2.140-drc.state.bkup.tmp", ".live_chat.json.part").
+FILENAME_MAX_BYTES: int = 255
+FILENAME_SUFFIX_RESERVE: int = 40
+# Output template fields shortened (with yt-dlp's own "%(field).<N>B" byte limit) when a name is too long
+_TITLE_FIELD_RE = re.compile(r'%\((fulltitle|title)\)s')
 # Segment bodies are read in chunks of this size so the per-segment time limit can be checked
 SEGMENT_READ_CHUNK_SIZE: int = 64 * 1024
 ATOM_BASED_EXTENSIONS = frozenset({".mp4", ".m4a", ".mov", ".m4v", ".f4v", ".3gp"})
@@ -269,6 +288,33 @@ def parse_content_type(value: Optional[str]) -> tuple[Optional[str], Optional[st
     major, _, minor = str(value).partition("/")
     minor = minor.split(";", 1)[0].strip()
     return major.strip().lower() or None, minor or None
+
+
+def _path_components(path: str) -> list[str]:
+    return [part for part in re.split(r'[\\/]', str(path)) if part]
+
+
+def filename_excess_bytes(path: str) -> int:
+    """
+    Bytes by which `path` exceeds the file name limit: its last component (the base name the
+    suffixes are added to) may use FILENAME_MAX_BYTES - FILENAME_SUFFIX_RESERVE bytes, folders
+    FILENAME_MAX_BYTES. 0 or less if it fits.
+    """
+    parts = _path_components(path)
+    if not parts:
+        return 0
+    excess = len(parts[-1].encode('utf-8')) - (FILENAME_MAX_BYTES - FILENAME_SUFFIX_RESERVE)
+    for folder in parts[:-1]:
+        excess = max(excess, len(folder.encode('utf-8')) - FILENAME_MAX_BYTES)
+    return excess
+
+
+def truncate_filename_bytes(path: str) -> str:
+    """Cut the base name of `path` to the allowed bytes without splitting a character."""
+    folder, base = os.path.split(str(path))
+    limit = FILENAME_MAX_BYTES - FILENAME_SUFFIX_RESERVE
+    base = base.encode('utf-8')[:limit].decode('utf-8', 'ignore').rstrip(' .') or "video"
+    return os.path.join(folder, base) if folder else base
 
 
 def _int_header(headers: Optional[httpx.Headers], name: str) -> Optional[int]:
@@ -795,6 +841,16 @@ class DirectTSStore(SegmentStore):
         if seg > self.last_written:
             super().add(seg, data)
 
+    def advance_to(self, seg: int) -> None:
+        """Continue writing at segment seg: the segments before it are no longer available."""
+        if seg > self.last_written + 1:
+            if not self.is_fresh():
+                self.logger.warning(f"Segments {self.last_written + 1}-{seg - 1} are no longer available, continuing at segment {seg}")
+            self.state['last_written'] = seg - 1
+            for old in [s for s in self.pending if s < seg]:
+                self.pending.pop(old, None)
+            self.flush()
+
     def skip_to(self, seg: int) -> None:
         """Give up on segment `seg` (exceeded retries) so later segments can be written."""
         if seg == self.last_written + 1:
@@ -1071,6 +1127,9 @@ class StreamDownloaderBase:
         # --start-time / --end-time in seconds (negative = relative to the live edge), None if not set
         self.start_time: Optional[float] = self.options.get('start_time')
         self.end_time: Optional[float] = self.options.get('end_time')
+        # --dvr-window (hours): segments older than this are not requested (0 disables the limit)
+        dvr_hours = self.options.get('dvr_window')
+        self.dvr_window: float = DVR_WINDOW_SECONDS if dvr_hours is None else max(0.0, float(dvr_hours) * 3600.0)
 
     def _init_state(self) -> None:
         """Initial values of the state that changes while downloading."""
@@ -1094,6 +1153,8 @@ class StreamDownloaderBase:
         self.end_seg: float = float('inf')
         self._window_seconds: Optional[tuple[float, Optional[float]]] = None
         self._window_resolved: bool = self.start_time is None and self.end_time is None
+        # Oldest segment YouTube still keeps (see _apply_dvr_window); start_seg never goes below it
+        self._dvr_floor: int = 0
 
     # --- Construction hooks (called by __init__, overridden by subclasses) ---
 
@@ -1432,8 +1493,106 @@ class StreamDownloaderBase:
         if self._window_seconds is None or self.estimated_segment_duration <= 0:
             return
         self.start_seg, self.end_seg = seconds_to_segment_window(*self._window_seconds, self.estimated_segment_duration)
+        self.start_seg = max(self.start_seg, self._dvr_floor)
 
     def _on_window_resolved(self) -> None:
+        pass
+
+    # --- DVR window (oldest segment YouTube keeps) ---
+
+    def _segment_available(self, url: YoutubeURL.YoutubeURL, seg: int) -> Optional[bool]:
+        """
+        One GET for segment seg, closed before the body is read (HEAD answers 200 even for
+        segments that are gone). True if it exists, False if gone (YouTube answers 500 for an
+        expired segment, a 5xx answer is asked again once in case it was transient), None if
+        the answer says nothing (403, network error).
+        """
+        client = self._ensure_client()
+        for attempt in range(2):
+            try:
+                with client.stream("GET", url.segment(seg)) as response:
+                    status = response.status_code
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                self.logger.debug(f"({self.format}) DVR check of segment {seg} failed: {e}")
+                return None
+            if status == 200:
+                return True
+            if status in (404, 410):
+                return False
+            if status >= 500:
+                if attempt == 0:
+                    continue
+                return False
+            return None
+        return None
+
+    def _find_dvr_floor(self) -> int:
+        """Oldest segment to request: 0 unless the stream is longer than the DVR window."""
+        head, duration, window = self.latest_sequence, self.estimated_segment_duration, self.dvr_window
+        if window <= 0 or head < 0 or duration <= 0:
+            return 0
+        constant = max(0, head - math.ceil(window / duration) + 1)
+        if window < DVR_PROBE_MIN_SECONDS:
+            # A short window was asked for (--dvr-window): use it as given
+            return constant
+        if head * duration <= DVR_PROBE_MIN_SECONDS:
+            return 0
+        oldest = max(0, head - math.ceil((window + DVR_PROBE_MARGIN_SECONDS) / duration) + 1)
+        newest = max(0, head - math.ceil(min(window, DVR_PROBE_MIN_SECONDS) / duration) + 1)
+        url = self.stream_url
+        requests = 0
+
+        def available(seg: int) -> Optional[bool]:
+            nonlocal requests
+            requests += 1
+            return self._segment_available(url, seg)
+
+        if available(oldest):
+            floor = oldest
+        elif available(newest) is not True:
+            self.logger.debug(f"({self.format}) DVR check inconclusive, assuming the last {window / 3600:.0f} hours are available")
+            return constant
+        else:
+            # Invariant: `oldest` is gone, `newest` exists
+            floor = newest
+            while newest - oldest > 1 and requests < DVR_PROBE_MAX_REQUESTS:
+                middle = (oldest + newest) // 2
+                result = available(middle)
+                if result is None:
+                    # Inconclusive: keep the older bound so nothing that may exist is skipped
+                    floor = oldest
+                    break
+                if result:
+                    newest = floor = middle
+                else:
+                    oldest = middle
+        self.logger.debug(f"({self.format}) Oldest available segment {floor} (head {head}), found with {requests} request(s)")
+        return floor
+
+    def _dvr_floor_segment(self) -> int:
+        """The DVR floor, found once per stream manifest and shared between formats."""
+        if self.livestream_coordinator:
+            return self.livestream_coordinator.shared_dvr_floor((self.id, self.stream_url.manifest), self._find_dvr_floor)
+        return self._find_dvr_floor()
+
+    def _apply_dvr_window(self) -> None:
+        """Don't request segments YouTube no longer has: raise start_seg to the oldest available one."""
+        floor = self._dvr_floor_segment()
+        if floor <= 0:
+            return
+        self._dvr_floor = floor
+        if floor > self.start_seg:
+            hours = (self.latest_sequence - floor + 1) * self.estimated_segment_duration / 3600
+            requested = "the requested start time" if self.start_time is not None else "the stream start"
+            self.logger.warning(f"({self.format}) YouTube only keeps the last {hours:.1f} hours of this stream: downloading from "
+                                f"segment {floor} instead of {requested} (segment {self.start_seg})")
+            self.start_seg = floor
+            self._on_dvr_floor(floor)
+
+    def _on_dvr_floor(self, floor: int) -> None:
+        """Called when the DVR floor raised start_seg (subclasses adjust their state)."""
         pass
 
     def _window_limited(self) -> bool:
@@ -1972,6 +2131,7 @@ class DownloadStream(StreamDownloaderBase):
         self._given_up_tail: set[int] = set()
         self._frontier: int = self.store.first_needed()
         self._refresh_result = None
+        self._apply_dvr_window()
         self._enqueue_up_to(max(self.latest_sequence, self.latest_downloaded_segment))
 
     def _enqueue(self, seg: int) -> None:
@@ -2061,7 +2221,7 @@ class DownloadStream(StreamDownloaderBase):
 
     def _max_retries_for(self, seg: int) -> Optional[int]:
         if self.stream_has_ended() and self._is_tail_segment(seg):
-            return min(self.fragment_retries, OPTIMISTIC_SEGMENT_RETRIES)
+            return min(self.fragment_retries, ENDED_TAIL_REQUEST_RETRIES)
         return None
 
     def _on_tail_failure(self, seg: int, status: Optional[int]) -> bool:
@@ -2339,6 +2499,10 @@ class DownloadStreamDirect(DownloadStream):
         self.store.set_start(self.start_seg)
         super()._on_window_resolved()
 
+    def _on_dvr_floor(self, floor: int) -> None:
+        self.store.advance_to(floor)
+        self._frontier = max(self._frontier, self.store.first_needed())
+
     def _before_evaluate(self) -> None:
         # Original direct-mode behaviour: once the next segment to write has exceeded its retries,
         # give up on it and advance so later segments can be written.
@@ -2491,6 +2655,7 @@ class StreamRecovery(StreamDownloaderBase):
             self.logger.warning("Unable to determine segment duration, ignoring requested start/end time for recovery")
             self._window_resolved = True
         self.sleep_time = max(self.estimated_segment_duration, 0.1)
+        self._apply_dvr_window()
         # Track retries of all missing segments in database
         top = self.latest_sequence if self.end_seg == float('inf') else min(self.latest_sequence, int(self.end_seg))
         self.segments_retries = {key: self._new_retry_entry() for key in range(self.start_seg, top + 1) if key not in self.store.downloaded}
@@ -2784,6 +2949,9 @@ class LiveStreamDownloader:
 
         self._time_reference: Optional[float] = None
         self._time_reference_lock = threading.Lock()
+        # Oldest available segment per (video id, manifest), see StreamDownloaderBase._apply_dvr_window
+        self._dvr_floors: dict = {}
+        self._dvr_floor_lock = threading.Lock()
         self._filename_ydl = None
 
     # --- Signals ---
@@ -2823,6 +2991,13 @@ class LiveStreamDownloader:
                 signal.signal(signal.SIGTERM, original_sigterm)
 
     # --- Shared state for stream downloaders ---
+
+    def shared_dvr_floor(self, key, find: Callable[[], int]) -> int:
+        """Find the DVR floor once per stream manifest; the formats share its sequence numbers."""
+        with self._dvr_floor_lock:
+            if key not in self._dvr_floors:
+                self._dvr_floors[key] = find()
+            return self._dvr_floors[key]
 
     def resolve_time_reference(self, head_time: float) -> float:
         """The live edge time (stream seconds) used for negative --start-time/--end-time values.
@@ -3097,12 +3272,40 @@ class LiveStreamDownloader:
         self.logger.debug("Shutdown all threads")
         self.stats["status"] = "Cancelled"
 
-    def output_filename(self, info_dict, outtmpl) -> str:
+    def _render_filename(self, info_dict, outtmpl) -> str:
         # Reuse one YoutubeDL instance for filename templating (constructing one is relatively expensive)
         if self._filename_ydl is None:
             self._filename_ydl = yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True})
         # Replace normal percent sign with unicode version to prevent ffmpeg errors
         return str(self._filename_ydl.prepare_filename(info_dict, outtmpl=outtmpl)).replace("%", "％")
+
+    def output_filename(self, info_dict, outtmpl) -> str:
+        """
+        Fill in the output template. A name that would exceed the file system's 255-byte limit
+        (with livestream_dl's suffixes) is shortened by limiting the title fields in the template
+        with yt-dlp's "%(title).<N>B" syntax, so the rest of the name (e.g. the video ID) is kept.
+        """
+        name = self._render_filename(info_dict, outtmpl)
+        excess = filename_excess_bytes(name)
+        if excess <= 0:
+            return name
+        original = name
+        title_bytes = len(str(info_dict.get('fulltitle') or info_dict.get('title') or '').encode('utf-8'))
+        if isinstance(outtmpl, str) and _TITLE_FIELD_RE.search(outtmpl) and title_bytes:
+            limit = title_bytes
+            # A few rounds: sanitizing can make characters longer (e.g. ':' becomes a 3-byte '：')
+            for _ in range(6):
+                limit = max(1, limit - excess)
+                shortened = _TITLE_FIELD_RE.sub(lambda m: f"%({m.group(1)}).{limit}B", outtmpl)
+                name = self._render_filename(info_dict, shortened)
+                excess = filename_excess_bytes(name)
+                if excess <= 0 or limit <= 1:
+                    break
+        if excess > 0:
+            name = truncate_filename_bytes(name)
+        self.logger.warning(f"Output name shortened to fit the {FILENAME_MAX_BYTES}-byte file name limit: {os.path.basename(name)}")
+        self.logger.debug(f"Full output name was: {original}")
+        return name
 
     # --- Moving to final destination ---
 

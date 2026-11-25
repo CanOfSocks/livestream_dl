@@ -608,6 +608,42 @@ class DirectStoreTests(unittest.TestCase):
             download_Live.DIRECT_WRITE_MAX_FAILURES, download_Live.DIRECT_WRITE_GIVE_UP_SECONDS = saved
 
 
+class FilenameLengthTests(unittest.TestCase):
+    # 100 characters of 3-byte UTF-8 text plus a ':' that yt-dlp sanitizes into a 3-byte '：'
+    TITLE = "【歌枠】" + "あ" * 90 + ": テスト配信"
+
+    def setUp(self):
+        self.coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
+        self.info = {"id": "abcdefghijk", "title": self.TITLE, "fulltitle": self.TITLE, "ext": "mp4",
+                     "uploader": "U" * 300, "extractor": "youtube", "webpage_url": "https://www.youtube.com/watch?v=abcdefghijk"}
+
+    def limit(self):
+        return download_Live.FILENAME_MAX_BYTES - download_Live.FILENAME_SUFFIX_RESERVE
+
+    def test_short_name_unchanged(self):
+        self.info["fulltitle"] = "Short title"
+        self.assertEqual(self.coordinator.output_filename(self.info, "%(fulltitle)s (%(id)s)"), "Short title (abcdefghijk)")
+
+    def test_long_title_is_shortened_keeping_the_id(self):
+        name = self.coordinator.output_filename(self.info, "%(fulltitle)s (%(id)s)")
+        self.assertLessEqual(len(name.encode("utf-8")), self.limit())
+        self.assertGreater(len(name.encode("utf-8")), self.limit() - 10, "only as much as needed is cut")
+        self.assertTrue(name.endswith(" (abcdefghijk)"))
+        self.assertTrue(name.startswith("【歌枠】あああ"))
+        name.encode("utf-8").decode("utf-8")  # no split character
+
+    def test_folder_components_are_limited_too(self):
+        name = self.coordinator.output_filename(self.info, os.path.join("out", "%(title)s", "%(fulltitle)s (%(id)s)"))
+        parts = name.replace("\\", "/").split("/")
+        self.assertEqual(parts[0], "out")
+        self.assertLessEqual(len(parts[1].encode("utf-8")), download_Live.FILENAME_MAX_BYTES)
+        self.assertLessEqual(len(parts[-1].encode("utf-8")), self.limit())
+
+    def test_template_without_title_is_truncated(self):
+        name = self.coordinator.output_filename(self.info, "%(uploader)s")
+        self.assertEqual(name, "U" * self.limit())
+
+
 class MonitorCacheTests(unittest.TestCase):
     def test_cache(self):
         cache = monitor_channel.VideoStatusCache(max_entries=2)
