@@ -414,6 +414,11 @@ class Formats:
         if sort:
             ydl_opts["format_sort"] = str(sort).split(',')
 
+        if info_json.get('is_live') and any(isinstance(f, dict) and f.get('is_from_start') for f in info_json.get('formats') or []):
+            # Formats from a live_from_start extraction: yt-dlp's selector drops them from a live
+            # stream unless live_from_start is set
+            ydl_opts['live_from_start'] = True
+
         if ydl_options:
             ydl_opts.update(ydl_options)
 

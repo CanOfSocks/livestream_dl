@@ -287,15 +287,19 @@ class UrlKindTests(unittest.TestCase):
         urls = YoutubeURL.Formats().getAllFormatURL(info, selected)
         self.assertEqual(sorted(u.protocol for u in urls), ["http_dash_segments", "https"])
 
-    def _extract(self, raw):
+    def _extract(self, raw, from_start=None):
+        import copy
         import yt_dlp
+        calls = self.extract_calls = []
 
         class FakeYoutubeDL(yt_dlp.YoutubeDL):
             def __init__(self, params=None, *args, **kwargs):
+                self.live_from_start = bool((params or {}).get("live_from_start"))
                 super().__init__({"quiet": True}, *args, **kwargs)
 
             def extract_info(self, url, download=True, **kwargs):
-                return raw
+                calls.append(self.live_from_start)
+                return copy.deepcopy(from_start if self.live_from_start and from_start is not None else raw)
 
         original = getUrls.yt_dlp.YoutubeDL
         getUrls.yt_dlp.YoutubeDL = FakeYoutubeDL
@@ -309,6 +313,32 @@ class UrlKindTests(unittest.TestCase):
                                       "formats": [self.fmt(protocol="http_dash_segments", target_duration=2)]})
         self.assertEqual(status, "post_live")
         self.assertEqual(info["live_status"], "was_live", "yt-dlp's value is kept in the info dict")
+
+    def test_live_from_start_fallback(self):
+        import functools
+        # formats=incomplete stopped listing the live URLs: only a processed-looking format is left
+        broken = {"id": "Xyz123", "live_status": "is_live",
+                  "formats": [self.fmt(protocol="https", url="https://h/videoplayback?id=Xyz123.2&itag=299&clen=1", manifest_url="m")]}
+        from_start = {"id": "Xyz123", "title": "t", "extractor": "youtube", "extractor_key": "Youtube",
+                      "webpage_url": "https://www.youtube.com/watch?v=Xyz123", "live_status": "is_live", "is_live": True,
+                      "formats": [self.fmt(protocol="http_dash_segments_generator", target_duration=2, is_from_start=True,
+                                           height=1080, fragments=functools.partial(lambda ctx: iter(())))]}
+        info, status = self._extract(broken, from_start)
+        self.assertEqual(self.extract_calls, [False, True])
+        self.assertEqual(status, "is_live")
+        self.assertEqual(info["formats"][0]["protocol"], "http_dash_segments_generator")
+        self.assertNotIn("fragments", info["formats"][0])
+        self.assertEqual(YoutubeURL.Formats().getFormatURL(info, "bv", stream_type="video").url_kind, "adaptive")
+
+    def test_no_fallback_when_live_urls_found(self):
+        self._extract({"id": "Xyz123", "live_status": "is_live", "formats": [self.fmt(protocol="https")]})
+        self.assertEqual(self.extract_calls, [False])
+
+    def test_fallback_finding_nothing_keeps_original(self):
+        broken = {"id": "Xyz123", "live_status": "is_live", "formats": []}
+        info, status = self._extract(broken, broken)
+        self.assertEqual(self.extract_calls, [False, True])
+        self.assertEqual((info["formats"], status), ([], "is_live"))
 
     def test_processed_video_still_rejected(self):
         processed = self.fmt(protocol="https", url="https://h/videoplayback?id=Xyz123.2&itag=299&clen=12345")

@@ -338,6 +338,10 @@ def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool)
                 live_status = 'post_live'
             if live_status not in ['is_upcoming', 'is_live', 'post_live']:
                 raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
+            if live_status == 'is_live' and not ydl_opts.get('live_from_start') and not _has_downloadable_formats(info_dict):
+                fallback = _live_from_start_fallback(ydl_opts, url, id, clean_info_dict)
+                if fallback is not None:
+                    return fallback
             return info_dict, live_status
 
         except yt_dlp.utils.DownloadError as e:
@@ -348,6 +352,34 @@ def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool)
             raise classified from e
         finally:
             extraction_event.clear()
+
+def _has_downloadable_formats(info_dict: dict) -> bool:
+    """True if any format provides a URL livestream_dl can download by sequence number."""
+    try:
+        from YoutubeURL import stream_url_kind
+    except ModuleNotFoundError:
+        from .YoutubeURL import stream_url_kind
+    return any(isinstance(fmt, dict) and stream_url_kind(fmt) for fmt in info_dict.get('formats') or [])
+
+
+def _live_from_start_fallback(ydl_opts: dict, url: str, id: str, clean_info_dict: bool) -> Optional[tuple[dict[str, Any], str]]:
+    """
+    The live adaptive URLs come from the "formats=incomplete" extractor argument, a yt-dlp debugging
+    aid that could change. If it gave nothing usable, extract once more with yt-dlp's supported
+    live_from_start option, which lists the same base URLs (labelled http_dash_segments_generator).
+    Returns None if that gives nothing usable either.
+    """
+    logger = ydl_opts.get('logger')
+    if logger is not None:
+        logger.warning(f"{id}: no live stream URLs found with formats=incomplete, trying yt-dlp's live_from_start extraction")
+    try:
+        info_dict, live_status = _extract_live_info({**ydl_opts, 'live_from_start': True}, url, id, clean_info_dict)
+    except Exception as e:
+        if logger is not None:
+            logger.warning(f"{id}: live_from_start extraction failed: {e}")
+        return None
+    return (info_dict, live_status) if _has_downloadable_formats(info_dict) else None
+
 
 def _has_unprocessed_live_formats(info_dict: dict) -> bool:
     try:
