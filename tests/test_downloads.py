@@ -510,6 +510,20 @@ class PostLiveTests(ScenarioBase):
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(18))))
         self.assertLessEqual(self._tail_requests(), 2 * download_Live.ENDED_TAIL_MAX_SUBMISSIONS * (download_Live.ENDED_TAIL_REQUEST_RETRIES + 1))
 
+    def test_empty_tail_while_live_requests_early_refresh(self):
+        # A live stream whose newest reported segment answers 204 after all retries has probably ended
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            stream._on_start()
+            stream.url_checked = time.time() - download_Live.TAIL_FAILURE_REFRESH_MIN_INTERVAL - 1
+            stream.next_refresh_at = time.time() + 3600
+            stream._on_segment_result(19, download_Live.SegmentResult(19, b"", 19, 204, None), None)
+            self.assertLessEqual(stream.next_refresh_at, time.time())
+            # A 204 for a segment beyond the head (not created yet at the live edge) is normal
+            stream.next_refresh_at = time.time() + 3600
+            stream._on_segment_result(20, download_Live.SegmentResult(19, b"", 20, 204, None), None)
+            self.assertGreater(stream.next_refresh_at, time.time() + 3000)
+
     def test_missing_tail_direct_mode(self):
         self.stream.fail(VIDEO_ITAG, 18, 404, times=10000)
         self.stream.fail(VIDEO_ITAG, 19, 404, times=10000)

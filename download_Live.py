@@ -2251,6 +2251,10 @@ class DownloadStream(StreamDownloaderBase):
         if data is not None:
             self.store.add(seg, data)
             self.segment_retries.pop(seg, None)
+            if status == 204 and not data and seg <= self.latest_sequence and not self.stream_has_ended():
+                # Seen at the end of real streams: the last reported segments answer 204 (no content)
+                # after every retry. Learn whether the stream ended rather than idling for minutes.
+                self._on_tail_failure(seg, status)
             if status == 200 and seg > self.latest_downloaded_segment:
                 self.latest_downloaded_segment = seg
                 self._enqueue_up_to(seg)
