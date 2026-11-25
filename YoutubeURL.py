@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlu
 from yt_dlp import YoutubeDL
 
 __all__ = ["YoutubeURL", "Formats", "YTDLPLogger", "PrefixedYTDLPLogger", "video_base_url", "quality_aliases",
-           "stream_url_kind", "annotate_url_kinds", "URL_KIND_FIELD", "URL_KIND_ADAPTIVE", "URL_KIND_DASH", "URL_KIND_M3U8"]
+           "stream_url_kind", "annotate_url_kinds", "is_unprocessed_live_format", "URL_KIND_FIELD", "URL_KIND_ADAPTIVE", "URL_KIND_DASH", "URL_KIND_M3U8"]
 
 # Kinds of stream URL livestream_dl can download segment by segment (by adding sq=<n>):
 #   adaptive: a live adaptive base URL ("https" while live). After a stream ends yt-dlp relabels the
@@ -192,6 +192,13 @@ def stream_url_kind(format_info: dict) -> Optional[str]:
     if _is_live_adaptive_url(url) or (format_info.get('target_duration') and "/videoplayback" in url):
         return URL_KIND_ADAPTIVE
     return None
+
+
+def is_unprocessed_live_format(format_info: dict) -> bool:
+    """A live adaptive format of a stream that isn't processed yet (noclen URL or a target_duration)."""
+    if stream_url_kind(format_info) != URL_KIND_ADAPTIVE:
+        return False
+    return _is_live_adaptive_url(format_info.get('url') or "") or bool(format_info.get('target_duration'))
 
 
 def annotate_url_kinds(info_json: dict) -> dict:

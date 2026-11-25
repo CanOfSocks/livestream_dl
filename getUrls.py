@@ -330,6 +330,12 @@ def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool)
             info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
 
             live_status = info_dict.get('live_status')
+            if live_status == 'was_live' and _has_unprocessed_live_formats(info_dict):
+                # "Processed" is decided by the URLs (as ytarchive does), not one yt-dlp field: while
+                # the formats still have live (noclen) URLs the stream can be downloaded like post_live.
+                # info_dict keeps yt-dlp's own value.
+                ydl_opts['logger'].info(f"{id}: yt-dlp reports was_live, but live stream URLs are still listed. Treating it as post_live")
+                live_status = 'post_live'
             if live_status not in ['is_upcoming', 'is_live', 'post_live']:
                 raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
             return info_dict, live_status
@@ -342,6 +348,14 @@ def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool)
             raise classified from e
         finally:
             extraction_event.clear()
+
+def _has_unprocessed_live_formats(info_dict: dict) -> bool:
+    try:
+        from YoutubeURL import is_unprocessed_live_format
+    except ModuleNotFoundError:
+        from .YoutubeURL import is_unprocessed_live_format
+    return any(isinstance(fmt, dict) and is_unprocessed_live_format(fmt) for fmt in info_dict.get('formats') or [])
+
 
 def _drop_fragments(info_dict: dict) -> None:
     """Remove 'fragments' from the info dict, its formats and the selected format copies."""

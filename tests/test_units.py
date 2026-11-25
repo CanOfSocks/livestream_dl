@@ -287,6 +287,34 @@ class UrlKindTests(unittest.TestCase):
         urls = YoutubeURL.Formats().getAllFormatURL(info, selected)
         self.assertEqual(sorted(u.protocol for u in urls), ["http_dash_segments", "https"])
 
+    def _extract(self, raw):
+        import yt_dlp
+
+        class FakeYoutubeDL(yt_dlp.YoutubeDL):
+            def __init__(self, params=None, *args, **kwargs):
+                super().__init__({"quiet": True}, *args, **kwargs)
+
+            def extract_info(self, url, download=True, **kwargs):
+                return raw
+
+        original = getUrls.yt_dlp.YoutubeDL
+        getUrls.yt_dlp.YoutubeDL = FakeYoutubeDL
+        try:
+            return getUrls._extract_live_info({"logger": getUrls.ExtractionLogger(LOGGER)}, "u", "Xyz123", False)
+        finally:
+            getUrls.yt_dlp.YoutubeDL = original
+
+    def test_was_live_with_live_urls_is_post_live(self):
+        info, status = self._extract({"id": "Xyz123", "live_status": "was_live",
+                                      "formats": [self.fmt(protocol="http_dash_segments", target_duration=2)]})
+        self.assertEqual(status, "post_live")
+        self.assertEqual(info["live_status"], "was_live", "yt-dlp's value is kept in the info dict")
+
+    def test_processed_video_still_rejected(self):
+        processed = self.fmt(protocol="https", url="https://h/videoplayback?id=Xyz123.2&itag=299&clen=12345")
+        with self.assertRaises(getUrls.VideoProcessedError):
+            self._extract({"id": "Xyz123", "live_status": "was_live", "formats": [processed]})
+
     def test_extraction_drops_fragments_before_sanitize(self):
         expanded = []
 
