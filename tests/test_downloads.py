@@ -346,6 +346,23 @@ class RefreshValidationTests(ScenarioBase):
             self.assertEqual(str(stream.stream_url), str(stream_url_for(broken, VIDEO_ITAG)))
 
 
+class RefreshRequestTests(ScenarioBase):
+    def test_requested_refresh_is_made_on_the_next_check(self):
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options(), livestream_coordinator=coordinator) as stream:
+            stream.url_checked = time.time()
+            stream.next_refresh_at = time.time() + 3600
+            self.assertIsNone(stream.refresh_Check(wait=True))
+            calls = self.extraction_calls
+            time.sleep(0.01)
+            coordinator.request_refresh()
+            self.assertIsNotNone(stream.refresh_Check(wait=True))
+            self.assertEqual(self.extraction_calls, calls + 1)
+            # Satisfied by that refresh
+            self.assertIsNone(stream.refresh_Check(wait=True))
+
+
 class PrivateReportTests(ScenarioBase):
     PRIVATE = getUrls.VideoInaccessibleError("Video abcdefghijk is private")
 

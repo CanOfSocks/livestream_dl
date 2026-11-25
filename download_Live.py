@@ -179,6 +179,11 @@ LIVE_CHAT_RETRY_POLL: float = 2.0
 # A live chat that ended is only downloaded again once a segment arrives this long after it ended
 # (segments are at most 5s long, so the stream is still going rather than finishing its last ones)
 LIVE_CHAT_RETRY_SEGMENT_DELAY: float = 20.0
+# A live chat that ended (e.g. failed during a network outage) while segments keep arriving asks the
+# stream downloaders for an early URL refresh after this long, as their regular refresh may be hours
+# away, and asks again at this interval until a refresh arrives
+LIVE_CHAT_REFRESH_REQUEST_DELAY: float = 60.0
+LIVE_CHAT_REFRESH_REQUEST_INTERVAL: float = 300.0
 # Pause in stream recovery when 401 errors are received
 RECOVERY_401_SLEEP: float = 60.0
 # Minimum seconds since the last URL refresh before segments that exhausted their retries trigger another one
@@ -1660,7 +1665,9 @@ class StreamDownloaderBase:
         self.stream_urls = [url for url in self.unique_stream_urls(self.stream_urls) if self._url_is_valid(url, now)]
 
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership
-        due = now >= self.next_refresh_at
+        # The live chat asks for an early refresh (see LiveStreamDownloader.request_refresh)
+        requested = self.livestream_coordinator is not None             and getattr(self.livestream_coordinator, "refresh_requested_at", 0.0) > self.url_checked
+        due = now >= self.next_refresh_at or requested
         recent_403 = (now - self.url_checked >= REFRESH_403_AFTER_SECONDS and self.is_403)
         if (due or recent_403 or len(self.stream_urls) <= 0) and not self.is_private:
             return self.refresh_url(wait=wait)
@@ -3164,6 +3171,8 @@ class LiveStreamDownloader:
         self.lock: threading.Lock = threading.Lock()
         self.last_refresh_attempt: float = time.monotonic()
         self.minimum_refresh_time: float = self.MIN_REFRESH_INTERVAL
+        # Stream downloaders refresh early when this is newer than their last check (see request_refresh)
+        self.refresh_requested_at: float = 0.0
 
         self.graceful_stop = threading.Event()
         # Signals the live chat thread to stop (set on timeout)
@@ -3255,6 +3264,10 @@ class LiveStreamDownloader:
                 return True
             if self.graceful_stop.wait(min(remaining, 0.5)):
                 return False
+
+    def request_refresh(self) -> None:
+        """Ask the stream downloaders to refresh their URLs (and so refresh_json) on their next loop."""
+        self.refresh_requested_at = time.time()
 
     def refresh_info_json(self, update_threshold: float, id, cookies=None, additional_options=None, include_dash=False,
                           include_m3u8=False, ignore_no_formats=False, logger: Optional[LoggerLike] = None, proxy=None):
@@ -3861,6 +3874,7 @@ class LiveStreamDownloader:
         have finished or the refresh says the stream is no longer live.
         """
         logged = False
+        requested = 0.0
         while not (self._chat_should_stop() or self._media_finished.is_set() or self._live_chat_packaged):
             info = self.refresh_json
             refreshed = info.get('refresh_time') or 0.0
@@ -3870,6 +3884,12 @@ class LiveStreamDownloader:
                     return None
                 if self._last_segment_time > max(refreshed, chat_ended + LIVE_CHAT_RETRY_SEGMENT_DELAY):
                     return dict(info)
+            now = time.time()
+            if self._last_segment_time > chat_ended + LIVE_CHAT_RETRY_SEGMENT_DELAY and now - chat_ended >= LIVE_CHAT_REFRESH_REQUEST_DELAY                     and now - requested >= LIVE_CHAT_REFRESH_REQUEST_INTERVAL and refreshed <= used_refresh_time:
+                # The stream continues, but the stream downloaders may not refresh for hours
+                self.logger.info("Live chat: the stream is still being downloaded, asking for an early info.json refresh to download the chat again")
+                requested = now
+                self.request_refresh()
             if not logged:
                 self.logger.info("Live chat ended while the media is still downloading, waiting for a newer info.json and segments to see if the stream is still live")
                 logged = True

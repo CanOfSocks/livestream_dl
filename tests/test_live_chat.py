@@ -691,6 +691,37 @@ class ChatRetryTests(ChatTestBase):
         self.run_chat(last_segments)
         self.assertEqual(len(self.calls), 1)
 
+    def test_asks_for_an_early_refresh_while_segments_continue(self):
+        # E.g. the chat failed during a network outage: the stream downloaders' next regular
+        # refresh may be hours away, so the chat asks them for one
+        delay = mock.patch.object(download_Live, "LIVE_CHAT_REFRESH_REQUEST_DELAY", 0.05)
+        delay.start()
+        self.addCleanup(delay.stop)
+        requests = []
+
+        def stream_downloaders_refresh():
+            requests.append(time.time())
+            self.coordinator.refresh_json = self.refreshed(age=0.0)
+            self.segments_continue()
+
+        def failed():
+            self.segments_continue()
+
+        with mock.patch.object(self.coordinator, "request_refresh", side_effect=stream_downloaders_refresh):
+            self.run_chat(failed, self.coordinator._media_finished.set)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual([info.get("title") for info in self.infos], [None, "refreshed"])
+
+    def test_no_early_refresh_without_segments(self):
+        delay = mock.patch.object(download_Live, "LIVE_CHAT_REFRESH_REQUEST_DELAY", 0.0)
+        delay.start()
+        self.addCleanup(delay.stop)
+        threading.Timer(0.2, self.coordinator._media_finished.set).start()
+        with mock.patch.object(self.coordinator, "request_refresh") as request:
+            self.run_chat()
+        request.assert_not_called()
+
     def test_waiting_ends_when_the_chat_is_stopped(self):
         threading.Timer(0.2, self.coordinator.chat_stop.set).start()
         self.run_chat()
