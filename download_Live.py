@@ -161,6 +161,12 @@ SQLITE_WAL_TARGET_BYTES: int = 64 * 1024 * 1024
 SQLITE_MAX_VARIABLES: int = 900
 # Number of pending segments after which no new downloads are submitted (e.g. disk full)
 STORE_BACKLOG_FACTOR: int = 10
+# Direct-to-ts: a failing write (disk full, network share hiccup, file locked by antivirus) is retried
+# every loop iteration; the download is given up only after this many consecutive failures spanning
+# at least DIRECT_WRITE_GIVE_UP_SECONDS
+DIRECT_WRITE_MAX_FAILURES: int = 10
+DIRECT_WRITE_GIVE_UP_SECONDS: float = 120.0
+DIRECT_WRITE_RETRY_SLEEP: float = 1.0
 
 WRITE_BUFFER_SIZE: int = 1024 * 1024
 # Segment bodies are read in chunks of this size so the per-segment time limit can be checked
@@ -713,6 +719,9 @@ class DirectTSStore(SegmentStore):
         self.state: dict[str, int] = {'last_written': -1, 'file_size': 0}
         # Truncate once after resuming, as the file may contain data written after the last state save
         self._needs_truncate: bool = True
+        # Consecutive failed writes and when the first of them happened (see flush)
+        self._failed_writes: int = 0
+        self._first_failed_write: Optional[float] = None
         self._load_existing_state()
 
     @property
@@ -778,43 +787,94 @@ class DirectTSStore(SegmentStore):
             self.state['last_written'] = seg
             self.flush()
 
-    def flush(self, force: bool = False) -> None:
+    def is_backlogged(self) -> bool:
+        """
+        Pause new downloads only while writes are failing. Buffered RAM is already bounded by the
+        downloader's reorder window, and pausing because of the buffer size alone can stall forever:
+        the segment filling the gap would never be submitted again, so nothing could be written.
+        """
+        return self._failed_writes > 0
+
+    def flush(self, force: bool = False) -> bool:
+        """
+        Write all consecutive buffered segments after last_written. Segments leave the buffer only
+        once the file is closed successfully. A failed write is rolled back (the file is truncated
+        to the last good size on the next attempt) and retried later. Returns False if the write
+        failed; raises the error once writes have failed for too long.
+        """
         if self.pending.get(self.last_written + 1) is None:
-            return
-        mode = 'wb' if self.state.get('file_size', 0) == 0 else 'r+b'
-        is_first = self.state.get('file_size', 0) == 0
-        written_any = False
-        with open(self.ts_path, mode, buffering=WRITE_BUFFER_SIZE) as f:
-            if mode != 'wb':
-                f.seek(self.state['file_size'])
-                if self._needs_truncate:
-                    f.truncate()
-            self._needs_truncate = False
-            # Write all available consecutive segments
-            while self.pending.get(self.last_written + 1) is not None:
-                seg = self.last_written + 1
-                write_segment(f, self.pending.pop(seg), self.clean, is_first)
-                is_first = False
-                written_any = True
-                self.state['last_written'] = seg
-                self.state['file_size'] = f.tell()
-                self.logger.debug(f"Written segment {seg}, file size: {self.state['file_size']} bytes")
-        if written_any:
+            return True
+        saved_state = dict(self.state)
+        written: list[int] = []
+        try:
+            mode = 'wb' if self.state.get('file_size', 0) == 0 else 'r+b'
+            is_first = self.state.get('file_size', 0) == 0
+            with open(self.ts_path, mode, buffering=WRITE_BUFFER_SIZE) as f:
+                if mode != 'wb':
+                    f.seek(self.state['file_size'])
+                    if self._needs_truncate:
+                        f.truncate()
+                # Write all available consecutive segments
+                while self.pending.get(self.last_written + 1) is not None:
+                    seg = self.last_written + 1
+                    write_segment(f, self.pending[seg], self.clean, is_first)
+                    is_first = False
+                    written.append(seg)
+                    self.state['last_written'] = seg
+                    self.state['file_size'] = f.tell()
+        except OSError as e:
+            self.state = saved_state
+            self._needs_truncate = True
+            self._on_write_failed(e)
+            return False
+        self._needs_truncate = False
+        if self._failed_writes:
+            self.logger.warning(f"Writing to {self.ts_path} succeeded again after {self._failed_writes} failed attempt(s)")
+        self._failed_writes = 0
+        self._first_failed_write = None
+        for seg in written:
+            self.pending.pop(seg, None)
+        if written:
+            self.logger.debug(f"Written segments {written[0]}-{written[-1]}, file size: {self.state['file_size']} bytes")
             self._save_state()
         # Drop anything that can no longer be written (at or before last_written)
         for seg in [s for s in self.pending if s <= self.last_written]:
             self.pending.pop(seg, None)
+        return True
+
+    def _on_write_failed(self, error: OSError) -> None:
+        now = time.monotonic()
+        self._failed_writes += 1
+        if self._first_failed_write is None:
+            self._first_failed_write = now
+        failing_for = now - self._first_failed_write
+        if self._failed_writes >= DIRECT_WRITE_MAX_FAILURES and failing_for >= DIRECT_WRITE_GIVE_UP_SECONDS:
+            self.logger.error(f"Writing to {self.ts_path} failed {self._failed_writes} times over {failing_for:.0f}s, giving up. "
+                              f"The state file keeps the progress up to segment {self.last_written}")
+            raise error
+        # Log the full trace once, then only briefly so a persistent failure doesn't flood the logs
+        if self._failed_writes == 1:
+            self.logger.exception(f"Writing segment {self.last_written + 1} to {self.ts_path} failed, it will be retried")
+        elif self._failed_writes % 10 == 0:
+            self.logger.warning(f"Writing to {self.ts_path} still failing ({self._failed_writes} consecutive failures): {error}")
+
+    def _flush_until_written(self) -> None:
+        """Flush, retrying a failing write (used at the end, where no loop iteration retries it)."""
+        while not self.flush(force=True):
+            time.sleep(DIRECT_WRITE_RETRY_SLEEP)
 
     def write_remaining(self) -> None:
         """At the end of a download, write buffered segments after gaps in order (gaps are skipped)."""
-        self.flush(force=True)
+        self._flush_until_written()
         if not self.pending:
             return
         self.logger.warning(f"Writing {len(self.pending)} buffered segment(s) after missing segment(s) {self.last_written + 1}")
         for seg in sorted(self.pending):
+            if seg not in self.pending or seg <= self.last_written:
+                continue
             if seg > self.last_written + 1:
                 self.state['last_written'] = seg - 1
-            self.flush(force=True)
+            self._flush_until_written()
 
     def size_on_disk(self) -> int:
         return int(self.state.get('file_size', 0))

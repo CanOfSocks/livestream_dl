@@ -476,6 +476,70 @@ class DirectStoreTests(unittest.TestCase):
             json.dump({"last_written": 9, "file_size": 10 ** 6}, f)
         self.assertEqual(self._store().last_written, 0)
 
+    def test_not_backlogged_by_buffer_size(self):
+        # The reorder window bounds direct-mode RAM; a full buffer must not stop the gap from being fetched
+        store = self._store()
+        for i in range(1, 200):
+            store.add(i, b"x")
+        self.assertFalse(store.is_backlogged())
+
+    def test_write_error_is_rolled_back_and_retried(self):
+        segs = [fake_segment(140, i) for i in range(4)]
+        store = self._store()
+        store.add(0, segs[0])
+        store.flush()
+        store.add(1, segs[1])
+        store.add(2, segs[2])
+        real_write = download_Live.write_segment
+        calls = {"n": 0}
+
+        def failing_write(f, data, clean, first):
+            calls["n"] += 1
+            if calls["n"] == 2:  # segment 1 is written, then segment 2 fails part-way
+                f.write(b"partial")
+                raise OSError(28, "No space left on device")
+            return real_write(f, data, clean, first)
+
+        download_Live.write_segment = failing_write
+        try:
+            self.assertFalse(store.flush())
+        finally:
+            download_Live.write_segment = real_write
+        # Nothing is lost: both segments are still buffered and the state is unchanged
+        self.assertEqual(store.last_written, 0)
+        self.assertIn(1, store.pending)
+        self.assertIn(2, store.pending)
+        self.assertTrue(store.is_backlogged())
+        with open(self.state) as f:
+            self.assertEqual(json.load(f)["last_written"], 0)
+        # The retry truncates the partial write
+        store.add(3, segs[3])
+        self.assertTrue(store.flush())
+        self.assertFalse(store.is_backlogged())
+        self.assertEqual(store.last_written, 3)
+        with open(self.ts, "rb") as f:
+            self.assertEqual(f.read(), b"".join(download_Live.clean_segment(s, first=(i == 0)) for i, s in enumerate(segs)))
+
+    def test_persistent_write_error_gives_up(self):
+        store = self._store()
+        store.add(0, b"a" * 10)
+        real_write = download_Live.write_segment
+        saved = (download_Live.DIRECT_WRITE_MAX_FAILURES, download_Live.DIRECT_WRITE_GIVE_UP_SECONDS)
+        download_Live.DIRECT_WRITE_MAX_FAILURES, download_Live.DIRECT_WRITE_GIVE_UP_SECONDS = 3, 0.0
+
+        def failing_write(*args):
+            raise OSError(5, "I/O error")
+
+        download_Live.write_segment = failing_write
+        try:
+            self.assertFalse(store.flush())
+            self.assertFalse(store.flush())
+            with self.assertRaises(OSError):
+                store.flush()
+        finally:
+            download_Live.write_segment = real_write
+            download_Live.DIRECT_WRITE_MAX_FAILURES, download_Live.DIRECT_WRITE_GIVE_UP_SECONDS = saved
+
 
 class MonitorCacheTests(unittest.TestCase):
     def test_cache(self):

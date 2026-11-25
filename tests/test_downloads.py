@@ -156,6 +156,39 @@ class LiveDownloadTests(ScenarioBase):
         expected = [n for n in range(self.total_segments) if n != 6]
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, expected)))
 
+    def test_direct_mode_many_threads_gap_does_not_stall(self):
+        # Regression: with 6+ threads the reorder window (10 x threads) exceeded the store's backlog
+        # limit (50), so a failed gap segment was never resubmitted and the download hung
+        self.stream.total_segments = 150
+        self.stream.initial_head = 149
+        self.stream.fail(VIDEO_ITAG, 1, 500, times=6)
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        options = self.options(threads=8, segment_retries=3)
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream_direct(self.info, url, options, manifest=url.manifest),
+                                   timeout=45)
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(150))))
+
+    def test_direct_mode_survives_transient_write_errors(self):
+        real_write = download_Live.write_segment
+        failures = {"left": 3}
+
+        def flaky_write(f, data, clean, first):
+            if failures["left"] > 0 and f.tell() > 0:
+                failures["left"] -= 1
+                raise PermissionError(13, "File locked by another process")
+            return real_write(f, data, clean, first)
+
+        download_Live.write_segment = flaky_write
+        try:
+            coordinator = self.coordinator()
+            url = stream_url_for(self.info, VIDEO_ITAG)
+            file, _ = run_with_timeout(self, lambda: coordinator.download_stream_direct(self.info, url, self.options(), manifest=url.manifest))
+        finally:
+            download_Live.write_segment = real_write
+        self.assertEqual(failures["left"], 0)
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(self.total_segments))))
+
     def test_resume_from_existing_database(self):
         # A previous run already stored some segments
         db = os.path.join(self.tmp, f"out.{VIDEO_ITAG}.temp")
