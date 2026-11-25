@@ -1193,6 +1193,8 @@ class StreamDownloaderBase:
         self._window_resolved: bool = self.start_time is None and self.end_time is None and self.capture_duration is None
         # Oldest segment YouTube still keeps (see _apply_dvr_window); start_seg never goes below it
         self._dvr_floor: int = 0
+        # Set while the DVR floor couldn't be worked out yet (stream head unknown), see _retry_dvr_window
+        self._dvr_pending: bool = False
 
     # --- Construction hooks (called by __init__, overridden by subclasses) ---
 
@@ -1546,9 +1548,9 @@ class StreamDownloaderBase:
     def _segment_available(self, url: YoutubeURL.YoutubeURL, seg: int) -> Optional[bool]:
         """
         One GET for segment seg, closed before the body is read (HEAD answers 200 even for
-        segments that are gone). True if it exists, False if gone (YouTube answers 500 for an
-        expired segment, a 5xx answer is asked again once in case it was transient), None if
-        the answer says nothing (403, network error).
+        segments that are gone). True if it exists; False if gone (YouTube answers 500 for an
+        expired segment, asked again once in case it was transient, or 404/410); None if the
+        answer says nothing (403, a transient 502/503/504 that repeats, network error).
         """
         client = self._ensure_client()
         for attempt in range(2):
@@ -1567,15 +1569,21 @@ class StreamDownloaderBase:
             if status >= 500:
                 if attempt == 0:
                     continue
-                return False
+                # Only 500 is YouTube's answer for an expired segment; other 5xx are transient
+                return False if status == 500 else None
             return None
         return None
 
-    def _find_dvr_floor(self) -> int:
-        """Oldest segment to request: 0 unless the stream is longer than the DVR window."""
+    def _find_dvr_floor(self) -> Optional[int]:
+        """
+        Oldest segment to request: 0 unless the stream is longer than the DVR window. None if it
+        can't be worked out yet (stream head or segment duration unknown).
+        """
         head, duration, window = self.latest_sequence, self.estimated_segment_duration, self.dvr_window
-        if window <= 0 or head < 0 or duration <= 0:
+        if window <= 0:
             return 0
+        if head < 0 or duration <= 0:
+            return None
         constant = max(0, head - math.ceil(window / duration) + 1)
         if window < DVR_PROBE_MIN_SECONDS:
             # A short window was asked for (--dvr-window): use it as given
@@ -1614,16 +1622,21 @@ class StreamDownloaderBase:
         self.logger.debug(f"({self.format}) Oldest available segment {floor} (head {head}), found with {requests} request(s)")
         return floor
 
-    def _dvr_floor_segment(self) -> int:
-        """The DVR floor, found once per stream manifest and shared between formats."""
+    def _dvr_floor_segment(self) -> Optional[int]:
+        """The DVR floor, found once per stream manifest and shared between formats (None: not known yet)."""
         if self.livestream_coordinator:
             return self.livestream_coordinator.shared_dvr_floor((self.id, self.stream_url.manifest), self._find_dvr_floor)
         return self._find_dvr_floor()
 
     def _apply_dvr_window(self) -> None:
-        """Don't request segments YouTube no longer has: raise start_seg to the oldest available one."""
+        """
+        Don't request segments YouTube no longer has: raise start_seg to the oldest available one.
+        If the stream head isn't known yet, _dvr_pending stays set and this is tried again later
+        (see _retry_dvr_window).
+        """
         floor = self._dvr_floor_segment()
-        if floor <= 0:
+        self._dvr_pending = floor is None
+        if floor is None or floor <= 0:
             return
         self._dvr_floor = floor
         if floor > self.start_seg:
@@ -1637,6 +1650,11 @@ class StreamDownloaderBase:
     def _on_dvr_floor(self, floor: int) -> None:
         """Called when the DVR floor raised start_seg (subclasses adjust their state)."""
         pass
+
+    def _retry_dvr_window(self) -> None:
+        """Apply the DVR window once the stream head and segment duration are known (if they weren't at the start)."""
+        if getattr(self, "_dvr_pending", False) and self.latest_sequence >= 0 and self.estimated_segment_duration > 0:
+            self._apply_dvr_window()
 
     def _window_limited(self) -> bool:
         return self.start_seg != 0 or self.end_seg != float('inf')
@@ -2405,6 +2423,7 @@ class DownloadStream(StreamDownloaderBase):
                 self.smart_sleep(2)
                 return LoopAction.CONTINUE
 
+        self._retry_dvr_window()
         self._before_evaluate()
         self._submit_optimistic()
 
@@ -3233,11 +3252,17 @@ class LiveStreamDownloader:
 
     # --- Shared state for stream downloaders ---
 
-    def shared_dvr_floor(self, key, find: Callable[[], int]) -> int:
-        """Find the DVR floor once per stream manifest; the formats share its sequence numbers."""
+    def shared_dvr_floor(self, key, find: Callable[[], Optional[int]]) -> Optional[int]:
+        """
+        Find the DVR floor once per stream manifest; the formats share its sequence numbers. A
+        None result (stream head not known yet) isn't kept, so the next format or attempt finds it.
+        """
         with self._dvr_floor_lock:
             if key not in self._dvr_floors:
-                self._dvr_floors[key] = find()
+                floor = find()
+                if floor is None:
+                    return None
+                self._dvr_floors[key] = floor
             return self._dvr_floors[key]
 
     def resolve_time_reference(self, head_time: float) -> float:

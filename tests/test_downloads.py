@@ -640,6 +640,34 @@ class DvrWindowTests(ScenarioBase):
             expected = 100 - math.ceil(download_Live.DVR_WINDOW_SECONDS / stream.estimated_segment_duration) + 1
             self.assertEqual(stream._find_dvr_floor(), expected)
 
+    def test_unknown_head_is_not_cached(self):
+        # The first header probe failed: the floor is found once the head is known, not cached as 0
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options(), livestream_coordinator=coordinator) as stream:
+            head = stream.latest_sequence
+            stream.latest_sequence = -1
+            stream._apply_dvr_window()
+            self.assertTrue(stream._dvr_pending)
+            self.assertEqual(coordinator._dvr_floors, {})
+            self.assertEqual(stream.start_seg, 0)
+            stream.latest_sequence = head
+            stream._retry_dvr_window()
+            self.assertFalse(stream._dvr_pending)
+            self.assertEqual(stream.start_seg, 40)
+            self.assertEqual(list(coordinator._dvr_floors.values()), [40])
+
+    def test_transient_5xx_is_not_taken_as_expired(self):
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            self.stream.fail(VIDEO_ITAG, 70, 503, times=2)
+            self.assertIsNone(stream._segment_available(url, 70))
+            self.assertFalse(stream._segment_available(url, 10))   # 500: expired
+            # Every segment that exists answers 503 twice: the search must not move past them
+            for sq in range(40, 101):
+                self.stream.fail(VIDEO_ITAG, sq, 503, times=2)
+            self.assertLessEqual(stream._find_dvr_floor(), 40)
+
     def test_window_option(self):
         url = stream_url_for(self.info, VIDEO_ITAG)
         with download_Live.DownloadStream(self.info, stream_url=url, options=self.options(dvr_window=0)) as stream:
