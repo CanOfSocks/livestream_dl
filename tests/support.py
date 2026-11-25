@@ -71,6 +71,11 @@ class MockStream:
         self.head_requests = 0
         # Segments before this were dropped from the DVR window: like YouTube, GET answers 500
         self.oldest_available = 0
+        # False leaves the X-Head-* headers out of every response (e.g. a proxy stripping them)
+        self.report_head = True
+
+    def response_headers(self, headers: dict) -> dict:
+        return headers if self.report_head else {k: v for k, v in headers.items() if not k.startswith("X-Head")}
 
     def head(self) -> int:
         elapsed = time.monotonic() - self.start
@@ -101,6 +106,7 @@ class _Handler(BaseHTTPRequestHandler):
             "X-Head-Time-Sec": str(int(round(head * stream.nominal_duration))) if head > 0 else "0",
             "Content-Type": "audio/mp4" if int(qs.get("itag", 0)) == AUDIO_ITAG else "video/mp4",
         }
+        headers = stream.response_headers(headers)
         if not stream.head_supported:
             return self._send(405, b"", {})
         expire = qs.get("expire")
@@ -122,6 +128,7 @@ class _Handler(BaseHTTPRequestHandler):
             "X-Head-Time-Sec": str(int(round(head * stream.nominal_duration))) if head > 0 else "0",
             "Content-Type": "audio/mp4" if itag == AUDIO_ITAG else "video/mp4",
         }
+        headers = stream.response_headers(headers)
         expire = qs.get("expire")
         if stream.private or (expire and int(expire) < time.time()):
             return self._send(403, b"", headers)

@@ -96,6 +96,30 @@ class FullPipelineTest(unittest.TestCase):
             FFmpegMetadataPP._get_metadata_opts = original
         self.assertTrue(probe["format"]["tags"].get("title", "").startswith("Test stream"))
 
+    def test_fallback_honours_ffmpeg_location(self):
+        """The fallback mux and audio probe find ffmpeg through --ffmpeg-location when it isn't on PATH."""
+        from unittest import mock
+        folder = os.path.dirname(FFMPEG)
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            self.assertIsNone(download_Live.ffmpeg_tool("ffmpeg"))
+            self.assertEqual(os.path.normcase(download_Live.ffmpeg_tool("ffmpeg", folder)), os.path.normcase(FFMPEG))
+            # The path of ffmpeg itself: ffprobe is found next to it
+            self.assertEqual(os.path.normcase(download_Live.ffmpeg_tool("ffprobe", FFMPEG)), os.path.normcase(FFPROBE))
+
+            class FakeYDL:
+                params = {"ffmpeg_location": folder}
+
+            original = download_Live._make_merger
+            download_Live._make_merger = mock.Mock(side_effect=AttributeError("changed"))
+            try:
+                command_file = os.path.join(self.tmp, "cmd.txt")
+                tool = download_Live.MuxTool(FakeYDL(), command_file, logger=LOGGER)
+                tool.run([("in.ts", [])], [(os.path.join(self.tmp, "out.mp4"), [])], merge=False)
+            finally:
+                download_Live._make_merger = original
+            with open(command_file, encoding="utf-8") as f:
+                self.assertIn(os.path.basename(FFMPEG).lower(), f.read().lower())
+
     def _download_merge_and_move(self) -> dict:
         stream = MockStream(total_segments=self.total, initial_head=self.total - 1, segment_duration=0.15,
                             nominal_duration=0.25, segment_provider=lambda itag, sq: self.media[itag][sq])

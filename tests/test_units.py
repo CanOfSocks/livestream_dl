@@ -757,6 +757,14 @@ class FilenameLengthTests(unittest.TestCase):
         self.assertLessEqual(len(parts[1].encode("utf-8")), download_Live.FILENAME_MAX_BYTES)
         self.assertLessEqual(len(parts[-1].encode("utf-8")), self.limit())
 
+    def test_title_field_measured_itself(self):
+        # For a live stream 'title' has the date added, so it is longer than 'fulltitle'
+        self.info["title"] = self.TITLE + " 2026-11-26 01:00"
+        name = self.coordinator.output_filename(self.info, "%(title)s (%(id)s)")
+        self.assertLessEqual(len(name.encode("utf-8")), self.limit())
+        self.assertGreater(len(name.encode("utf-8")), self.limit() - 10, "only as much as needed is cut")
+        self.assertTrue(name.endswith(" (abcdefghijk)"))
+
     def test_template_without_title_is_truncated(self):
         name = self.coordinator.output_filename(self.info, "%(uploader)s")
         self.assertEqual(name, "U" * self.limit())

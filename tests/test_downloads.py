@@ -240,9 +240,13 @@ class LiveDownloadTests(ScenarioBase):
         coordinator = self.coordinator()
         url = stream_url_for(self.info, VIDEO_ITAG)
         threading.Timer(1.5, coordinator.graceful_stop.set).start()
-        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, self.options(), manifest=url.manifest), timeout=20)
+        with self.assertLogs(LOGGER, level="INFO") as logs:
+            file, _ = run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, self.options(), manifest=url.manifest), timeout=20)
         data = self.read(str(file))
         self.assertTrue(data.startswith(download_Live.clean_segment(fake_segment(VIDEO_ITAG, 0), first=True)))
+        # The segments not reached when stopping aren't reported as failed downloads
+        self.assertFalse([line for line in logs.output if "could not be downloaded" in line])
+        self.assertTrue([line for line in logs.output if "Stopped with" in line])
 
     def test_kill(self):
         self.stream.total_segments = 10_000
@@ -326,6 +330,24 @@ class HeaderProbeTests(ScenarioBase):
         self.assertGreater(self.stream.header_only_requests, 0)
         # HEAD is given up after the first probe shows GET is needed
         self.assertLessEqual(self.stream.head_requests, 1)
+
+    def test_get_fallback_not_repeated_when_neither_reports_the_head(self):
+        self.stream.report_head = False
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            # The probe in the constructor tried HEAD, then GET once
+            self.assertEqual((self.stream.head_requests, self.stream.header_only_requests), (1, 1))
+            for _ in range(2):
+                stream.get_Headers(stream.stream_url)
+            # HEAD is kept; the GET fallback isn't repeated
+            self.assertEqual((self.stream.head_requests, self.stream.header_only_requests), (3, 1))
+            # A new stream URL may report the head: the GET fallback is tried again once
+            stream.is_403 = True   # the current URL fails, so the new one is used without a check
+            fresh = make_info_dict(self.server, expire=int(time.time()) + 9000)
+            stream._process_refresh_result((fresh, "is_live"), None, follow_manifest=False)
+            self.assertNotEqual(str(stream.stream_url), str(url))
+            stream.get_Headers(stream.stream_url)
+            self.assertEqual(self.stream.header_only_requests, 2)
 
 
 class RefreshValidationTests(ScenarioBase):

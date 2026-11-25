@@ -1312,7 +1312,8 @@ class StreamDownloaderBase:
         without downloading a body. Uses HEAD, as yt-dlp and ytarchive do, so no segment bytes are
         sent and the connection is kept for reuse. Falls back to a GET closed before its body is
         read if HEAD doesn't report the stream head (remembered for this stream), as with HTTP/1.1
-        closing a GET early discards its connection.
+        closing a GET early discards its connection. If the GET fallback answers without the stream
+        head too, it isn't sent again until the stream URL changes (see _use_refreshed_url).
         """
         use_head = getattr(self, "_head_probe_ok", None) is not False
         if use_head:
@@ -1324,10 +1325,16 @@ class StreamDownloaderBase:
             # An error status is the answer a GET would give too, once HEAD is known to work
             if status >= 400 and status not in (405, 501) and (getattr(self, "_head_probe_ok", None) or status not in (401, 403)):
                 return response
+            if getattr(self, "_get_fallback_useless", False):
+                return response
         with client.stream("GET", url) as response:
-            if use_head and "X-Head-Seqnum" in response.headers:
-                self.logger.info(f"({self.format}) HEAD requests don't report the stream head, using GET for header probes")
-                self._head_probe_ok = False
+            if "X-Head-Seqnum" in response.headers:
+                if use_head:
+                    self.logger.info(f"({self.format}) HEAD requests don't report the stream head, using GET for header probes")
+                    self._head_probe_ok = False
+            elif use_head and response.status_code in (200, 204):
+                self.logger.debug(f"({self.format}) Neither HEAD nor GET report the stream head, probing with HEAD only")
+                self._get_fallback_useless = True
             return response
 
     def get_Headers(self, url, client: Optional[httpx.Client] = None) -> Optional[httpx.Headers]:
@@ -1435,7 +1442,8 @@ class StreamDownloaderBase:
             if status == 403 and immediate_403s:
                 # Recovery mode reacts to the first 403, not only once retries are used up
                 self.is_403 = True
-            if status in self.STATUS_FORCELIST and retry_on_error_status                     and not (status == 204 and self._empty_is_final(segment_order)):
+            if (status in self.STATUS_FORCELIST and retry_on_error_status
+                    and not (status == 204 and self._empty_is_final(segment_order))):
                 raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
             self._note_auth_status(status, segment_order)
 
@@ -1688,7 +1696,8 @@ class StreamDownloaderBase:
 
         # By this stage, a stream would have a URL. Keep using it if the video becomes private or a membership
         # The live chat asks for an early refresh (see LiveStreamDownloader.request_refresh)
-        requested = self.livestream_coordinator is not None             and getattr(self.livestream_coordinator, "refresh_requested_at", 0.0) > self.url_checked
+        requested = (self.livestream_coordinator is not None
+                     and getattr(self.livestream_coordinator, "refresh_requested_at", 0.0) > self.url_checked)
         due = now >= self.next_refresh_at or requested
         recent_403 = (now - self.url_checked >= REFRESH_403_AFTER_SECONDS and self.is_403)
         if (due or recent_403 or len(self.stream_urls) <= 0) and not self.is_private:
@@ -1816,6 +1825,9 @@ class StreamDownloaderBase:
         if stream_url.protocol != self.stream_url.protocol:
             self.logger.info(f"({self.format}) yt-dlp now lists this format as '{stream_url.protocol}' (was '{self.stream_url.protocol}'), "
                              f"the same {stream_url.url_kind} stream URL, continuing")
+        if str(stream_url) != str(self.stream_url):
+            # A new URL may report the stream head where the old one didn't (see _probe_headers)
+            self._get_fallback_useless = False
         self.stream_url = stream_url
         self.stream_urls.append(stream_url)
         now = time.time()
@@ -2226,7 +2238,8 @@ class DownloadStream(StreamDownloaderBase):
         self._enqueue_up_to(max(self.latest_sequence, self.latest_downloaded_segment))
 
     def _enqueue(self, seg: int) -> None:
-        if seg not in self._queued and not self.store.has(seg) and seg not in self._exhausted                 and seg not in self._given_up_tail:
+        if (seg not in self._queued and not self.store.has(seg) and seg not in self._exhausted
+                and seg not in self._given_up_tail):
             heapq.heappush(self._queue, seg)
             self._queued.add(seg)
 
@@ -2351,6 +2364,11 @@ class DownloadStream(StreamDownloaderBase):
         # Segments that answered 204 at the end of an ended stream aren't stored, but aren't missing either
         missing = [seg for seg in missing if seg not in empty_set]
         stats = self._stats()
+        if self._graceful_stop_requested():
+            # Stopped by the user: the segments not reached yet weren't failures
+            stats['segments_written'] = total - len(missing)
+            self.logger.info(f"({self.format}) Stopped with {total - len(missing)} of {total} segments ({start}-{top}) downloaded")
+            return
         stats['segments_written'] = total - len(missing)
         stats['missing_segments'] = len(missing)
         stats['empty_segments'] = len(empty)
@@ -3057,6 +3075,9 @@ class MuxTool:
     def __init__(self, ydl, ffmpeg_command_file: FileInfo, logger: LoggerLike):
         self.logger = logger
         self.ffmpeg_command_file = ffmpeg_command_file
+        # yt-dlp's --ffmpeg-location (a file or a folder), also honoured by the fallback
+        params = getattr(ydl, "params", None)
+        self.ffmpeg_location: Optional[str] = params.get('ffmpeg_location') if isinstance(params, dict) else None
         self.ytdlp = None
         try:
             self.ytdlp = _make_merger(ydl, ffmpeg_command_file)
@@ -3095,7 +3116,7 @@ class MuxTool:
                 return self.ytdlp.get_audio_codec(path)
             except self.INTERNAL_ERRORS as e:
                 self.logger.debug(f"yt-dlp's get_audio_codec failed: {e}")
-        return probe_audio_codec(path)
+        return probe_audio_codec(path, self.ffmpeg_location)
 
     def run(self, input_path_opts: list[tuple[str, list[str]]], output_path_opts: list[tuple[str, list[str]]], merge: bool = True):
         if self.ytdlp is not None:
@@ -3106,9 +3127,10 @@ class MuxTool:
         return self._run_own(input_path_opts, output_path_opts, merge)
 
     def _run_own(self, input_path_opts, output_path_opts, merge: bool):
-        executable = shutil.which("ffmpeg")
+        executable = ffmpeg_tool("ffmpeg", self.ffmpeg_location)
         if executable is None:
-            raise FileNotFoundError("ffmpeg not found")
+            where = f" (--ffmpeg-location {self.ffmpeg_location})" if self.ffmpeg_location else " on PATH"
+            raise FileNotFoundError(f"ffmpeg not found{where}")
         cmd = [executable, '-y', '-loglevel', 'repeat+info']
         for path, opts in input_path_opts:
             cmd += [*opts, '-i', _ffmpeg_path_argument(path)]
@@ -3153,9 +3175,29 @@ def basic_metadata_args(info_dict: dict) -> list[str]:
     return args
 
 
-def probe_audio_codec(path: str) -> Optional[str]:
+def ffmpeg_tool(name: str, location: Optional[str] = None) -> Optional[str]:
+    """
+    Path of ffmpeg or ffprobe (`name`), honouring yt-dlp's --ffmpeg-location: a folder holding the
+    tools, or the path of ffmpeg itself (ffprobe is then looked for next to it). Falls back to PATH.
+    """
+    if location:
+        location = os.path.expanduser(str(location))
+        if os.path.isdir(location):
+            found = shutil.which(name, path=location)
+            if found:
+                return found
+        elif os.path.isfile(location):
+            if os.path.splitext(os.path.basename(location))[0].lower() == name:
+                return location
+            found = shutil.which(name, path=os.path.dirname(location) or ".")
+            if found:
+                return found
+    return shutil.which(name)
+
+
+def probe_audio_codec(path: str, ffmpeg_location: Optional[str] = None) -> Optional[str]:
     """Codec name of the first audio stream according to ffprobe, None if unknown."""
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = ffmpeg_tool("ffprobe", ffmpeg_location)
     if ffprobe is None:
         return None
     try:
@@ -3595,16 +3637,22 @@ class LiveStreamDownloader:
         if excess <= 0:
             return name
         original = name
-        title_bytes = len(str(info_dict.get('fulltitle') or info_dict.get('title') or '').encode('utf-8'))
-        if isinstance(outtmpl, str) and _TITLE_FIELD_RE.search(outtmpl) and title_bytes:
-            limit = title_bytes
+
+        def field_bytes(field: str) -> int:
+            # Each title field is measured itself: for a live stream 'title' (with the date) is
+            # longer than 'fulltitle'
+            return len(str(info_dict.get(field) or info_dict.get('title') or '').encode('utf-8'))
+
+        fields = set(_TITLE_FIELD_RE.findall(outtmpl)) if isinstance(outtmpl, str) else set()
+        if fields and any(field_bytes(field) for field in fields):
+            cut = 0
             # A few rounds: sanitizing can make characters longer (e.g. ':' becomes a 3-byte '：')
             for _ in range(6):
-                limit = max(1, limit - excess)
-                shortened = _TITLE_FIELD_RE.sub(lambda m: f"%({m.group(1)}).{limit}B", outtmpl)
+                cut += excess
+                shortened = _TITLE_FIELD_RE.sub(lambda m: f"%({m.group(1)}).{max(1, field_bytes(m.group(1)) - cut)}B", outtmpl)
                 name = self._render_filename(info_dict, shortened)
                 excess = filename_excess_bytes(name)
-                if excess <= 0 or limit <= 1:
+                if excess <= 0 or all(field_bytes(field) - cut <= 1 for field in fields):
                     break
         if excess > 0:
             name = truncate_filename_bytes(name)
@@ -3934,7 +3982,10 @@ class LiveStreamDownloader:
                 if self._last_segment_time > max(refreshed, chat_ended + LIVE_CHAT_RETRY_SEGMENT_DELAY):
                     return dict(info)
             now = time.time()
-            if self._last_segment_time > chat_ended + LIVE_CHAT_RETRY_SEGMENT_DELAY and now - chat_ended >= LIVE_CHAT_REFRESH_REQUEST_DELAY                     and now - requested >= LIVE_CHAT_REFRESH_REQUEST_INTERVAL and refreshed <= used_refresh_time:
+            if (self._last_segment_time > chat_ended + LIVE_CHAT_RETRY_SEGMENT_DELAY
+                    and now - chat_ended >= LIVE_CHAT_REFRESH_REQUEST_DELAY
+                    and now - requested >= LIVE_CHAT_REFRESH_REQUEST_INTERVAL
+                    and refreshed <= used_refresh_time):
                 # The stream continues, but the stream downloaders may not refresh for hours
                 self.logger.info("Live chat: the stream is still being downloaded, asking for an early info.json refresh to download the chat again")
                 requested = now
