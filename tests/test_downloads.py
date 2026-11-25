@@ -628,6 +628,17 @@ class TimeWindowTests(ScenarioBase):
         self.assertEqual(self.read(str(results["a"][0])), expected_ts(self.segments(AUDIO_ITAG, range(25, 31))))
         self.assertEqual(coordinator._time_reference, 60.0)
 
+    def test_capture_duration(self):
+        # Stop 10 s of stream time after the live edge at the start (the stream keeps going)
+        self.stream.total_segments = 60
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        options = self.options(start_time=-0.0, capture_duration=10)
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, options, manifest=url.manifest))
+        reference = coordinator._time_reference
+        first, last = int(reference // 2.0), math.ceil((reference + 10) / 2.0)
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(first, last + 1))))
+
     def test_direct_mode_window(self):
         coordinator = self.coordinator()
         url = stream_url_for(self.info, VIDEO_ITAG)

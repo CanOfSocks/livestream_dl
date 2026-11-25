@@ -87,6 +87,14 @@ class TimeParsingTests(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             runner.validate_time_window(-540.0, -600.0)
 
+    def test_capture_duration_validation(self):
+        runner.validate_time_window(None, None, 3600)
+        runner.validate_time_window(-0.0, None, 60)
+        for start, end, capture in ((None, 100, 60), (None, None, -0.0), (None, None, 0)):
+            with self.subTest(start=start, end=end, capture=capture), self.assertRaises(argparse.ArgumentTypeError):
+                runner.validate_time_window(start, end, capture)
+        self.assertEqual(runner.parse_options(["abcdefghijk", "--capture-duration", "2:00:00"])["capture_duration"], 7200)
+
     def test_resolve_window_seconds(self):
         self.assertEqual(download_Live.resolve_window_seconds(None, None, None), (0.0, None))
         self.assertEqual(download_Live.resolve_window_seconds(60, 120, None), (60.0, 120.0))

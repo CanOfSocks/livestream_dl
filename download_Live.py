@@ -1136,6 +1136,9 @@ class StreamDownloaderBase:
         # --start-time / --end-time in seconds (negative = relative to the live edge), None if not set
         self.start_time: Optional[float] = self.options.get('start_time')
         self.end_time: Optional[float] = self.options.get('end_time')
+        # --capture-duration: stop this many seconds of stream time after the live edge when recording started
+        capture = self.options.get('capture_duration')
+        self.capture_duration: Optional[float] = float(capture) if capture is not None else None
         # --dvr-window (hours): segments older than this are not requested (0 disables the limit)
         dvr_hours = self.options.get('dvr_window')
         self.dvr_window: float = DVR_WINDOW_SECONDS if dvr_hours is None else max(0.0, float(dvr_hours) * 3600.0)
@@ -1165,7 +1168,7 @@ class StreamDownloaderBase:
         self.start_seg: int = 0
         self.end_seg: float = float('inf')
         self._window_seconds: Optional[tuple[float, Optional[float]]] = None
-        self._window_resolved: bool = self.start_time is None and self.end_time is None
+        self._window_resolved: bool = self.start_time is None and self.end_time is None and self.capture_duration is None
         # Oldest segment YouTube still keeps (see _apply_dvr_window); start_seg never goes below it
         self._dvr_floor: int = 0
 
@@ -1490,11 +1493,16 @@ class StreamDownloaderBase:
             if self.estimated_segment_duration <= 0:
                 return False
         reference = None
-        if is_relative_time(self.start_time) or is_relative_time(self.end_time):
+        if is_relative_time(self.start_time) or is_relative_time(self.end_time) or self.capture_duration is not None:
             if self._last_head_time is None:
                 return False
             reference = self._time_reference(self._last_head_time)
-        self._window_seconds = resolve_window_seconds(self.start_time, self.end_time, reference)
+        end_time = self.end_time
+        if self.capture_duration is not None:
+            # Same as an end time capture_duration after the live edge (shared by all formats)
+            end_time = reference + self.capture_duration
+            self.logger.info(f"({self.format}) Recording until {end_time:.0f}s of stream time ({self.capture_duration:.0f}s after the current live edge)")
+        self._window_seconds = resolve_window_seconds(self.start_time, end_time, reference)
         self._window_resolved = True
         self._recalculate_window()
         self.logger.debug(f"Segments calculated: Start={self.start_seg}, End={self.end_seg}")
@@ -2455,7 +2463,7 @@ class DownloadStream(StreamDownloaderBase):
                 "no_merge": True,
                 "recovery": True,
                 # The URLs are already known; keep the window already resolved for this stream
-                "start_time": None, "end_time": None,
+                "start_time": None, "end_time": None, "capture_duration": None,
             })
             recovery_options.pop("file_name", None)
             try:

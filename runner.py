@@ -329,8 +329,13 @@ def join_negative_option_values(argv: list[str]) -> list[str]:
     return result
 
 
-def validate_time_window(start_time, end_time) -> None:
+def validate_time_window(start_time, end_time, capture_duration=None) -> None:
     """End must be after start. Mixed signs can only be checked once the live edge is known."""
+    if capture_duration is not None:
+        if end_time is not None:
+            raise argparse.ArgumentTypeError("--capture-duration and --end-time can't be used together")
+        if download_Live.is_relative_time(capture_duration) or capture_duration <= 0:
+            raise argparse.ArgumentTypeError("--capture-duration must be a positive duration")
     if start_time is None or end_time is None:
         return
     if download_Live.is_relative_time(start_time) == download_Live.is_relative_time(end_time) and end_time <= start_time:
@@ -476,6 +481,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument('--end-time', type=parse_time_to_seconds, default=None, help="End time of the recording in hh:mm:ss format (based on stream duration). A negative value (e.g. -09:00) is relative to the live edge when recording starts (EXPERIMENTAL).")
 
+    parser.add_argument('--capture-duration', type=parse_time_to_seconds, default=None, help="Stop recording this long (hh:mm:ss) after the live edge at the time recording starts, e.g. 2:00:00 records until 2 hours from now. Combine with --start-time=-0 to record only from now. Can't be used with --end-time.")
+
     parser.add_argument('--url-refresh-interval', type=int, default=None, help="Fixed interval in seconds to refresh stream URLs with yt-dlp. By default URLs are refreshed shortly before they expire (~30 minutes before expiry), which minimises yt-dlp requests.")
 
     parser.add_argument('--url-refresh-jitter', type=int, default=300, help="Maximum random number of seconds to bring each scheduled URL refresh forward, so that many downloads started together don't refresh at the same time.")
@@ -502,7 +509,7 @@ def parse_options(argv: list[str]) -> dict:
     parser = build_parser()
     args = parser.parse_args(join_negative_option_values(argv))
     try:
-        validate_time_window(args.start_time, args.end_time)
+        validate_time_window(args.start_time, args.end_time, args.capture_duration)
     except argparse.ArgumentTypeError as e:
         parser.error(str(e))
 
