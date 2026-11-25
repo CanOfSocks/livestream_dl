@@ -1424,7 +1424,7 @@ class StreamDownloaderBase:
             if status == 403 and immediate_403s:
                 # Recovery mode reacts to the first 403, not only once retries are used up
                 self.is_403 = True
-            if status in self.STATUS_FORCELIST and retry_on_error_status:
+            if status in self.STATUS_FORCELIST and retry_on_error_status                     and not (status == 204 and self._empty_is_final(segment_order)):
                 raise httpx.HTTPStatusError("Retryable Status", request=response.request, response=response)
             self._note_auth_status(status, segment_order)
 
@@ -2059,6 +2059,15 @@ class StreamDownloaderBase:
         """One of the newest ENDED_TAIL_SEGMENTS sequence numbers reported by the server."""
         return self.latest_sequence >= 0 and seg > self.latest_sequence - ENDED_TAIL_SEGMENTS
 
+    def _empty_is_final(self, seg: int) -> bool:
+        """
+        A 204 (no content) for one of the newest segments of an ended stream is YouTube's answer for
+        a segment that was never created, so it isn't retried. Checked on every attempt: requests
+        already retrying when the end is detected stop at their next response (each 204 is held for
+        about 7.6 s, so retrying them delayed the end of a download by minutes).
+        """
+        return self.stream_has_ended() and self._is_tail_segment(seg)
+
     def live_dl(self):
         self.logger.info(colour(f"Starting download of live fragments ({self.format} - {self.stream_url.format_note}) [{self.mode_name}]", DARK_YELLOW))
         self.future_to_seg: dict[concurrent.futures.Future, int] = {}
@@ -2179,6 +2188,8 @@ class DownloadStream(StreamDownloaderBase):
         # Newest segments of an ended stream that were given up as never created (see _on_tail_failure).
         # Not re-queued by a new URL; re-queued only if the head advances past them after all.
         self._given_up_tail: set[int] = set()
+        # Segments the server answered with 204 (no content): nothing to write for them
+        self._empty_segments: set[int] = set()
         self._frontier: int = self.store.first_needed()
         self._refresh_result = None
         self._apply_dvr_window()
@@ -2251,6 +2262,8 @@ class DownloadStream(StreamDownloaderBase):
         if data is not None:
             self.store.add(seg, data)
             self.segment_retries.pop(seg, None)
+            if not data:
+                self._empty_segments.add(seg)
             if status == 204 and not data and seg <= self.latest_sequence and not self.stream_has_ended():
                 # Seen at the end of real streams: the last reported segments answer 204 (no content)
                 # after every retry. Learn whether the stream ended rather than idling for minutes.
@@ -2292,13 +2305,18 @@ class DownloadStream(StreamDownloaderBase):
             self.logger.debug(f"Unable to work out missing segments: {e}")
             return
         total = top - start + 1
+        empty = sorted(seg for seg in getattr(self, "_empty_segments", ()) if start <= seg <= top and seg not in missing)
         stats = self._stats()
         stats['segments_written'] = total - len(missing)
         stats['missing_segments'] = len(missing)
+        stats['empty_segments'] = len(empty)
+        # The newest segments of an ended stream usually answer 204: they were never created
+        empty_note = f" ({len(empty)} had no content: {describe_ranges(empty)})" if empty else ""
         if missing:
-            self.logger.warning(f"({self.format}) {len(missing)} of {total} segments ({start}-{top}) could not be downloaded: {describe_ranges(missing)}")
+            self.logger.warning(f"({self.format}) {len(missing)} of {total} segments ({start}-{top}) could not be downloaded: "
+                                f"{describe_ranges(missing)}{empty_note}")
         else:
-            self.logger.info(f"({self.format}) All {total} segments ({start}-{top}) downloaded")
+            self.logger.info(f"({self.format}) All {total} segments ({start}-{top}) downloaded{empty_note}")
 
     def _max_retries_for(self, seg: int) -> Optional[int]:
         if self.stream_has_ended() and self._is_tail_segment(seg):

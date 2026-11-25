@@ -508,7 +508,30 @@ class PostLiveTests(ScenarioBase):
         file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, url, self.options(segment_retries=10), manifest=url.manifest),
                                    timeout=30)
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(18))))
-        self.assertLessEqual(self._tail_requests(), 2 * download_Live.ENDED_TAIL_MAX_SUBMISSIONS * (download_Live.ENDED_TAIL_REQUEST_RETRIES + 1))
+        # After the end a 204 is final: one request per segment, no retries
+        self.assertEqual(self._tail_requests(), 2)
+        self.assertEqual(coordinator.stats["video"]["empty_segments"], 2)
+        self.assertEqual(coordinator.stats["video"]["missing_segments"], 0)
+
+    def test_retrying_204_stops_once_the_stream_ended(self):
+        """Requests retrying a 204 when the end is detected stop at their next response."""
+        self.stream.fail(VIDEO_ITAG, 19, 204, times=10000)
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            stream.latest_sequence = 19
+            segment_url = stream._download_args(19)[0]
+            # While live, a 204 is retried
+            result = stream.download_segment(segment_url, 19, max_retries=2)
+            self.assertEqual((result.status, result.data), (204, b""))
+            self.assertEqual(self._tail_requests(), 3)
+            # Once the stream has ended, the first 204 is the answer
+            stream.live_status = "post_live"
+            stream.download_segment(segment_url, 19, max_retries=2)
+            self.assertEqual(self._tail_requests(), 4)
+            # Older segments of an ended stream are still retried
+            self.stream.fail(VIDEO_ITAG, 10, 204, times=10000)
+            stream.download_segment(stream._download_args(10)[0], 10, max_retries=2)
+            self.assertEqual(sum(1 for itag, sq in self.stream.requests if itag == VIDEO_ITAG and sq == 10), 3)
 
     def test_empty_tail_while_live_requests_early_refresh(self):
         # A live stream whose newest reported segment answers 204 after all retries has probably ended
