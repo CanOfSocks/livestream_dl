@@ -715,6 +715,22 @@ class FilenameLengthTests(unittest.TestCase):
         self.assertEqual(name, "U" * self.limit())
 
 
+class DownloadReportTests(unittest.TestCase):
+    def test_describe_ranges(self):
+        self.assertEqual(download_Live.describe_ranges([12, 3, 7, 8, 9]), "3, 7-9, 12")
+        self.assertEqual(download_Live.describe_ranges([]), "")
+        self.assertEqual(download_Live.describe_ranges(range(0, 10, 2), limit=2), "0, 2, ... (3 more ranges)")
+
+    def test_video_audio_mismatch_warning(self):
+        coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
+        coordinator.stats = {"video": {"segments_written": 100}, "audio": {"segments_written": 101}}
+        with self.assertNoLogs(LOGGER, level="WARNING"):
+            coordinator._compare_format_segments()
+        coordinator.stats["audio"]["segments_written"] = 90
+        with self.assertLogs(LOGGER, level="WARNING"):
+            coordinator._compare_format_segments()
+
+
 class BaseOutputPathTests(unittest.TestCase):
     def test_uses_temp_then_download_folder(self):
         info = {"id": "abcdefghijk"}

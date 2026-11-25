@@ -159,6 +159,19 @@ class LiveDownloadTests(ScenarioBase):
         file, _ = run_with_timeout(self, lambda: coordinator.download_stream_direct(self.info, url, self.options(), manifest=url.manifest))
         expected = [n for n in range(self.total_segments) if n != 6]
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, expected)))
+        # The end-of-download report counts the gap
+        self.assertEqual(coordinator.stats["video"]["missing_segments"], 1)
+        self.assertEqual(coordinator.stats["video"]["segments_written"], self.total_segments - 1)
+
+    def test_database_mode_reports_missing_segments(self):
+        self.stream.fail(VIDEO_ITAG, 6, 404, times=1000)
+        self.stream.fail(VIDEO_ITAG, 7, 404, times=1000)
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, self.options(), manifest=url.manifest))
+        self.assertEqual(coordinator.stats["video"]["missing_segments"], 2)
+        self.assertTrue(any("2 of 20 segments (0-19) could not be downloaded: 6-7" in line for line in logs.output))
 
     def test_direct_mode_many_threads_gap_does_not_stall(self):
         # Regression: with 6+ threads the reorder window (10 x threads) exceeded the store's backlog
@@ -479,6 +492,7 @@ class PostLiveTests(ScenarioBase):
         options = self.options(segment_retries=10)
         file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, url, options, manifest=url.manifest), timeout=30)
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(18))))
+        self.assertEqual(coordinator.stats["video"]["missing_segments"], 2)
         # Full retries would be 11 submissions x 11 attempts per segment
         per_submission = download_Live.ENDED_TAIL_REQUEST_RETRIES + 1
         self.assertLessEqual(self._tail_requests(), 2 * download_Live.ENDED_TAIL_MAX_SUBMISSIONS * per_submission)

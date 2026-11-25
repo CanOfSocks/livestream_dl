@@ -325,6 +325,18 @@ def truncate_filename_bytes(path: str) -> str:
     return os.path.join(folder, base) if folder else base
 
 
+def describe_ranges(numbers: Iterable[int], limit: int = 20) -> str:
+    """'3, 7-9, 12' for [3, 7, 8, 9, 12]; at most `limit` ranges are listed."""
+    ranges: list[list[int]] = []
+    for n in sorted(set(numbers)):
+        if ranges and n == ranges[-1][1] + 1:
+            ranges[-1][1] = n
+        else:
+            ranges.append([n, n])
+    text = ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in ranges[:limit])
+    return text + (f", ... ({len(ranges) - limit} more ranges)" if len(ranges) > limit else "")
+
+
 def _int_header(headers: Optional[httpx.Headers], name: str) -> Optional[int]:
     if headers is None:
         return None
@@ -788,6 +800,8 @@ class DirectTSStore(SegmentStore):
         self.state: dict[str, int] = {'last_written': -1, 'file_size': 0}
         # Truncate once after resuming, as the file may contain data written after the last state save
         self._needs_truncate: bool = True
+        # Segments given up (gaps in the .ts file), for the end-of-download report
+        self.skipped: list[int] = []
         # Consecutive failed writes and when the first of them happened (see flush)
         self._failed_writes: int = 0
         self._first_failed_write: Optional[float] = None
@@ -855,6 +869,7 @@ class DirectTSStore(SegmentStore):
         if seg > self.last_written + 1:
             if not self.is_fresh():
                 self.logger.warning(f"Segments {self.last_written + 1}-{seg - 1} are no longer available, continuing at segment {seg}")
+                self.skipped.extend(range(self.last_written + 1, seg))
             self.state['last_written'] = seg - 1
             for old in [s for s in self.pending if s < seg]:
                 self.pending.pop(old, None)
@@ -864,6 +879,7 @@ class DirectTSStore(SegmentStore):
         """Give up on segment `seg` (exceeded retries) so later segments can be written."""
         if seg == self.last_written + 1:
             self.state['last_written'] = seg
+            self.skipped.append(seg)
             self.flush()
 
     def is_backlogged(self) -> bool:
@@ -952,6 +968,7 @@ class DirectTSStore(SegmentStore):
             if seg not in self.pending or seg <= self.last_written:
                 continue
             if seg > self.last_written + 1:
+                self.skipped.extend(range(self.last_written + 1, seg))
                 self.state['last_written'] = seg - 1
             self._flush_until_written()
 
@@ -2252,6 +2269,33 @@ class DownloadStream(StreamDownloaderBase):
             elif self._in_window(seg) and seg <= max(self.latest_sequence, self.latest_downloaded_segment):
                 self._enqueue(seg)
 
+    def _on_finish(self) -> None:
+        super()._on_finish()
+        self._report_download()
+
+    def _missing_segments(self, start: int, top: int) -> list[int]:
+        return [seg for seg in range(start, top + 1) if not self.store.has(seg)]
+
+    def _report_download(self) -> None:
+        """Log the segments of the window that could not be downloaded (and record counts in the stats)."""
+        top = self.latest_sequence if self.end_seg == float('inf') else min(self.latest_sequence, int(self.end_seg))
+        start = max(0, int(self.start_seg))
+        if top < start:
+            return
+        try:
+            missing = self._missing_segments(start, top)
+        except Exception as e:
+            self.logger.debug(f"Unable to work out missing segments: {e}")
+            return
+        total = top - start + 1
+        stats = self._stats()
+        stats['segments_written'] = total - len(missing)
+        stats['missing_segments'] = len(missing)
+        if missing:
+            self.logger.warning(f"({self.format}) {len(missing)} of {total} segments ({start}-{top}) could not be downloaded: {describe_ranges(missing)}")
+        else:
+            self.logger.info(f"({self.format}) All {total} segments ({start}-{top}) downloaded")
+
     def _max_retries_for(self, seg: int) -> Optional[int]:
         if self.stream_has_ended() and self._is_tail_segment(seg):
             return min(self.fragment_retries, ENDED_TAIL_REQUEST_RETRIES)
@@ -2563,6 +2607,10 @@ class DownloadStreamDirect(DownloadStream):
 
     def _loop_result(self):
         return self.paths.merged_file_name
+
+    def _missing_segments(self, start: int, top: int) -> list[int]:
+        skipped = {seg for seg in self.store.skipped if start <= seg <= top}
+        return sorted(skipped | {seg for seg in range(max(start, self.store.last_written + 1), top + 1) if not self.store.has(seg)})
 
     def delete_state_file(self) -> None:
         self.store.delete_state_files()
@@ -3316,6 +3364,7 @@ class LiveStreamDownloader:
                         self._wait_for_tasks(futures, info_dict, options)
                     finally:
                         self._media_finished.set()
+                    self._compare_format_segments()
                     self._wait_for_live_chat(live_chat_thread, info_dict, options)
             except KeyboardInterrupt:
                 self._cancel_tasks(executor, futures)
@@ -3329,6 +3378,16 @@ class LiveStreamDownloader:
         self.move_to_final(options=options, output_file=output_file, file_names=self.file_names)
         self._cleanup_live_chat_sources(f"{output_file}.live_chat.zip")
         self.stats["status"] = "Finished"
+
+    def _compare_format_segments(self) -> None:
+        """Warn when video and audio ended up with clearly different numbers of segments (as ytarchive does)."""
+        video, audio = self.stats.get('video') or {}, self.stats.get('audio') or {}
+        if 'segments_written' not in video or 'segments_written' not in audio:
+            return
+        difference = abs(video['segments_written'] - audio['segments_written'])
+        if difference > 1:
+            self.logger.warning(f"Video has {video['segments_written']} segments and audio {audio['segments_written']}: "
+                                f"the merged file may have audio and video out of sync where segments are missing")
 
     def _prepare_download_paths(self, info_dict: dict, options: dict) -> str:
         """
