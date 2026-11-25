@@ -12,6 +12,7 @@ import copy
 import logging
 import re
 import threading
+import time
 from collections import deque
 from typing import Any, Optional, Union
 from urllib.parse import parse_qs, urlparse
@@ -30,6 +31,14 @@ except ModuleNotFoundError:
 # Set while a yt-dlp extraction is running. runner.py checks this in its signal handler so a
 # Ctrl+C during yt-dlp's own "wait for video" loop interrupts yt-dlp instead of setting kill_all.
 extraction_event = threading.Event()
+
+# The live_from_start fallback (see _live_from_start_fallback) costs a second extraction. Its outcome
+# is remembered per video: once it worked, later extractions of that video use live_from_start
+# directly; if it found nothing, it isn't tried again for that video for this many seconds.
+LIVE_FROM_START_FALLBACK_RETRY_SECONDS: float = 600.0
+# video id -> (time.monotonic() of the last fallback, whether it gave live stream URLs)
+_fallback_outcomes: dict[str, tuple[float, bool]] = {}
+_fallback_lock = threading.Lock()
 
 
 class ExtractionLogger:
@@ -230,6 +239,7 @@ def get_Video_Info(
     logger: Optional[logging.Logger] = None,
     clean_info_dict: bool = False,
     ignore_no_formats: bool = False,
+    live_from_start_fallback: bool = True,
     **kwargs
 ) -> tuple[dict[str, Any], str]:
     """
@@ -239,6 +249,8 @@ def get_Video_Info(
     wait: how long to wait for an upcoming stream to start, see _wait_for_video_option.
     additional_options / kwargs: extra yt-dlp options (they override the defaults below).
     return_format / sort: unused, kept for compatibility with older callers.
+    live_from_start_fallback: if a live stream lists no live stream URLs, extract again with
+        yt-dlp's live_from_start option (see _live_from_start_fallback).
     """
     if logger is None:
         logger = logging.getLogger()
@@ -277,7 +289,15 @@ def get_Video_Info(
     if wait is False:
         ydl_opts['wait_for_video'] = None
 
-    return _extract_live_info(ydl_opts, url, id, clean_info_dict)
+    if live_from_start_fallback and not ydl_opts.get('live_from_start') and _fallback_outcome(id) is True:
+        # The fallback was needed for this video before: one live_from_start extraction instead of two
+        info_dict, live_status = _extract_live_info({**ydl_opts, 'live_from_start': True}, url, id, clean_info_dict,
+                                                    allow_fallback=False)
+        if live_status == 'is_live' and _has_downloadable_formats(info_dict):
+            return info_dict, live_status
+        # Ended, or live_from_start no longer helps: back to the usual extraction
+        _record_fallback(id, None)
+    return _extract_live_info(ydl_opts, url, id, clean_info_dict, allow_fallback=live_from_start_fallback)
 
 
 def _wait_for_video_option(wait: Union[bool, int, tuple, str, None]) -> Optional[tuple]:
@@ -314,8 +334,12 @@ def _set_youtube_format_args(ydl_opts: dict, include_dash: bool, include_m3u8: b
         skip_list.append("hls")
 
 
-def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool) -> tuple[dict[str, Any], str]:
-    """Run the yt-dlp extraction. Only upcoming, live and post-live (unprocessed) videos are accepted."""
+def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool,
+                       allow_fallback: bool = True) -> tuple[dict[str, Any], str]:
+    """
+    Run the yt-dlp extraction. Only upcoming, live and post-live (unprocessed) videos are accepted.
+    allow_fallback: try the live_from_start fallback if a live stream lists no live stream URLs.
+    """
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             # Lets the Ctrl+C handler in runner.py interrupt yt-dlp (see extraction_event)
@@ -338,10 +362,15 @@ def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool)
                 live_status = 'post_live'
             if live_status not in ['is_upcoming', 'is_live', 'post_live']:
                 raise VideoProcessedError("Video has been processed, please use yt-dlp directly")
-            if live_status == 'is_live' and not ydl_opts.get('live_from_start') and not _has_downloadable_formats(info_dict):
-                fallback = _live_from_start_fallback(ydl_opts, url, id, clean_info_dict)
-                if fallback is not None:
-                    return fallback
+            if live_status == 'is_live' and allow_fallback and not ydl_opts.get('live_from_start') \
+                    and not _has_downloadable_formats(info_dict):
+                if _fallback_outcome(id) is False:
+                    ydl_opts['logger'].info(f"{id}: no live stream URLs found; the live_from_start fallback found none "
+                                            f"recently either, not trying it again yet")
+                else:
+                    fallback = _live_from_start_fallback(ydl_opts, url, id, clean_info_dict)
+                    if fallback is not None:
+                        return fallback
             return info_dict, live_status
 
         except yt_dlp.utils.DownloadError as e:
@@ -367,18 +396,47 @@ def _live_from_start_fallback(ydl_opts: dict, url: str, id: str, clean_info_dict
     The live adaptive URLs come from the "formats=incomplete" extractor argument, a yt-dlp debugging
     aid that could change. If it gave nothing usable, extract once more with yt-dlp's supported
     live_from_start option, which lists the same base URLs (labelled http_dash_segments_generator).
-    Returns None if that gives nothing usable either.
+    Returns None if that gives nothing usable either. The outcome is remembered for the video
+    (see _fallback_outcome), so the second extraction isn't repeated on every refresh.
     """
     logger = ydl_opts.get('logger')
     if logger is not None:
         logger.warning(f"{id}: no live stream URLs found with formats=incomplete, trying yt-dlp's live_from_start extraction")
     try:
-        info_dict, live_status = _extract_live_info({**ydl_opts, 'live_from_start': True}, url, id, clean_info_dict)
+        info_dict, live_status = _extract_live_info({**ydl_opts, 'live_from_start': True}, url, id, clean_info_dict,
+                                                    allow_fallback=False)
     except Exception as e:
         if logger is not None:
             logger.warning(f"{id}: live_from_start extraction failed: {e}")
+        _record_fallback(id, False)
         return None
-    return (info_dict, live_status) if _has_downloadable_formats(info_dict) else None
+    worked = _has_downloadable_formats(info_dict)
+    _record_fallback(id, worked)
+    return (info_dict, live_status) if worked else None
+
+
+def _record_fallback(id: str, worked: Optional[bool]) -> None:
+    """Remember the outcome of a live_from_start fallback for video `id` (None forgets it)."""
+    with _fallback_lock:
+        if worked is None:
+            _fallback_outcomes.pop(str(id), None)
+        else:
+            _fallback_outcomes[str(id)] = (time.monotonic(), worked)
+
+
+def _fallback_outcome(id: str) -> Optional[bool]:
+    """
+    True if the live_from_start fallback worked for video `id`, False if it found nothing within
+    the last LIVE_FROM_START_FALLBACK_RETRY_SECONDS, None if it should be tried (again).
+    """
+    with _fallback_lock:
+        outcome = _fallback_outcomes.get(str(id))
+    if outcome is None:
+        return None
+    when, worked = outcome
+    if worked:
+        return True
+    return False if time.monotonic() - when < LIVE_FROM_START_FALLBACK_RETRY_SECONDS else None
 
 
 def _has_unprocessed_live_formats(info_dict: dict) -> bool:

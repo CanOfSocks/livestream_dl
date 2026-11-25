@@ -186,7 +186,8 @@ def main(id, resolution='bv+ba/best', options: dict = None, info_dict=None, thre
             id, cookies=options.get("cookies", None), additional_options=options.get('ytdlp_options', None),
             proxy=options.get('proxy', None), include_dash=options.get("dash", False), wait=options.get("wait_for_video", False),
             include_m3u8=(options.get("m3u8", False) or options.get("force_m3u8", False)), logger=logger,
-            clean_info_dict=options.get('clean_info_json', False))
+            clean_info_dict=options.get('clean_info_json', False),
+            live_from_start_fallback=options.get('live_from_start_fallback', True))
     downloader = download_Live.LiveStreamDownloader(kill_all=kill_all, logger=logger)
     downloader.download_segments(info_dict=info_dict, resolution=resolution, options=options, thread_event=thread_kill)
 
@@ -383,6 +384,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--segment-retries', type=int, default=10, help="Number of times to retry grabbing a segment.")
 
     parser.add_argument('--dvr-window', type=float, default=None, metavar="HOURS", help="YouTube only keeps the last 7 days (168 hours) of a live stream. Segments older than this are not requested; for streams longer than 5 days the oldest available segment is also checked with a few requests. Set this if YouTube changes the limit, or 0 to request every segment.")
+
+    parser.add_argument('--no-live-from-start-fallback', action='store_false', dest='live_from_start_fallback', help="Don't retry an extraction that gives no live stream URLs with yt-dlp's live_from_start option. By default that second extraction is tried, and its result is remembered for the video so it isn't repeated on every URL refresh.")
 
     parser.add_argument('--disable-graceful-shutdown', action='store_true', help="Disable graceful shutdown for downloader. Useful for testing when you don't want merging to be triggered on a keyboard interrupt.")
 

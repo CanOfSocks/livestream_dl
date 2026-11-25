@@ -1148,6 +1148,8 @@ class StreamDownloaderBase:
         self.include_dash: bool = bool(_opt(self.options, 'include_dash', 'dash', default=False))
         self.include_m3u8: bool = bool(_opt(self.options, 'include_m3u8', 'm3u8', default=False))
         self.force_m3u8: bool = bool(self.options.get('force_m3u8', False))
+        # --no-live-from-start-fallback turns off the second extraction (see getUrls._live_from_start_fallback)
+        self.live_from_start_fallback: bool = bool(self.options.get('live_from_start_fallback', True))
         self.resolution: str = self.options.get("resolution") or "bv+ba/best"
         self.yt_dlp_sort: Optional[str] = _opt(self.options, 'custom_sort', 'yt_dlp_sort')
         self.wait_limit: int = int(self.options.get("wait_limit") or 0)
@@ -1696,7 +1698,7 @@ class StreamDownloaderBase:
     def _fetch_refreshed_info(self, ignore_no_formats: bool) -> tuple[dict, str]:
         common = dict(cookies=self.cookies, additional_options=self.yt_dlp_options, include_dash=self.include_dash,
                       include_m3u8=(self.include_m3u8 or self.force_m3u8), ignore_no_formats=ignore_no_formats,
-                      logger=self.logger)
+                      logger=self.logger, live_from_start_fallback=self.live_from_start_fallback)
         if self.livestream_coordinator:
             # The coordinator shares one extraction between all formats (and rate limits them)
             return self.livestream_coordinator.refresh_info_json(
@@ -3315,7 +3317,8 @@ class LiveStreamDownloader:
         self.refresh_requested_at = time.time()
 
     def refresh_info_json(self, update_threshold: float, id, cookies=None, additional_options=None, include_dash=False,
-                          include_m3u8=False, ignore_no_formats=False, logger: Optional[LoggerLike] = None, proxy=None):
+                          include_m3u8=False, ignore_no_formats=False, logger: Optional[LoggerLike] = None, proxy=None,
+                          live_from_start_fallback: bool = True):
         """
         Shared URL refresh for all formats of this video. A cached extraction newer than
         `update_threshold` seconds is reused, so video and audio refreshing together cost one
@@ -3340,7 +3343,8 @@ class LiveStreamDownloader:
                 self.last_refresh_attempt = time.monotonic()
                 refresh_json, live_status = getUrls.get_Video_Info(id=id, wait=False, cookies=cookies, additional_options=additional_options,
                                                                    include_dash=include_dash, include_m3u8=include_m3u8, clean_info_dict=True,
-                                                                   ignore_no_formats=ignore_no_formats, logger=logger, proxy=proxy)
+                                                                   ignore_no_formats=ignore_no_formats, logger=logger, proxy=proxy,
+                                                                   live_from_start_fallback=live_from_start_fallback)
                 self.last_refresh_attempt = time.monotonic()
             except getUrls.RateLimitException:
                 self.minimum_refresh_time = min(self.minimum_refresh_time * 2, MAX_MINIMUM_REFRESH_TIME)

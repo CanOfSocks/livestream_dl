@@ -246,6 +246,11 @@ class UrlKindTests(unittest.TestCase):
     LIVE = ("https://rr1---sn-x.googlevideo.com/videoplayback?expire=1700000000&id=Xyz123.2~4567&itag=299"
             "&source=yt_live_broadcast&live=1&noclen=1&mime=video%2Fmp4")
 
+    def setUp(self):
+        # The live_from_start fallback outcome is remembered per video id across extractions
+        getUrls._fallback_outcomes.clear()
+        self.addCleanup(getUrls._fallback_outcomes.clear)
+
     def fmt(self, **kwargs):
         base = {"format_id": "299", "url": self.LIVE, "vcodec": "avc1", "acodec": "none", "ext": "mp4"}
         base.update(kwargs)
@@ -295,10 +300,12 @@ class UrlKindTests(unittest.TestCase):
         urls = YoutubeURL.Formats().getAllFormatURL(info, selected)
         self.assertEqual(sorted(u.protocol for u in urls), ["http_dash_segments", "https"])
 
-    def _extract(self, raw, from_start=None):
+    def _extract(self, raw, from_start=None, through_get_video_info=False, **kwargs):
         import copy
         import yt_dlp
-        calls = self.extract_calls = []
+        calls = self.extract_calls = getattr(self, "extract_calls", None) if through_get_video_info else []
+        if calls is None:
+            calls = self.extract_calls = []
 
         class FakeYoutubeDL(yt_dlp.YoutubeDL):
             def __init__(self, params=None, *args, **kwargs):
@@ -312,9 +319,49 @@ class UrlKindTests(unittest.TestCase):
         original = getUrls.yt_dlp.YoutubeDL
         getUrls.yt_dlp.YoutubeDL = FakeYoutubeDL
         try:
+            if through_get_video_info:
+                return getUrls.get_Video_Info("Xyz123", wait=False, logger=LOGGER, **kwargs)
             return getUrls._extract_live_info({"logger": getUrls.ExtractionLogger(LOGGER)}, "u", "Xyz123", False)
         finally:
             getUrls.yt_dlp.YoutubeDL = original
+
+    def _broken_and_from_start(self):
+        import functools
+        broken = {"id": "Xyz123", "live_status": "is_live", "formats": []}
+        from_start = {"id": "Xyz123", "title": "t", "extractor": "youtube", "extractor_key": "Youtube",
+                      "webpage_url": "https://www.youtube.com/watch?v=Xyz123", "live_status": "is_live", "is_live": True,
+                      "formats": [self.fmt(protocol="http_dash_segments_generator", target_duration=2, is_from_start=True,
+                                           height=1080, fragments=functools.partial(lambda ctx: iter(())))]}
+        return broken, from_start
+
+    def test_fallback_can_be_disabled(self):
+        broken, from_start = self._broken_and_from_start()
+        self._extract(broken, from_start, through_get_video_info=True, live_from_start_fallback=False)
+        self.assertEqual(self.extract_calls, [False])
+
+    def test_working_fallback_is_used_directly_next_time(self):
+        broken, from_start = self._broken_and_from_start()
+        self._extract(broken, from_start, through_get_video_info=True)
+        self.assertEqual(self.extract_calls, [False, True])
+        info, status = self._extract(broken, from_start, through_get_video_info=True)
+        # One extraction, with live_from_start
+        self.assertEqual(self.extract_calls, [False, True, True])
+        self.assertEqual(status, "is_live")
+
+    def test_fallback_finding_nothing_is_not_repeated_at_once(self):
+        broken, _ = self._broken_and_from_start()
+        self._extract(broken, broken, through_get_video_info=True)
+        self._extract(broken, broken, through_get_video_info=True)
+        self.assertEqual(self.extract_calls, [False, True, False])
+        # Tried again once the retry interval has passed
+        when, worked = getUrls._fallback_outcomes["Xyz123"]
+        getUrls._fallback_outcomes["Xyz123"] = (when - getUrls.LIVE_FROM_START_FALLBACK_RETRY_SECONDS - 1, worked)
+        self._extract(broken, broken, through_get_video_info=True)
+        self.assertEqual(self.extract_calls, [False, True, False, False, True])
+
+    def test_runner_option(self):
+        self.assertTrue(runner.parse_options(["abcdefghijk"])["live_from_start_fallback"])
+        self.assertFalse(runner.parse_options(["abcdefghijk", "--no-live-from-start-fallback"])["live_from_start_fallback"])
 
     def test_was_live_with_live_urls_is_post_live(self):
         info, status = self._extract({"id": "Xyz123", "live_status": "was_live",
