@@ -137,6 +137,8 @@ OPTIMISTIC_FAILS_MAX: int = 10
 # tried, but with OPTIMISTIC_SEGMENT_RETRIES and given up after ENDED_TAIL_MAX_SUBMISSIONS failed
 # submissions with one of ENDED_TAIL_STATUSES (None = connection error) instead of the full retries.
 ENDED_TAIL_SEGMENTS: int = 2
+# yt-dlp live_status values meaning the stream is over (a missing or unknown status is treated as live)
+ENDED_LIVE_STATUSES = frozenset({'post_live', 'was_live', 'not_live'})
 ENDED_TAIL_MAX_SUBMISSIONS: int = 2
 ENDED_TAIL_STATUSES = frozenset({None, 204, 404, 503})
 # Per-request retries for those segments. YouTube answers them with 204 after holding each request
@@ -2078,7 +2080,8 @@ class StreamDownloaderBase:
         return None
 
     def stream_has_ended(self) -> bool:
-        return self.live_status not in ('is_live', 'is_upcoming')
+        """True once yt-dlp reported the stream over; an info dict without live_status counts as live."""
+        return self.live_status in ENDED_LIVE_STATUSES
 
     def _is_tail_segment(self, seg: int) -> bool:
         """One of the newest ENDED_TAIL_SEGMENTS sequence numbers reported by the server."""
@@ -2242,6 +2245,7 @@ class DownloadStream(StreamDownloaderBase):
             # The stream continued after all, so these segments were not the end of it
             self.logger.info(f"({self.format}) Stream head advanced to {new_head}, retrying segment(s) {revived} given up as missing")
             self._given_up_tail.difference_update(revived)
+            self._empty_segments.difference_update(revived)
             for seg in revived:
                 self.segment_retries.pop(seg, None)
                 self._enqueue(seg)
@@ -2283,6 +2287,16 @@ class DownloadStream(StreamDownloaderBase):
         elif seg >= self.optimistic_seg and status == 200:
             self.optimistic_fails = 0
             self.latest_downloaded_segment = max(self.latest_downloaded_segment, seg)
+
+        if status == 204 and data is not None and not data and self._empty_is_final(seg):
+            # One of the last segments of an ended stream, never created. Given up rather than
+            # stored empty, so it is downloaded after all if the head advances (the end was wrong).
+            self.segment_retries.pop(seg, None)
+            if seg not in self._given_up_tail:
+                self.logger.info(f"({self.format}) Segment {seg} at the end of the ended stream has no content (204), it was probably never created")
+            self._given_up_tail.add(seg)
+            self._empty_segments.add(seg)
+            return
 
         if data is not None:
             self.store.add(seg, data)
@@ -2330,7 +2344,10 @@ class DownloadStream(StreamDownloaderBase):
             self.logger.debug(f"Unable to work out missing segments: {e}")
             return
         total = top - start + 1
-        empty = sorted(seg for seg in getattr(self, "_empty_segments", ()) if start <= seg <= top and seg not in missing)
+        empty_set = {seg for seg in getattr(self, "_empty_segments", ()) if start <= seg <= top}
+        empty = sorted(empty_set)
+        # Segments that answered 204 at the end of an ended stream aren't stored, but aren't missing either
+        missing = [seg for seg in missing if seg not in empty_set]
         stats = self._stats()
         stats['segments_written'] = total - len(missing)
         stats['missing_segments'] = len(missing)
@@ -2637,7 +2654,10 @@ class DownloadStreamDirect(DownloadStream):
         # give up on it and advance so later segments can be written.
         next_seg = self.store.last_written + 1
         if self.segment_retries.get(next_seg, 0) > self.fragment_retries or next_seg in self._given_up_tail:
-            self.logger.warning(f"({self.format}) Segment {next_seg} has exceeded maximum segment retries, advancing count to save data...")
+            if next_seg in self._given_up_tail:
+                self.logger.info(f"({self.format}) Segment {next_seg} at the end of the ended stream was not found or had no content, skipping it")
+            else:
+                self.logger.warning(f"({self.format}) Segment {next_seg} has exceeded maximum segment retries, advancing count to save data...")
             self.store.skip_to(next_seg)
             self._exhausted.discard(next_seg)
         # Keep the queue frontier ahead of the written position

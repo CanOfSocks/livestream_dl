@@ -127,6 +127,19 @@ class LiveDownloadTests(ScenarioBase):
         # Header probes must not download segment bodies repeatedly; extraction only used to detect the end
         self.assertLessEqual(self.extraction_calls, 3)
 
+    def test_info_without_live_status_is_downloaded_as_live(self):
+        # An unknown live_status must not be taken as "ended" (no optimistic requests, early finish)
+        self.info.pop("live_status", None)
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            self.assertFalse(stream.stream_has_ended())
+            for status in ("post_live", "was_live", "not_live"):
+                stream.live_status = status
+                self.assertTrue(stream.stream_has_ended())
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, self.options(), manifest=url.manifest))
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(self.total_segments))))
+
     def test_audio_and_keep_database(self):
         coordinator = self.coordinator()
         url = stream_url_for(self.info, AUDIO_ITAG)
@@ -529,6 +542,22 @@ class PostLiveTests(ScenarioBase):
         self.assertEqual(self._tail_requests(), 2)
         self.assertEqual(coordinator.stats["video"]["empty_segments"], 2)
         self.assertEqual(coordinator.stats["video"]["missing_segments"], 0)
+
+    def test_tail_204_is_retried_if_the_stream_continues(self):
+        # The stream was wrongly reported ended: its "last" segment answered 204 once
+        info = make_post_live_info(self.server)
+        url = stream_url_for(info, VIDEO_ITAG)
+        with download_Live.DownloadStream(info, stream_url=url, options=self.options()) as stream:
+            stream._on_start()
+            head = stream.latest_sequence
+            stream._on_segment_result(head, download_Live.SegmentResult(head, b"", head, 204, None), None)
+            self.assertFalse(stream.store.has(head), "a tail 204 is given up, not stored empty")
+            self.assertIn(head, stream._given_up_tail)
+            stream._queue.clear()
+            stream._queued.clear()
+            stream._on_head_advanced(head, head + 5)
+            self.assertIn(head, stream._queued)
+            self.assertNotIn(head, stream._empty_segments)
 
     def test_retrying_204_stops_once_the_stream_ended(self):
         """Requests retrying a 204 when the end is detected stop at their next response."""
