@@ -130,6 +130,17 @@ WAIT_INTERVAL_SECONDS: float = 10.0
 # keeps the end-of-stream detection time unchanged now that --segment-retries is honoured.
 OPTIMISTIC_SEGMENT_RETRIES: int = 5
 OPTIMISTIC_FAILS_MAX: int = 10
+# After a stream ends, the last sequence numbers reported by X-Head-Seqnum often never exist (yt-dlp
+# never requests the last 2 of a post-live stream, ytarchive treats a 404 or network error within 2
+# of the end as "never created"). Those segments (head - ENDED_TAIL_SEGMENTS + 1 .. head) are still
+# tried, but with OPTIMISTIC_SEGMENT_RETRIES and given up after ENDED_TAIL_MAX_SUBMISSIONS failed
+# submissions with one of ENDED_TAIL_STATUSES (None = connection error) instead of the full retries.
+ENDED_TAIL_SEGMENTS: int = 2
+ENDED_TAIL_MAX_SUBMISSIONS: int = 2
+ENDED_TAIL_STATUSES = frozenset({None, 404, 503})
+# While live, a segment at the head failing a whole submission like that suggests the stream ended:
+# refresh the URL (to learn the live status) if the last refresh is at least this old
+TAIL_FAILURE_REFRESH_MIN_INTERVAL: float = 120.0
 # Minimum wait before requesting the next (optimistic) segment at the live edge
 OPTIMISTIC_MIN_WAIT: float = 2.0
 # Refresh the URL once 403 errors have persisted this long since the last refresh
@@ -1515,6 +1526,13 @@ class StreamDownloaderBase:
             else:
                 self.logger.debug(message)
             return
+        if stream_url.url_kind != self.stream_url.url_kind:
+            # Never expected (the selector matches the kind), but never mix kinds in one download
+            self.logger.warning(f"Ignoring refreshed URL of {self.format}: {stream_url.url_kind} URL, downloading {self.stream_url.url_kind}")
+            return
+        if stream_url.protocol != self.stream_url.protocol:
+            self.logger.info(f"({self.format}) yt-dlp now lists this format as '{stream_url.protocol}' (was '{self.stream_url.protocol}'), "
+                             f"the same {stream_url.url_kind} stream URL, continuing")
         self.stream_url = stream_url
         self.stream_urls.append(stream_url)
         now = time.time()
@@ -1585,8 +1603,14 @@ class StreamDownloaderBase:
         self.following_manifest_thread.start()
 
     def _same_format_selector(self) -> str:
-        """yt-dlp format selector matching this stream's format (itag) and protocol."""
-        return f"(bv/ba/best)[format_id~='^{self.stream_url.itag}(?:-.*)?$'][protocol={self.stream_url.protocol}]"
+        """
+        yt-dlp format selector matching this stream's format (itag) and URL kind. The kind, not
+        yt-dlp's protocol label, is matched: a live adaptive format relabelled http_dash_segments
+        after the stream ended is the same stream URL, while URLs of a different kind (DASH
+        manifest, HLS) are never mixed into one download.
+        """
+        return (f"(bv/ba/best)[format_id~='^{self.stream_url.itag}(?:-.*)?$']"
+                f"[{YoutubeURL.URL_KIND_FIELD}={self.stream_url.url_kind}]")
 
     def _find_format_url(self, info_json: dict, resolution: str, sort: Optional[str] = None) -> Optional[YoutubeURL.YoutubeURL]:
         return YoutubeURL.Formats().getFormatURL(info_json=info_json, resolution=resolution, sort=sort,
@@ -1613,7 +1637,7 @@ class StreamDownloaderBase:
             new_url = self._find_format_url(info_json, resolution)
             if new_url is not None:
                 is_new_manifest = (new_url.itag is not None and new_url.itag == self.stream_url.itag
-                                   and new_url.protocol == self.stream_url.protocol
+                                   and new_url.url_kind == self.stream_url.url_kind
                                    and new_url.manifest != self.stream_url.manifest)
                 if is_new_manifest:
                     self.logger.warning(f"({self.id}) New manifest for format {self.format} detected, starting a new instance for the new manifest")
@@ -1754,11 +1778,24 @@ class StreamDownloaderBase:
             self._submit(executor, seg)
 
     def _submit(self, executor: concurrent.futures.ThreadPoolExecutor, seg: int, max_retries: Optional[int] = None) -> None:
+        if max_retries is None:
+            max_retries = self._max_retries_for(seg)
         args = self._download_args(seg)
         future = executor.submit(self.download_segment, *args, max_retries=max_retries) if max_retries is not None \
             else executor.submit(self.download_segment, *args)
         self.future_to_seg[future] = seg
         self.submitted_segments.add(seg)
+
+    def _max_retries_for(self, seg: int) -> Optional[int]:
+        """Per-request retries for segment seg (None = --segment-retries)."""
+        return None
+
+    def stream_has_ended(self) -> bool:
+        return self.live_status not in ('is_live', 'is_upcoming')
+
+    def _is_tail_segment(self, seg: int) -> bool:
+        """One of the newest ENDED_TAIL_SEGMENTS sequence numbers reported by the server."""
+        return self.latest_sequence >= 0 and seg > self.latest_sequence - ENDED_TAIL_SEGMENTS
 
     def live_dl(self):
         self.logger.info(colour(f"Starting download of live fragments ({self.format} - {self.stream_url.format_note}) [{self.mode_name}]", DARK_YELLOW))
@@ -1877,12 +1914,15 @@ class DownloadStream(StreamDownloaderBase):
         self._queued: set[int] = set()
         # Segments that exceeded their retries; re-queued if the stream URL changes
         self._exhausted: set[int] = set()
+        # Newest segments of an ended stream that were given up as never created (see _on_tail_failure).
+        # Not re-queued by a new URL; re-queued only if the head advances past them after all.
+        self._given_up_tail: set[int] = set()
         self._frontier: int = self.store.first_needed()
         self._refresh_result = None
         self._enqueue_up_to(max(self.latest_sequence, self.latest_downloaded_segment))
 
     def _enqueue(self, seg: int) -> None:
-        if seg not in self._queued and not self.store.has(seg) and seg not in self._exhausted:
+        if seg not in self._queued and not self.store.has(seg) and seg not in self._exhausted                 and seg not in self._given_up_tail:
             heapq.heappush(self._queue, seg)
             self._queued.add(seg)
 
@@ -1898,6 +1938,14 @@ class DownloadStream(StreamDownloaderBase):
 
     def _on_head_advanced(self, old_head: int, new_head: int) -> None:
         self._enqueue_up_to(new_head)
+        revived = [seg for seg in getattr(self, "_given_up_tail", ()) if seg <= new_head - ENDED_TAIL_SEGMENTS]
+        if revived:
+            # The stream continued after all, so these segments were not the end of it
+            self.logger.info(f"({self.format}) Stream head advanced to {new_head}, retrying segment(s) {revived} given up as missing")
+            self._given_up_tail.difference_update(revived)
+            for seg in revived:
+                self.segment_retries.pop(seg, None)
+                self._enqueue(seg)
 
     def _on_window_resolved(self) -> None:
         # Drop queued segments now outside the window and queue any that are now inside it
@@ -1951,10 +1999,36 @@ class DownloadStream(StreamDownloaderBase):
         elif status != 200:
             self.segment_retries[seg] = self.segment_retries.get(seg, 0) + 1
             self.logger.debug(f"Unable to download {seg} ({self.format}). Currently at {self.segment_retries.get(seg)} retries")
+            if self._on_tail_failure(seg, status):
+                return
             if self.segment_retries[seg] > self.fragment_retries:
                 self._exhausted.add(seg)
             elif self._in_window(seg) and seg <= max(self.latest_sequence, self.latest_downloaded_segment):
                 self._enqueue(seg)
+
+    def _max_retries_for(self, seg: int) -> Optional[int]:
+        if self.stream_has_ended() and self._is_tail_segment(seg):
+            return min(self.fragment_retries, OPTIMISTIC_SEGMENT_RETRIES)
+        return None
+
+    def _on_tail_failure(self, seg: int, status: Optional[int]) -> bool:
+        """
+        A newest segment failed a submission in a way that suggests it will never exist. After the
+        stream ended, give up on it after ENDED_TAIL_MAX_SUBMISSIONS; while it still looks live,
+        ask for an early URL refresh to learn whether it ended. Returns True if given up.
+        """
+        if status not in ENDED_TAIL_STATUSES or not self._is_tail_segment(seg):
+            return False
+        if self.stream_has_ended():
+            if self.segment_retries.get(seg, 0) >= ENDED_TAIL_MAX_SUBMISSIONS:
+                self.logger.info(f"({self.format}) Segment {seg} at the end of the ended stream was not found "
+                                 f"(status {status or 'connection error'}), it was probably never created. Skipping it")
+                self._given_up_tail.add(seg)
+                return True
+        elif time.time() - self.url_checked >= TAIL_FAILURE_REFRESH_MIN_INTERVAL and hasattr(self, "next_refresh_at"):
+            self.logger.debug(f"({self.format}) Newest segment {seg} failed (status {status}), refreshing to check whether the stream ended")
+            self.next_refresh_at = min(self.next_refresh_at, time.time())
+        return False
 
     def _next_segments(self, capacity: int) -> list[int]:
         """Pop the lowest queued segments that still need downloading."""
@@ -1988,6 +2062,10 @@ class DownloadStream(StreamDownloaderBase):
         Only attempted a limited number of times in a row so it can't loop at the end of a stream.
         """
         self.optimistic_seg = max(self.latest_sequence, self.latest_downloaded_segment) + 1
+        if self.stream_has_ended() and self.latest_sequence >= 0:
+            # The head of an ended stream is final: segments beyond it will never exist. (Should
+            # the stream continue after all, the head probes while idle still discover it.)
+            return
         opt = self.optimistic_seg
         if (self.max_workers > 1 or not self._has_queued_work()) and self.optimistic_fails < OPTIMISTIC_FAILS_MAX \
                 and not self.store.has(opt) and opt not in self.submitted_segments \
@@ -2048,8 +2126,11 @@ class DownloadStream(StreamDownloaderBase):
             self.logger.debug("Wait time for new fragment exceeded, ending download...")
             return LoopAction.BREAK
 
-        # Every REFRESH_EVERY_N_WAITS wait loops, get page for new URL and update status if necessary
-        if self.wait % REFRESH_EVERY_N_WAITS == 0 and self.wait > 0:
+        # Every REFRESH_EVERY_N_WAITS wait loops, get page for new URL and update status if necessary.
+        # Once the stream is known to have ended, confirm it at the first wait instead (after one
+        # more probe of the head found nothing new) rather than idling for minutes.
+        periodic = self.wait % REFRESH_EVERY_N_WAITS == 0 and self.wait > 0
+        if periodic or (self.wait == 1 and self.stream_has_ended()):
             previous_url = self.stream_url
             refresh = self.refresh_url(ignore_no_formats=True)
             if self.is_private:
@@ -2101,7 +2182,7 @@ class DownloadStream(StreamDownloaderBase):
             self.logger.debug("Video is private, waiting for remaining threads to finish before going to stream recovery")
             self.smart_sleep(PRIVATE_DRAIN_WAIT)
             return LoopAction.CONTINUE
-        if self.supports_recovery_handoff and self.stream_url.protocol == "https":
+        if self.supports_recovery_handoff and self.stream_url.url_kind == YoutubeURL.URL_KIND_ADAPTIVE:
             self.logger.debug("Video is private and still has segments remaining, moving to stream recovery")
             self._handoff_to_recovery()
         else:
@@ -2209,7 +2290,7 @@ class DownloadStreamDirect(DownloadStream):
         # Original direct-mode behaviour: once the next segment to write has exceeded its retries,
         # give up on it and advance so later segments can be written.
         next_seg = self.store.last_written + 1
-        if self.segment_retries.get(next_seg, 0) > self.fragment_retries:
+        if self.segment_retries.get(next_seg, 0) > self.fragment_retries or next_seg in self._given_up_tail:
             self.logger.warning(f"({self.format}) Segment {next_seg} has exceeded maximum segment retries, advancing count to save data...")
             self.store.skip_to(next_seg)
             self._exhausted.discard(next_seg)

@@ -14,7 +14,21 @@ from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlu
 
 from yt_dlp import YoutubeDL
 
-__all__ = ["YoutubeURL", "Formats", "YTDLPLogger", "PrefixedYTDLPLogger", "video_base_url", "quality_aliases"]
+__all__ = ["YoutubeURL", "Formats", "YTDLPLogger", "PrefixedYTDLPLogger", "video_base_url", "quality_aliases",
+           "stream_url_kind", "annotate_url_kinds", "URL_KIND_FIELD", "URL_KIND_ADAPTIVE", "URL_KIND_DASH", "URL_KIND_M3U8"]
+
+# Kinds of stream URL livestream_dl can download segment by segment (by adding sq=<n>):
+#   adaptive: a live adaptive base URL ("https" while live). After a stream ends yt-dlp relabels the
+#             same formats as http_dash_segments (live-from-start processing), keeping the base URL in
+#             'url', so they are recognised by the URL itself rather than yt-dlp's protocol label.
+#   dash:     a live DASH manifest format (fragment_base_url)
+#   m3u8:     an HLS variant playlist (resolved to a stream URL)
+# yt-dlp's 'protocol' is kept as returned; the kind is stored in a separate format field so the
+# format selector can filter on it. URLs of different kinds are never mixed within one download.
+URL_KIND_ADAPTIVE = "adaptive"
+URL_KIND_DASH = "dash"
+URL_KIND_M3U8 = "m3u8"
+URL_KIND_FIELD = "livestream_dl_url_kind"
 
 try:
     # Try absolute import (standard execution)
@@ -143,6 +157,51 @@ def _segment_url_prefix(base: str) -> str:
     return urlunparse(parsed_base._replace(query=query_prefix))
 
 
+def _is_live_adaptive_url(url: str) -> bool:
+    """A googlevideo /videoplayback URL of a live (unprocessed) stream: noclen marks one with no fixed length."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if "/videoplayback" not in parsed.path:
+        return False
+    params = {**_videoplayback_path_params(parsed.path), **{k: v[0] for k, v in parse_qs(parsed.query).items()}}
+    return "noclen" in params
+
+
+def stream_url_kind(format_info: dict) -> Optional[str]:
+    """
+    The kind of segment URL a yt-dlp format provides (see URL_KIND_*), or None if livestream_dl
+    can't download it by sequence number (e.g. a processed video, or a post-live DASH manifest
+    format that only has a fragment list).
+    """
+    protocol = str(format_info.get('protocol') or "")
+    url = format_info.get('url')
+    if protocol == "m3u8_native":
+        return URL_KIND_M3U8 if url else None
+    if format_info.get('fragment_base_url'):
+        return URL_KIND_DASH if protocol == "http_dash_segments" else None
+    if not isinstance(url, str) or not url or format_info.get('manifest_url'):
+        return None
+    if protocol == "https":
+        return URL_KIND_ADAPTIVE
+    if protocol.startswith("m3u8"):
+        return None
+    # Post-live (or --live-from-start) live adaptive formats: relabelled by yt-dlp, same base URL.
+    # Any protocol label is accepted, so a future relabelling by yt-dlp doesn't break downloads.
+    if _is_live_adaptive_url(url) or (format_info.get('target_duration') and "/videoplayback" in url):
+        return URL_KIND_ADAPTIVE
+    return None
+
+
+def annotate_url_kinds(info_json: dict) -> dict:
+    """Store stream_url_kind() of every format in URL_KIND_FIELD (used by the format selector)."""
+    for format_info in info_json.get('formats') or []:
+        if isinstance(format_info, dict):
+            format_info[URL_KIND_FIELD] = stream_url_kind(format_info) or "none"
+    return info_json
+
+
 def _none_if_none_string(value: Any) -> Optional[str]:
     """yt-dlp uses the literal string 'none' for missing codecs; normalise that to None."""
     return None if value is None or str(value).lower() == 'none' else value
@@ -154,6 +213,7 @@ class YoutubeURL:
     itag: int
     expire: Optional[int]
     protocol: str
+    url_kind: str
     base: str
     format_id: str
 
@@ -165,9 +225,18 @@ class YoutubeURL:
 
     def __init__(self, url: str, protocol: str = "unknown", format_id: Optional[str] = None,
                  logger: logging.Logger | logging.LoggerAdapter | None = None, vcodec=None, acodec=None,
-                 format_note=None, language=None, ext=None):
+                 format_note=None, language=None, ext=None, url_kind: Optional[str] = None):
         self.logger = logger or logging.getLogger()
         self.protocol = protocol
+        if url_kind is None:
+            # Direct construction without a format dict: infer the kind from the protocol
+            if str(protocol).startswith("m3u8"):
+                url_kind = URL_KIND_M3U8
+            elif protocol == "http_dash_segments":
+                url_kind = URL_KIND_DASH
+            else:
+                url_kind = URL_KIND_ADAPTIVE
+        self.url_kind = url_kind
         # Raise ValueError (which format searches handle) rather than failing later with a TypeError:
         # urlparse(None) returns bytes, which broke the path checks below
         if not isinstance(url, str) or not url.strip():
@@ -181,7 +250,7 @@ class YoutubeURL:
         self.ext = _none_if_none_string(ext)
 
         # If not a dash URL, convert to "parameter" style instead of "restful" style
-        if self.protocol == "http_dash_segments":
+        if self.url_kind == URL_KIND_DASH:
             self.base = url
         else:
             self.base = video_base_url(url=url)
@@ -225,18 +294,14 @@ class YoutubeURL:
         location (DASH uses fragment_base_url, m3u8 needs the variant playlist resolved to a stream URL).
         """
         protocol = format_info.get('protocol', "") or ""
+        kind = stream_url_kind(format_info)
         common = dict(protocol=protocol, format_id=format_info.get('format_id'), logger=logger,
                       vcodec=format_info.get('vcodec'), acodec=format_info.get('acodec'),
                       format_note=format_info.get("format_note"), language=format_info.get('language'),
-                      ext=format_info.get('ext'))
-        if protocol == "http_dash_segments":
-            if not format_info.get('fragment_base_url'):
-                # Only live DASH formats have a fragment_base_url. After a stream ends, yt-dlp can
-                # return DASH formats with a fragment list instead, which can't be downloaded by
-                # sequence number.
-                raise ValueError(f"DASH format {format_info.get('format_id')} has no fragment_base_url (not a live DASH stream)")
+                      ext=format_info.get('ext'), url_kind=kind)
+        if kind == URL_KIND_DASH:
             return cls(format_info.get('fragment_base_url'), **common)
-        if protocol == "m3u8_native":
+        if kind == URL_KIND_M3U8:
             stream_url = Formats(logger=logger).getM3u8Url(format_info.get('url'), client=m3u8_client)
             obj = cls(stream_url, **common)
             if not format_info.get('format_id'):
@@ -244,7 +309,14 @@ class YoutubeURL:
                 format_info['format_id'] = str(obj.itag).strip()
                 obj.format_id = format_info['format_id']
             return obj
-        return cls(format_info.get('url'), **common)
+        if kind == URL_KIND_ADAPTIVE:
+            return cls(format_info.get('url'), **common)
+        if protocol == "http_dash_segments":
+            # Only live DASH formats have a fragment_base_url. After a stream ends, yt-dlp can
+            # return DASH manifest formats with a fragment list instead, which can't be downloaded
+            # by sequence number.
+            raise ValueError(f"DASH format {format_info.get('format_id')} has no fragment_base_url (not a live DASH stream)")
+        raise ValueError(f"Format {format_info.get('format_id')} ({protocol}) is not a live stream URL that can be downloaded by segment")
 
     @property
     def fomat_note(self) -> str:
@@ -289,15 +361,19 @@ class Formats:
     @staticmethod
     def build_format_string(resolution: str, include_dash: bool = True, include_m3u8: bool = False,
                             force_m3u8: bool = False) -> str:
-        """Restrict a format selector to adaptive https, with optional DASH / m3u8 fallbacks."""
+        """
+        Restrict a format selector to live adaptive URLs, with optional DASH / m3u8 fallbacks.
+        Filters on the URL kind (see annotate_url_kinds) rather than yt-dlp's protocol label, so
+        post-live adaptive formats (labelled http_dash_segments by yt-dlp) are selected too.
+        """
         resolution = str(resolution).strip()
         if force_m3u8:
-            return f"({resolution})[protocol=m3u8_native]"
-        resolutions = [f"({resolution})[protocol=https]"]
+            return f"({resolution})[{URL_KIND_FIELD}={URL_KIND_M3U8}]"
+        resolutions = [f"({resolution})[{URL_KIND_FIELD}={URL_KIND_ADAPTIVE}]"]
         if include_dash:
-            resolutions.append(f"({resolution})[protocol=http_dash_segments]")
+            resolutions.append(f"({resolution})[{URL_KIND_FIELD}={URL_KIND_DASH}]")
         if include_m3u8:
-            resolutions.append(f"({resolution})[protocol=m3u8_native]")
+            resolutions.append(f"({resolution})[{URL_KIND_FIELD}={URL_KIND_M3U8}]")
         return "/".join(resolutions)
 
     def getFormats(self, info_json: dict, resolution, sort=None, raw=False, include_dash=True, include_m3u8=False,
@@ -332,6 +408,7 @@ class Formats:
 
         # Remove any previous selection so yt-dlp performs a fresh one
         info_json.pop("requested_formats", None)
+        annotate_url_kinds(info_json)
         with YoutubeDL(ydl_opts) as ydl:
             return ydl.process_ie_result(info_json)
 
@@ -407,41 +484,37 @@ class Formats:
         return stream_urls
 
     def getAllFormatURL(self, info_json, format_obj: YoutubeURL) -> list[YoutubeURL]:
-        """Get all URLs (from every format entry) with the same itag and protocol as format_obj."""
+        """
+        Get all URLs (from every format entry) with the same itag and URL kind as format_obj.
+        Entries whose yt-dlp protocol label differs but which provide the same kind of URL (a
+        live adaptive format relabelled after the stream ended) are included.
+        """
         target_itag = format_obj.itag
-        protocol = format_obj.protocol
+        target_kind = getattr(format_obj, "url_kind", None) or URL_KIND_ADAPTIVE
 
         urls: list[YoutubeURL] = []
         for ytdlp_format in info_json.get('formats', []) or []:
-            # --- Primary Filter: Protocol ---
-            if ytdlp_format.get('protocol') != protocol:
+            # --- Primary Filter: URL kind ---
+            kind = stream_url_kind(ytdlp_format)
+            if kind != target_kind:
                 continue
+            protocol = ytdlp_format.get('protocol') or ""
 
             common = dict(protocol=protocol, format_id=ytdlp_format.get('format_id', None), logger=self.logger,
                           vcodec=ytdlp_format.get('vcodec', None), acodec=ytdlp_format.get('acodec', None),
                           format_note=ytdlp_format.get("format_note"), language=ytdlp_format.get('language'),
-                          ext=ytdlp_format.get('ext'))
+                          ext=ytdlp_format.get('ext'), url_kind=kind)
             try:
                 # --- Secondary Filter: Format ID (itag) ---
-                if protocol == 'http_dash_segments':
-                    url = ytdlp_format.get('fragment_base_url')
-                    if url:
-                        yt_url = YoutubeURL(url=url, **common)
-                        if yt_url.itag == target_itag:
-                            urls.append(yt_url)
-
-                elif protocol == 'm3u8_native':
+                if kind == URL_KIND_DASH:
+                    candidates = [ytdlp_format.get('fragment_base_url')]
+                elif kind == URL_KIND_M3U8:
                     m3u8_playlist_url = ytdlp_format.get('url')
-                    if not m3u8_playlist_url:
-                        continue
                     # Fetch all stream URLs from the playlist
-                    for stream_url in self.getM3u8Url(m3u8_playlist_url, first_only=False):
-                        yt_url = YoutubeURL(url=stream_url, **common)
-                        if yt_url.itag == target_itag:
-                            urls.append(yt_url)
-
-                else:  # Handles 'https' and any other direct protocols
-                    url = ytdlp_format.get('url')
+                    candidates = self.getM3u8Url(m3u8_playlist_url, first_only=False) if m3u8_playlist_url else []
+                else:
+                    candidates = [ytdlp_format.get('url')]
+                for url in candidates:
                     if url:
                         yt_url = YoutubeURL(url=url, **common)
                         if yt_url.itag == target_itag:

@@ -177,6 +177,28 @@ def make_info_dict(server: MockServer, live_status: str = "is_live", expire: Opt
     }
 
 
+def make_post_live_info(server: MockServer, expire: Optional[int] = None) -> dict:
+    """
+    Info dict of an ended (post_live) stream as yt-dlp 2026.10.26 returns it: the live adaptive
+    formats are relabelled 'http_dash_segments' (their fragment list removed by livestream_dl),
+    with the same base URL in 'url' and no fragment_base_url. A DASH manifest format, which can't
+    be downloaded by sequence number, is listed too.
+    """
+    info = make_info_dict(server, live_status="post_live", expire=expire)
+    info["is_live"] = False
+    info["was_live"] = True
+    for fmt in info["formats"]:
+        fmt["url"] += "&noclen=1&live=1"
+        fmt["protocol"] = "http_dash_segments"
+        fmt["target_duration"] = 2.0
+        fmt["is_live"] = False
+    info["formats"].append(
+        {"format_id": "299-dash", "protocol": "http_dash_segments", "url": f"{server.base}/api/manifest/dash/id/x",
+         "manifest_url": f"{server.base}/api/manifest/dash/id/x", "ext": "mp4", "vcodec": "avc1.64002a",
+         "acodec": "none", "width": 1920, "height": 1080, "fps": 60, "tbr": 9000, "format_note": "1080p60 (Last 2 hours)"})
+    return info
+
+
 def stream_url_for(info_dict: dict, itag: int):
     import YoutubeURL
     fmt = next(f for f in info_dict["formats"] if f["format_id"] == str(itag))

@@ -323,11 +323,11 @@ def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool)
             info_dict = ydl.extract_info(url, download=False)
             extraction_event.clear()
 
+            # Drop fragment lists before sanitize_info, which would otherwise expand them. For
+            # post-live formats yt-dlp's list is a LazyList whose generator requests the stream
+            # head and creates a dict for every segment of the stream, all to be thrown away.
+            _drop_fragments(info_dict)
             info_dict = ydl.sanitize_info(info_dict=info_dict, remove_private_keys=clean_info_dict)
-
-            # Cleanup fragments if present (can be very large for post_live DASH formats)
-            for stream_format in info_dict.get('formats', []) or []:
-                stream_format.pop('fragments', None)
 
             live_status = info_dict.get('live_status')
             if live_status not in ['is_upcoming', 'is_live', 'post_live']:
@@ -342,6 +342,21 @@ def _extract_live_info(ydl_opts: dict, url: str, id: str, clean_info_dict: bool)
             raise classified from e
         finally:
             extraction_event.clear()
+
+def _drop_fragments(info_dict: dict) -> None:
+    """Remove 'fragments' from the info dict, its formats and the selected format copies."""
+    def strip(entry) -> None:
+        if isinstance(entry, dict):
+            entry.pop('fragments', None)
+
+    strip(info_dict)
+    for key in ('formats', 'requested_formats', 'requested_downloads'):
+        for entry in info_dict.get(key) or []:
+            strip(entry)
+            if isinstance(entry, dict):
+                for sub in entry.get('requested_formats') or []:
+                    strip(sub)
+
 
 def _classify_download_error(e: Exception, id: str) -> Exception:
     """Map a yt-dlp DownloadError message to one of the custom exceptions (order matters)."""

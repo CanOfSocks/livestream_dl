@@ -12,7 +12,7 @@ import time
 import unittest
 
 from tests.support import (AUDIO_ITAG, VIDEO_ITAG, FastTimings, MockServer, MockStream, expected_ts, fake_segment,
-                           make_info_dict, stream_url_for)
+                           make_info_dict, make_post_live_info, stream_url_for)
 
 import download_Live
 import getUrls
@@ -275,6 +275,80 @@ class StreamEndRefreshTests(ScenarioBase):
             self.assertFalse(new_manifest)
             self.assertEqual(stream.live_status, "was_live")
             self.assertEqual(stream.stream_url, url)
+
+
+class PostLiveTests(ScenarioBase):
+    """Streams that have ended: yt-dlp relabels the live adaptive formats (see make_post_live_info)."""
+    total_segments = 20
+    initial_head = 19
+
+    def _post_live_extraction(self):
+        return make_post_live_info(self.server), "post_live"
+
+    def test_refresh_after_end_uses_relabelled_format(self):
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        expire = int(time.time()) + 7200
+        post_live = make_post_live_info(self.server, expire=expire)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            new_manifest = stream._process_refresh_result((post_live, "post_live"), None, follow_manifest=False)
+            self.assertFalse(new_manifest)
+            self.assertEqual(stream.live_status, "post_live")
+            self.assertEqual(stream.stream_url.protocol, "http_dash_segments")
+            self.assertEqual(stream.stream_url.url_kind, "adaptive")
+            self.assertEqual(stream.stream_url.expire, expire)
+        self.assertEqual(post_live["formats"][0]["protocol"], "http_dash_segments")
+
+    def test_download_starts_after_stream_ended(self):
+        self.extraction_behaviour = self._post_live_extraction
+        info = make_post_live_info(self.server)
+        coordinator = self.coordinator()
+        options = self.options(download_folder=self.tmp)
+        formats = coordinator._select_formats(info, "bv+ba/best", options)
+        urls = coordinator._stream_urls_from_formats(formats)
+        self.assertEqual(sorted(u.itag for u in urls), sorted([VIDEO_ITAG, AUDIO_ITAG]))
+        video = next(u for u in urls if u.itag == VIDEO_ITAG)
+        self.assertEqual(video.protocol, "http_dash_segments")
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, video, options, manifest=video.manifest))
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(self.total_segments))))
+
+    def _tail_requests(self):
+        return sum(1 for itag, sq in self.stream.requests if itag == VIDEO_ITAG and sq in (18, 19))
+
+    def test_missing_tail_of_ended_stream_is_given_up_quickly(self):
+        # The last two sequence numbers of an ended stream often never exist
+        self.stream.fail(VIDEO_ITAG, 18, 404, times=10000)
+        self.stream.fail(VIDEO_ITAG, 19, 503, times=10000)
+        self.extraction_behaviour = self._post_live_extraction
+        info = make_post_live_info(self.server)
+        url = stream_url_for(info, VIDEO_ITAG)
+        coordinator = self.coordinator()
+        options = self.options(segment_retries=10)
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, url, options, manifest=url.manifest), timeout=30)
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(18))))
+        # Full retries would be 11 submissions x 11 attempts per segment
+        per_submission = download_Live.OPTIMISTIC_SEGMENT_RETRIES + 1
+        self.assertLessEqual(self._tail_requests(), 2 * download_Live.ENDED_TAIL_MAX_SUBMISSIONS * per_submission + 4)
+
+    def test_missing_tail_direct_mode(self):
+        self.stream.fail(VIDEO_ITAG, 18, 404, times=10000)
+        self.stream.fail(VIDEO_ITAG, 19, 404, times=10000)
+        self.extraction_behaviour = self._post_live_extraction
+        info = make_post_live_info(self.server)
+        url = stream_url_for(info, VIDEO_ITAG)
+        coordinator = self.coordinator()
+        options = self.options(segment_retries=10)
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream_direct(info, url, options, manifest=url.manifest), timeout=30)
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(18))))
+
+    def test_existing_tail_segments_are_still_downloaded(self):
+        # A transient 503 on the last segment must not lose it: it is tried more than once
+        self.stream.fail(VIDEO_ITAG, 19, 503, times=3)
+        self.extraction_behaviour = self._post_live_extraction
+        info = make_post_live_info(self.server)
+        url = stream_url_for(info, VIDEO_ITAG)
+        coordinator = self.coordinator()
+        file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, url, self.options(segment_retries=10), manifest=url.manifest))
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(20))))
 
 
 class TimeWindowTests(ScenarioBase):

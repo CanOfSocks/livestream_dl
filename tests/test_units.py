@@ -234,6 +234,73 @@ class YoutubeURLTests(unittest.TestCase):
             YoutubeURL.YoutubeURL.from_format(fmt)
 
 
+class UrlKindTests(unittest.TestCase):
+    LIVE = ("https://rr1---sn-x.googlevideo.com/videoplayback?expire=1700000000&id=Xyz123.2~4567&itag=299"
+            "&source=yt_live_broadcast&live=1&noclen=1&mime=video%2Fmp4")
+
+    def fmt(self, **kwargs):
+        base = {"format_id": "299", "url": self.LIVE, "vcodec": "avc1", "acodec": "none", "ext": "mp4"}
+        base.update(kwargs)
+        return base
+
+    def test_kinds(self):
+        kind = YoutubeURL.stream_url_kind
+        self.assertEqual(kind(self.fmt(protocol="https")), "adaptive")
+        # Post-live: yt-dlp relabels the same live adaptive format
+        self.assertEqual(kind(self.fmt(protocol="http_dash_segments", target_duration=2.0)), "adaptive")
+        self.assertEqual(kind(self.fmt(protocol="http_dash_segments_generator")), "adaptive")
+        # A future relabelling is still recognised by the URL
+        self.assertEqual(kind(self.fmt(protocol="youtube_live_adaptive")), "adaptive")
+        self.assertEqual(kind(self.fmt(protocol="http_dash_segments", fragment_base_url="https://h/videoplayback/id/A.1/itag/299/")), "dash")
+        # Post-live DASH manifest format (fragment list only) and processed formats can't be used
+        self.assertIsNone(kind(self.fmt(protocol="http_dash_segments", url="https://h/api/manifest/dash/id/x",
+                                        manifest_url="https://h/api/manifest/dash/id/x")))
+        self.assertIsNone(kind(self.fmt(protocol="http_dash_segments", url="https://h/videoplayback?id=A&itag=299&clen=5")))
+        self.assertIsNone(kind(self.fmt(protocol="m3u8", manifest_url="https://h/x.m3u8")))
+        self.assertEqual(kind(self.fmt(protocol="m3u8_native", url="https://h/x.m3u8", manifest_url="https://h/x.m3u8")), "m3u8")
+        self.assertIsNone(kind(self.fmt(protocol="http_dash_segments", url=None)))
+
+    def test_post_live_format_keeps_protocol(self):
+        url = YoutubeURL.YoutubeURL.from_format(self.fmt(protocol="http_dash_segments", target_duration=2.0))
+        self.assertEqual(url.protocol, "http_dash_segments")
+        self.assertEqual(url.url_kind, "adaptive")
+        self.assertEqual((url.id, url.manifest, url.itag), ("Xyz123", "2", 299))
+        self.assertTrue(url.segment(7).endswith("sq=7"))
+
+    def test_selection_and_all_urls_ignore_protocol_label(self):
+        info = {"id": "Xyz123", "title": "t", "extractor": "youtube", "extractor_key": "Youtube",
+                "webpage_url": "https://www.youtube.com/watch?v=Xyz123", "formats": [
+                    self.fmt(protocol="http_dash_segments", target_duration=2.0, height=1080, tbr=6000),
+                    self.fmt(format_id="299-1", protocol="https", url=self.LIVE.replace("rr1", "rr2"), height=1080, tbr=6000),
+                    self.fmt(format_id="299-dash", protocol="http_dash_segments", url="https://h/api/manifest/dash/id/x",
+                             manifest_url="https://h/api/manifest/dash/id/x", height=1080, tbr=9000),
+                ]}
+        selected = YoutubeURL.Formats().getFormatURL(info, "bv", include_dash=True, stream_type="video")
+        self.assertEqual(selected.url_kind, "adaptive")
+        # The protocol returned by yt-dlp is unchanged in the info dict
+        self.assertEqual([f["protocol"] for f in info["formats"]], ["http_dash_segments", "https", "http_dash_segments"])
+        urls = YoutubeURL.Formats().getAllFormatURL(info, selected)
+        self.assertEqual(sorted(u.protocol for u in urls), ["http_dash_segments", "https"])
+
+    def test_extraction_drops_fragments_before_sanitize(self):
+        expanded = []
+
+        def fragments():
+            expanded.append(True)
+            yield {"url": "x"}
+
+        from yt_dlp.utils import LazyList
+        fmt = self.fmt(protocol="http_dash_segments", fragments=LazyList(fragments()))
+        info = {"formats": [fmt], "requested_formats": [fmt], "fragments": LazyList(fragments()),
+                "requested_downloads": [{"fragments": [1], "requested_formats": [{"fragments": [2]}]}]}
+        getUrls._drop_fragments(info)
+        self.assertFalse(expanded)
+        self.assertNotIn("fragments", info)
+        self.assertNotIn("fragments", fmt)
+        self.assertNotIn("fragments", info["requested_downloads"][0])
+        self.assertNotIn("fragments", info["requested_downloads"][0]["requested_formats"][0])
+
+
 class AtomCleaningTests(unittest.TestCase):
     def test_matches_previous_implementation(self):
         for sq in range(3):
