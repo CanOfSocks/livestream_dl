@@ -15,8 +15,11 @@ import unittest
 from tests.support import (AUDIO_ITAG, VIDEO_ITAG, FastTimings, MockServer, MockStream, expected_ts, fake_segment,
                            make_info_dict, make_post_live_info, stream_url_for)
 
+import yt_dlp
+
 import download_Live
 import getUrls
+import YoutubeURL
 
 LOGGER = logging.getLogger("tests.downloads")
 LOGGER.setLevel(logging.WARNING)
@@ -330,6 +333,37 @@ class RefreshValidationTests(ScenarioBase):
             self.assertEqual(str(stream.stream_url), str(stream_url_for(broken, VIDEO_ITAG)))
 
 
+class PrivateReportTests(ScenarioBase):
+    PRIVATE = getUrls.VideoInaccessibleError("Video abcdefghijk is private")
+
+    def test_single_private_report_with_working_url_is_checked_again(self):
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            stream._process_refresh_result(None, self.PRIVATE, follow_manifest=False)
+            self.assertFalse(stream.is_private)
+            # A successful refresh in between resets the count
+            stream._process_refresh_result((self.info, "is_live"), None, follow_manifest=False)
+            stream._process_refresh_result(None, self.PRIVATE, follow_manifest=False)
+            self.assertFalse(stream.is_private)
+            stream._process_refresh_result(None, self.PRIVATE, follow_manifest=False)
+            self.assertTrue(stream.is_private)
+
+    def test_private_report_with_403s_is_believed(self):
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            stream.is_403 = True
+            stream._process_refresh_result(None, self.PRIVATE, follow_manifest=False)
+            self.assertTrue(stream.is_private)
+
+    def test_unconfirmed_report_schedules_an_early_refresh(self):
+        self.extraction_behaviour = lambda: (_ for _ in ()).throw(self.PRIVATE)
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        with download_Live.DownloadStream(self.info, stream_url=url, options=self.options()) as stream:
+            stream.refresh_url(wait=True)
+            self.assertFalse(stream.is_private)
+            self.assertLessEqual(stream.next_refresh_at, time.time() + download_Live.PRIVATE_CONFIRM_DELAY + 1)
+
+
 class PostLiveTests(ScenarioBase):
     """Streams that have ended: yt-dlp relabels the live adaptive formats (see make_post_live_info)."""
     total_segments = 20
@@ -374,6 +408,62 @@ class PostLiveTests(ScenarioBase):
         self.assertEqual(video.protocol, "http_dash_segments")
         file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, video, options, manifest=video.manifest))
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(self.total_segments))))
+        # The extraction that found the stream ended is recent: no further refresh is needed to finish
+        self.assertEqual(self.extraction_calls, 0)
+
+    def test_extracted_post_live_urls_are_downloadable(self):
+        """
+        Getting post-live URLs through the real extraction path (with yt-dlp's extractor replaced by
+        output shaped like yt-dlp 2026.10.26's for an ended stream) and downloading with them.
+        """
+        from yt_dlp.utils import LazyList
+        expanded = []
+
+        def fragment_generator():
+            # yt-dlp's post-live generator requests the stream head and yields every segment
+            expanded.append(True)
+            yield {"url": "never used"}
+
+        raw = make_post_live_info(self.server)
+        for fmt in raw["formats"]:
+            fmt["fragments"] = LazyList(fragment_generator())
+        seen_options = {}
+
+        class FakeYoutubeDL(yt_dlp.YoutubeDL):
+            def __init__(self, params=None, *args, **kwargs):
+                seen_options.update(params or {})
+                super().__init__({"quiet": True}, *args, **kwargs)
+
+            def extract_info(self, url, download=True, **kwargs):
+                return raw
+
+        original = getUrls.yt_dlp.YoutubeDL
+        getUrls.yt_dlp.YoutubeDL = FakeYoutubeDL
+        try:
+            info, status = self._orig_get_info(self.info["id"], wait=False)
+        finally:
+            getUrls.yt_dlp.YoutubeDL = original
+
+        self.assertEqual(status, "post_live")
+        self.assertEqual(seen_options["extractor_args"]["youtube"]["formats"], ["incomplete", "duplicate"])
+        self.assertFalse(expanded, "fragment lists must be dropped before sanitize_info expands them")
+        self.assertTrue(all("fragments" not in fmt for fmt in info["formats"]))
+        # The protocol returned by yt-dlp is kept
+        self.assertEqual({fmt["protocol"] for fmt in info["formats"]}, {"http_dash_segments"})
+
+        coordinator = self.coordinator()
+        self.extraction_behaviour = self._post_live_extraction
+        options = self.options()
+        urls = coordinator._stream_urls_from_formats(coordinator._select_formats(info, "bv+ba/best", options))
+        self.assertEqual(sorted(u.itag for u in urls), sorted([VIDEO_ITAG, AUDIO_ITAG]))
+        self.assertTrue(all(u.url_kind == "adaptive" for u in urls))
+        for url in urls:
+            itag = url.itag
+            file, _ = run_with_timeout(self, lambda: coordinator.download_stream(info, url, options, manifest=url.manifest))
+            self.assertEqual(self.read(str(file)), expected_ts(self.segments(itag, range(self.total_segments))))
+        # All URLs of the format, whatever yt-dlp's label, are available for recovery
+        all_urls = YoutubeURL.Formats().getAllFormatURL(info, urls[0])
+        self.assertEqual([u.itag for u in all_urls], [urls[0].itag])
 
     def _tail_requests(self):
         return sum(1 for itag, sq in self.stream.requests if itag == VIDEO_ITAG and sq in (18, 19))

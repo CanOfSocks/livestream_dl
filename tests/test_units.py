@@ -649,6 +649,16 @@ class FilenameLengthTests(unittest.TestCase):
         self.assertEqual(name, "U" * self.limit())
 
 
+class BaseOutputPathTests(unittest.TestCase):
+    def test_uses_temp_then_download_folder(self):
+        info = {"id": "abcdefghijk"}
+        self.assertEqual(download_Live.base_output_path({"filename": "x", "temp_folder": "t", "download_folder": "d"}, info),
+                         os.path.join("t", "x"))
+        # Without --temp-folder, files go to the download folder rather than the current directory
+        self.assertEqual(download_Live.base_output_path({"filename": "x", "download_folder": "d"}, info), os.path.join("d", "x"))
+        self.assertEqual(download_Live.base_output_path({}, info), "abcdefghijk")
+
+
 class MonitorCacheTests(unittest.TestCase):
     def test_cache(self):
         cache = monitor_channel.VideoStatusCache(max_entries=2)

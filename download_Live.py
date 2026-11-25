@@ -154,6 +154,13 @@ DVR_WINDOW_SECONDS: float = 7 * 24 * 3600.0
 DVR_PROBE_MIN_SECONDS: float = 5 * 24 * 3600.0
 DVR_PROBE_MARGIN_SECONDS: float = 12 * 3600.0
 DVR_PROBE_MAX_REQUESTS: int = 40
+# An ended stream with nothing left to download finishes without another yt-dlp refresh if the
+# live status came from an extraction at most this old (otherwise one refresh confirms the end)
+ENDED_STATUS_MAX_AGE: float = 300.0
+# A refresh reporting the video private while its stream URL still works (no 403s) may be a
+# degraded extraction: it is only believed when the next refresh, this many seconds later at the
+# soonest, reports it again
+PRIVATE_CONFIRM_DELAY: float = 60.0
 # A refreshed URL is checked with one header probe before replacing the current URL, unless the
 # current URL expires within this many seconds or is already failing (see _refreshed_url_usable)
 REFRESH_VALIDATE_EXPIRY_MARGIN: float = 300.0
@@ -393,10 +400,11 @@ def next_refresh_time(now: float, expire: Optional[float], interval_override: Op
 
 
 def base_output_path(options: dict, info_dict: dict) -> str:
-    """Temp path prefix (without extension) for files of this video: <temp_folder>/<filename>."""
+    """Temp path prefix (without extension) for files of this video: <temp or download folder>/<filename>."""
     filename = options.get('filename') or info_dict.get('id')
-    temp_folder = options.get("temp_folder")
-    return os.path.join(temp_folder, filename) if temp_folder else filename
+    # Without --temp-folder, files are created in the download (output) folder, not the current directory
+    folder = options.get("temp_folder") or options.get("download_folder")
+    return os.path.join(folder, filename) if folder else filename
 
 
 def _guess_mime_type(path) -> tuple[Optional[str], Optional[str]]:
@@ -1142,6 +1150,8 @@ class StreamDownloaderBase:
         self.is_403: bool = False
         self.is_401: bool = False
         self.is_private: bool = False
+        # Consecutive refreshes reporting the video private while its URL still worked
+        self._private_reports: int = 0
         self.is_members_error: bool = False
         self.refresh_retries: int = 0
         self.following_manifest_thread: Optional[threading.Thread] = None
@@ -1666,6 +1676,9 @@ class StreamDownloaderBase:
 
         self.url_checked = time.time()
         self._schedule_next_refresh()
+        if self._private_reports == 1:
+            # Confirm an unconfirmed "private" report soon (see _on_video_inaccessible)
+            self.next_refresh_at = min(self.next_refresh_at, self.url_checked + PRIVATE_CONFIRM_DELAY)
 
         if self.live_status not in ['is_live', 'is_upcoming']:
             self.logger.debug("Livestream has ended.")
@@ -1685,6 +1698,7 @@ class StreamDownloaderBase:
                 # Re-raised so the extraction errors below are handled in one place
                 raise error
             info_dict, live_status = result
+            self._private_reports = 0
 
             if live_status:
                 self.live_status = live_status
@@ -1765,6 +1779,14 @@ class StreamDownloaderBase:
         """
         error_msg = str(error).lower()
         self.logger.warning(f"Video Inaccessible error: {error}")
+        if "private" in error_msg and not self.is_403 and not self.is_401:
+            self._private_reports += 1
+            if self._private_reports < 2:
+                # Seen in practice: one degraded extraction ("No title found in player responses")
+                # reporting a working stream as private. Check again before stopping.
+                self.logger.warning(f"{self.id} was reported private, but its stream URL still works. Checking again before treating it as private")
+                self.next_refresh_at = time.time() + PRIVATE_CONFIRM_DELAY
+                return
         if "private" in error_msg or self.is_403:
             self.logger.warning(f"{self.id} is Inaccessible and is either private or experiencing 403 errors. Marking as private.")
             self.is_private = True
@@ -2346,6 +2368,10 @@ class DownloadStream(StreamDownloaderBase):
         # Once the stream is known to have ended, confirm it at the first wait instead (after one
         # more probe of the head found nothing new) rather than idling for minutes.
         periodic = self.wait % REFRESH_EVERY_N_WAITS == 0 and self.wait > 0
+        if self.wait >= 1 and self.stream_has_ended() and time.time() - self.url_checked < ENDED_STATUS_MAX_AGE:
+            # A recent extraction already said the stream ended, and a head probe found nothing new
+            self.logger.debug("Stream has ended and no outstanding segments remain. Ending download process.")
+            return LoopAction.BREAK
         if periodic or (self.wait == 1 and self.stream_has_ended()):
             previous_url = self.stream_url
             refresh = self.refresh_url(ignore_no_formats=True)
