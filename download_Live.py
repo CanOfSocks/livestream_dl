@@ -1134,9 +1134,11 @@ class StreamDownloaderBase:
 
     def _init_state(self) -> None:
         """Initial values of the state that changes while downloading."""
-        # Newest segment number the server has reported, and the estimated duration of one segment
+        # Newest segment number the server has reported, and the estimated duration of one segment.
+        # yt-dlp's target_duration (when the format has one) is the first estimate; the estimate
+        # from the response headers replaces it once one arrives.
         self.latest_sequence: int = -1
-        self.estimated_segment_duration: float = 0
+        self.estimated_segment_duration: float = float(getattr(self.stream_url, "target_duration", None) or 0)
         self.is_403: bool = False
         self.is_401: bool = False
         self.is_private: bool = False

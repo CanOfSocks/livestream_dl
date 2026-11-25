@@ -267,6 +267,11 @@ class UrlKindTests(unittest.TestCase):
         self.assertEqual((url.id, url.manifest, url.itag), ("Xyz123", "2", 299))
         self.assertTrue(url.segment(7).endswith("sq=7"))
 
+    def test_target_duration_passed_through(self):
+        url = YoutubeURL.YoutubeURL.from_format(self.fmt(protocol="http_dash_segments", target_duration=2))
+        self.assertEqual(url.target_duration, 2.0)
+        self.assertIsNone(YoutubeURL.YoutubeURL.from_format(self.fmt(protocol="https")).target_duration)
+
     def test_selection_and_all_urls_ignore_protocol_label(self):
         info = {"id": "Xyz123", "title": "t", "extractor": "youtube", "extractor_key": "Youtube",
                 "webpage_url": "https://www.youtube.com/watch?v=Xyz123", "formats": [

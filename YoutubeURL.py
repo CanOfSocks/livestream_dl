@@ -225,9 +225,15 @@ class YoutubeURL:
 
     def __init__(self, url: str, protocol: str = "unknown", format_id: Optional[str] = None,
                  logger: logging.Logger | logging.LoggerAdapter | None = None, vcodec=None, acodec=None,
-                 format_note=None, language=None, ext=None, url_kind: Optional[str] = None):
+                 format_note=None, language=None, ext=None, url_kind: Optional[str] = None,
+                 target_duration: Optional[float] = None):
         self.logger = logger or logging.getLogger()
         self.protocol = protocol
+        # Segment length reported by yt-dlp for live-processed (post-live / live-from-start) formats
+        try:
+            self.target_duration: Optional[float] = float(target_duration) if target_duration else None
+        except (TypeError, ValueError):
+            self.target_duration = None
         if url_kind is None:
             # Direct construction without a format dict: infer the kind from the protocol
             if str(protocol).startswith("m3u8"):
@@ -298,7 +304,7 @@ class YoutubeURL:
         common = dict(protocol=protocol, format_id=format_info.get('format_id'), logger=logger,
                       vcodec=format_info.get('vcodec'), acodec=format_info.get('acodec'),
                       format_note=format_info.get("format_note"), language=format_info.get('language'),
-                      ext=format_info.get('ext'), url_kind=kind)
+                      ext=format_info.get('ext'), url_kind=kind, target_duration=format_info.get('target_duration'))
         if kind == URL_KIND_DASH:
             return cls(format_info.get('fragment_base_url'), **common)
         if kind == URL_KIND_M3U8:
@@ -503,7 +509,7 @@ class Formats:
             common = dict(protocol=protocol, format_id=ytdlp_format.get('format_id', None), logger=self.logger,
                           vcodec=ytdlp_format.get('vcodec', None), acodec=ytdlp_format.get('acodec', None),
                           format_note=ytdlp_format.get("format_note"), language=ytdlp_format.get('language'),
-                          ext=ytdlp_format.get('ext'), url_kind=kind)
+                          ext=ytdlp_format.get('ext'), url_kind=kind, target_duration=ytdlp_format.get('target_duration'))
             try:
                 # --- Secondary Filter: Format ID (itag) ---
                 if kind == URL_KIND_DASH:

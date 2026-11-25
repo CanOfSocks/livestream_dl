@@ -351,6 +351,17 @@ class PostLiveTests(ScenarioBase):
             self.assertEqual(stream.stream_url.expire, expire)
         self.assertEqual(post_live["formats"][0]["protocol"], "http_dash_segments")
 
+    def test_target_duration_is_the_first_estimate(self):
+        # Before any response headers arrive, yt-dlp's target_duration gives the segment length
+        info = make_post_live_info(self.server)
+        info["formats"][0]["target_duration"] = 5.0
+        url = stream_url_for(info, VIDEO_ITAG)
+        with download_Live.DownloadStream(info, stream_url=url, options=self.options()) as stream:
+            # The header estimate (head time / head sequence) replaced it
+            self.assertAlmostEqual(stream.estimated_segment_duration, self.nominal_duration, delta=0.05)
+            stream._init_state()
+            self.assertEqual(stream.estimated_segment_duration, 5.0)
+
     def test_download_starts_after_stream_ended(self):
         self.extraction_behaviour = self._post_live_extraction
         info = make_post_live_info(self.server)
