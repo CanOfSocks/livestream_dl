@@ -17,6 +17,7 @@ import getUrls
 import monitor_channel
 import runner
 import YoutubeURL
+import yt_dlp
 
 LOGGER = logging.getLogger("tests")
 LOGGER.addHandler(logging.NullHandler())
@@ -48,6 +49,30 @@ def _old_clean_segments(data, first=True):
     for a in to_remove:
         del buf[a["ofs"]:a["ofs"] + a["len"]]
     return bytes(buf)
+
+
+class ErrorClassificationTests(unittest.TestCase):
+    def classify(self, message: str) -> Exception:
+        return getUrls._classify_download_error(Exception(f"ERROR: [youtube] Xyz123: {message}"), "Xyz123")
+
+    def test_bot_check_is_rate_limiting(self):
+        for apostrophe in ("'", "’"):
+            with self.subTest(apostrophe=apostrophe):
+                error = self.classify(f"Sign in to confirm you{apostrophe}re not a bot. Use --cookies-from-browser")
+                self.assertIsInstance(error, getUrls.RateLimitException)
+        self.assertIsInstance(self.classify("HTTP Error 429: Too Many Requests"), getUrls.RateLimitException)
+
+    def test_sign_in_messages(self):
+        self.assertIn("age-restricted", str(self.classify("Sign in to confirm your age. This video may be inappropriate")))
+        private = self.classify("Private video. Sign in if you've been granted access to this video")
+        self.assertIsInstance(private, getUrls.VideoInaccessibleError)
+        self.assertIn("private", str(private))
+        self.assertIn("membership", str(self.classify("Join this channel to get access to members-only content")))
+
+    def test_extraction_logger_raises_bot_check_as_error(self):
+        extraction_logger = getUrls.ExtractionLogger(LOGGER, wait=False)
+        with self.assertLogs(LOGGER, level="ERROR"), self.assertRaises(yt_dlp.utils.DownloadError):
+            extraction_logger.warning("[youtube] Xyz123: Sign in to confirm you’re not a bot")
 
 
 class TimeParsingTests(unittest.TestCase):
@@ -417,6 +442,60 @@ class UrlKindTests(unittest.TestCase):
         self.assertNotIn("fragments", fmt)
         self.assertNotIn("fragments", info["requested_downloads"][0])
         self.assertNotIn("fragments", info["requested_downloads"][0]["requested_formats"][0])
+
+
+class LiveTitleTests(unittest.TestCase):
+    """yt-dlp adds the date to a live stream's title each time an info dict is processed."""
+    LIVE = UrlKindTests.LIVE
+    TITLE = "Test stream 2026-11-26 20:45"   # As the extraction returned it
+
+    def info(self):
+        audio = UrlKindTests.LIVE.replace("itag=299", "itag=140").replace("video%2Fmp4", "audio%2Fmp4")
+        return {"id": "Xyz123", "title": self.TITLE, "fulltitle": "Test stream", "extractor": "youtube",
+                "extractor_key": "Youtube", "webpage_url": "https://www.youtube.com/watch?v=Xyz123",
+                "live_status": "is_live", "is_live": True, "formats": [
+                    {"format_id": "299", "url": self.LIVE, "protocol": "https", "vcodec": "avc1", "acodec": "none",
+                     "ext": "mp4", "height": 1080, "tbr": 6000},
+                    {"format_id": "140", "url": audio, "protocol": "https", "vcodec": "none", "acodec": "mp4a.40.2",
+                     "ext": "m4a", "tbr": 128}]}
+
+    def test_repeated_selection_keeps_the_title(self):
+        info = self.info()
+        selected = YoutubeURL.Formats().getFormats(info, "bv+ba")
+        YoutubeURL.Formats().getFormatURL(info, "bv+ba", stream_type="video")
+        YoutubeURL.Formats().getFormatURL(info, "bv+ba", stream_type="audio")
+        again = YoutubeURL.Formats().getFormats(selected, "bv+ba")
+        for result in (info, selected, again):
+            self.assertEqual((result["title"], result["fulltitle"]), (self.TITLE, "Test stream"))
+        # The selection is still stored in the info dict passed in, as before
+        self.assertEqual([f["format_id"] for f in info["requested_formats"]], ["299", "140"])
+
+    def test_processing_without_updating_the_original(self):
+        import yt_dlp
+        info = self.info()
+        seen = []
+
+        class Recording(yt_dlp.YoutubeDL):
+            def process_ie_result(self, ie_result, *args, **kwargs):
+                seen.append(ie_result["title"])
+                return super().process_ie_result(ie_result, *args, **kwargs)
+
+        with Recording({"quiet": True, "skip_download": True, "format": "bv+ba"}) as ydl:
+            result = YoutubeURL.process_keeping_title(ydl, info, update_original=False)
+        # yt-dlp starts from the extracted title, so it adds the date only once
+        self.assertEqual(seen, ["Test stream"])
+        self.assertEqual(result["title"], self.TITLE)
+        self.assertNotIn("requested_formats", info)
+
+    def test_unprocessed_info_dict_is_processed_as_before(self):
+        import yt_dlp
+        info = self.info()
+        info["title"] = "Test stream"
+        del info["fulltitle"]
+        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, "format": "bv+ba"}) as ydl:
+            result = YoutubeURL.process_keeping_title(ydl, info)
+        self.assertEqual(result["fulltitle"], "Test stream")
+        self.assertTrue(result["title"].startswith("Test stream 2"))
 
 
 class AtomCleaningTests(unittest.TestCase):

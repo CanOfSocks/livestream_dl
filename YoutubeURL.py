@@ -201,6 +201,33 @@ def is_unprocessed_live_format(format_info: dict) -> bool:
     return _is_live_adaptive_url(format_info.get('url') or "") or bool(format_info.get('target_duration'))
 
 
+TITLE_FIELDS = ('title', 'fulltitle')
+
+
+def process_keeping_title(ydl, info_json: dict, update_original: bool = True) -> dict:
+    """
+    ydl.process_ie_result() for an info dict that may have been processed before (by the
+    extraction, or an earlier format selection). Each run copies 'title' to 'fulltitle' and then
+    adds the current date to a live stream's title, so the date was added again on every run
+    ("title 2026-01-01 10:00 2026-01-01 10:00 ..."). A copy starting from the extracted title
+    (fulltitle) is processed instead, and the result keeps the title and fulltitle it had before.
+    update_original: put the other fields of the result (e.g. requested_formats) into info_json,
+        as processing it in place did, without its title fields changing at any point (other
+        threads may be reading them).
+    """
+    title, fulltitle = info_json.get('title'), info_json.get('fulltitle')
+    if not fulltitle:
+        # Never processed: yt-dlp sets both fields
+        return ydl.process_ie_result(info_json if update_original else dict(info_json))
+    work = dict(info_json)
+    work['title'] = fulltitle
+    info = ydl.process_ie_result(work)
+    info['title'], info['fulltitle'] = title, fulltitle
+    if update_original:
+        info_json.update({key: value for key, value in info.items() if key not in TITLE_FIELDS})
+    return info
+
+
 def annotate_url_kinds(info_json: dict) -> dict:
     """Store stream_url_kind() of every format in URL_KIND_FIELD (used by the format selector)."""
     for format_info in info_json.get('formats') or []:
@@ -428,7 +455,7 @@ class Formats:
         info_json.pop("requested_formats", None)
         annotate_url_kinds(info_json)
         with YoutubeDL(ydl_opts) as ydl:
-            return ydl.process_ie_result(info_json)
+            return process_keeping_title(ydl, info_json)
 
     def getFormatURL(self, info_json, resolution, sort=None, get_all=False, raw=False, include_dash=True,
                      include_m3u8=False, force_m3u8=False, logger: logging.Logger | logging.LoggerAdapter | None = None,

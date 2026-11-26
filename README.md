@@ -8,7 +8,7 @@ This tool focuses on using `yt-dlp` for stream information extraction, ensuring 
 ## Key Features
 
 * **Robust Downloading:** Uses `yt-dlp` for extraction, minimizing breakage from YouTube updates.
-* **Stream Recovery:** capable of recovering streams that go private during recording (requires specific configuration).
+* **Stream Recovery:** capable of recovering streams that go private during recording (requires specific configuration). If URL refreshes keep failing (rate limiting or YouTube's "confirm you're not a bot" check), any backlog of segments is handed to stream recovery 10 minutes before the stream URL expires, then recording continues in case a refresh succeeds. If none has 2 minutes before expiry, the download finishes and is merged instead of failing at expiry.
 * **Dual Write Modes:** Supports both direct `.ts` file writing (low disk IO) and SQLite-backed downloading (safer for unstable connections).
 * **Live Chat:** Integrated support for downloading live chat with `yt-dlp` and bundling it into a ZIP file. An interrupted chat download is resumed instead of starting over.
 * **Channel Monitoring:** Automated monitoring of channels for upcoming or live streams.

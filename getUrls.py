@@ -94,8 +94,12 @@ class ExtractionLogger:
         if not self.wait and not ("[pot:bgutil:http]" in msg_str):
             self.warning_history.append(msg_str)
 
-        # 1. Check Info-Level Keywords
-        if any(k in msg_str for k in self.INFO_IGNORE_KEYWORDS):
+        # 1. Check Info-Level Keywords (a bot check also contains "sign in": logged as an error)
+        if is_bot_check(msg_str):
+            self.logger.error(msg)
+            raise yt_dlp.utils.DownloadError(msg_str)
+
+        elif any(k in msg_str for k in self.INFO_IGNORE_KEYWORDS):
             self.logger.info(msg)
 
         elif any(k in msg_str for k in self.INFO_RAISE_KEYWORDS):
@@ -462,14 +466,27 @@ def _drop_fragments(info_dict: dict) -> None:
                     strip(sub)
 
 
+# Rate limiting and YouTube's bot check ("Sign in to confirm you're not a bot", with a straight or
+# curly apostrophe). Checked before the private / "sign in" messages, which the bot check also matches.
+BOT_CHECK_PHRASES = ("http error 429", "not a bot", "captcha")
+
+
+def is_bot_check(message: str) -> bool:
+    message = str(message).lower()
+    return any(phrase in message for phrase in BOT_CHECK_PHRASES)
+
+
 def _classify_download_error(e: Exception, id: str) -> Exception:
     """Map a yt-dlp DownloadError message to one of the custom exceptions (order matters)."""
     err_str = str(e).lower()
 
-    if 'video is private' in err_str or "sign in" in err_str or "private video" in err_str:
-        return VideoInaccessibleError(f"Video {id} is private")
-    elif "http error 429" in err_str or "confirm you're not a bot" in err_str or "captcha" in err_str:
+    # Before the "sign in" check: YouTube's bot check reads "Sign in to confirm you're not a bot"
+    if is_bot_check(err_str):
         return RateLimitException("Rate limited or blocked by YouTube anti-bot measures")
+    elif "sign in to confirm your age" in err_str or "age-restricted" in err_str:
+        return VideoInaccessibleError("Video is age-restricted and requires valid cookies")
+    elif 'video is private' in err_str or "sign in" in err_str or "private video" in err_str:
+        return VideoInaccessibleError(f"Video {id} is private")
     elif "members" in err_str or "premium" in err_str:
         return VideoInaccessibleError(f"Video {id} is a membership or premium video")
     elif "not available on this app" in err_str:
@@ -482,8 +499,6 @@ def _classify_download_error(e: Exception, id: str) -> Exception:
         return VideoInaccessibleError(f"Video {id} has been terminated")
     elif "country" in err_str and ("not available" in err_str or "uploader has not made" in err_str or "blocked" in err_str):
         return VideoInaccessibleError("Video is region-locked (Geo-restricted)")
-    elif "sign in to confirm your age" in err_str or "age-restricted" in err_str:
-        return VideoInaccessibleError("Video is age-restricted and requires valid cookies")
     elif "copyright claim" in err_str:
         return VideoInaccessibleError("Video removed due to a copyright claim")
     elif "video has been removed" in err_str or "incomplete youtube id" in err_str or "invalid video id" in err_str:

@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from tests.support import (AUDIO_ITAG, VIDEO_ITAG, FastTimings, MockServer, MockStream, expected_ts, fake_segment,
                            make_info_dict, make_post_live_info, stream_url_for)
@@ -842,6 +843,121 @@ class RecoveryTests(ScenarioBase):
         self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(15))))
         # Nothing was written to a stray database named after the video ID in the working directory
         self.assertFalse(os.path.exists(f"abcdefghijk.{VIDEO_ITAG}.temp"))
+
+    def test_expiring_url_hands_over_to_recovery_when_refreshes_fail(self):
+        # YouTube's bot check stops every refresh while the URL has 5 minutes left: the backlog goes
+        # to stream recovery straight away (no hand-off delay), into the same database. The finish
+        # margin is raised so the download finishes right after recovery instead of minutes later.
+        self.info = make_info_dict(self.server, expire=int(time.time()) + 300)
+        self.stream.fail(VIDEO_ITAG, 3, 403, times=6)
+
+        def bot_check():
+            raise getUrls.RateLimitException("Rate limited or blocked by YouTube anti-bot measures")
+        self.extraction_behaviour = bot_check
+        coordinator = self.coordinator()
+        url = stream_url_for(self.info, VIDEO_ITAG)
+        options = self.options(segment_retry_time=0.1)
+        with mock.patch.object(download_Live, "RECOVERY_HANDOFF_DELAY", 60.0), \
+                mock.patch.object(download_Live, "EXPIRY_FINISH_MARGIN", 290.0), \
+                self.assertLogs(LOGGER, level="WARNING") as logs:
+            file, _ = run_with_timeout(self, lambda: coordinator.download_stream(self.info, url, options, manifest=url.manifest))
+        self.assertEqual(self.read(str(file)), expected_ts(self.segments(VIDEO_ITAG, range(15))))
+        self.assertTrue(any("moving the remaining segments to stream recovery" in line for line in logs.output))
+        # The failed refreshes are logged without a traceback
+        self.assertFalse(any("Traceback" in line for line in logs.output))
+
+
+class UrlExpiryTests(ScenarioBase):
+    def stream_for(self, expires_in: float) -> download_Live.DownloadStream:
+        self.info = make_info_dict(self.server, expire=int(time.time() + expires_in))
+        stream = download_Live.DownloadStream(self.info, stream_url=stream_url_for(self.info, VIDEO_ITAG), options=self.options())
+        self.addCleanup(stream.close)
+        stream._queue, stream._exhausted = [], set()
+        stream.future_to_seg = {}
+        stream.latest_sequence = 100
+        return stream
+
+    def test_not_before_a_refresh_has_failed(self):
+        # E.g. an old info.json: the URL is refreshed first
+        stream = self.stream_for(300)
+        stream._queue = [7]
+        self.assertFalse(stream._url_expiring())
+        stream.failed_url_refreshes = 1
+        self.assertTrue(stream._url_expiring())
+
+    def test_margins(self):
+        stream = self.stream_for(300)
+        stream.failed_url_refreshes = 1
+        # Nothing left to download: keep recording until shortly before expiry
+        self.assertFalse(stream._url_expiring())
+        # The newest segments the server just reported are not a backlog
+        stream._queue = [98, 99, 100]
+        self.assertFalse(stream._url_expiring())
+        stream._queue = [80, 99, 100]
+        self.assertTrue(stream._url_expiring())
+        stream._queue, stream._exhausted = [], {4}
+        self.assertTrue(stream._url_expiring())
+        stream = self.stream_for(60)
+        stream.failed_url_refreshes = 1
+        self.assertTrue(stream._url_expiring())
+        self.assertIs(stream._on_url_expiring(), download_Live.LoopAction.BREAK)
+        self.assertFalse(self.stream_for(3600)._url_expiring())
+
+    def test_recording_continues_after_recovery(self):
+        # A refresh may still succeed: the backlog goes to recovery once, then the live loop carries on
+        stream = self.stream_for(300)
+        stream.failed_url_refreshes = 1
+        stream._exhausted = {4}
+        with mock.patch.object(stream, "_handoff_to_recovery") as handoff, \
+                mock.patch.object(stream, "update_latest_segment"):
+            self.assertIs(stream._on_url_expiring(), download_Live.LoopAction.CONTINUE)
+        handoff.assert_called_once_with(delay=0.0)
+        # Not handed over again for the same URL: recording continues until the finish margin
+        self.assertFalse(stream._url_expiring())
+
+    def test_no_optimistic_requests_while_expiring(self):
+        # They would keep a request in flight on every loop, so the hand-off would never start
+        stream = self.stream_for(300)
+        stream.failed_url_refreshes = 1
+        stream._exhausted = {4}
+        stream._window_resolved = True
+        stream._refresh_result = None
+        with mock.patch.object(stream, "_submit_optimistic") as optimistic, \
+                mock.patch.object(stream, "_retry_dvr_window"), \
+                mock.patch.object(stream, "_on_url_expiring", return_value=download_Live.LoopAction.CONTINUE):
+            stream._evaluate()
+        optimistic.assert_not_called()
+
+    def test_failed_refresh_count(self):
+        stream = self.stream_for(3600)
+        stream._fetch_refreshed_info = mock.Mock(side_effect=getUrls.RateLimitException("bot check"))
+        with self.assertNoLogs(stream.logger, level="ERROR"):
+            stream.refresh_url(wait=True)
+        self.assertEqual(stream.failed_url_refreshes, 1)
+        fresh = make_info_dict(self.server, expire=int(time.time()) + 9000)
+        stream._fetch_refreshed_info = mock.Mock(return_value=(fresh, "is_live"))
+        stream.refresh_url(wait=True)
+        self.assertEqual(stream.failed_url_refreshes, 0)
+
+    def test_refused_refreshed_url_is_not_a_failed_refresh(self):
+        # A URL that was found but refused while the current one works is used once the current
+        # URL is close to expiry, so it doesn't count towards the expiry hand-off
+        stream = self.stream_for(3600)
+        stream.failed_url_refreshes = 1
+        broken = make_info_dict(self.server, expire=int(time.time()) - 10)
+        stream._fetch_refreshed_info = mock.Mock(return_value=(broken, "is_live"))
+        stream.refresh_url(wait=True)
+        self.assertNotEqual(str(stream.stream_url), str(stream_url_for(broken, VIDEO_ITAG)))
+        self.assertEqual(stream.failed_url_refreshes, 0)
+
+    def test_private_handoff_delay_ends_before_the_url_expires(self):
+        stream = self.stream_for(download_Live.EXPIRY_RECOVERY_MARGIN + 30)
+        waits = []
+        with mock.patch.object(download_Live, "RECOVERY_HANDOFF_DELAY", 300.0), \
+                mock.patch.object(stream, "smart_sleep", side_effect=waits.append), \
+                mock.patch.object(download_Live, "StreamRecovery", side_effect=RuntimeError("not started in this test")):
+            stream._handoff_to_recovery()
+        self.assertLessEqual(sum(waits), 31)
 
 
 class LiveChatTimeoutTests(unittest.TestCase):

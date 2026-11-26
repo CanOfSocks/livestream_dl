@@ -756,5 +756,80 @@ class ChatRetryTests(ChatTestBase):
         self.assertFalse(coordinator._media_finished.is_set())
 
 
+class ChatWaitTests(ChatTestBase):
+    """_wait_for_live_chat once the media downloads have finished."""
+
+    def setUp(self):
+        super().setUp()
+        self.coordinator = download_Live.LiveStreamDownloader(logger=LOGGER)
+        self.options = {"temp_folder": self.tmp, "filename": "out"}
+        self.info = {"id": "abcdefghijk"}
+        self.base = os.path.join(self.tmp, "out")
+        self.write(self.filename, b'{"a": 1}\n')
+        grace = mock.patch.object(download_Live, "LIVE_CHAT_STOP_GRACE", 0.5)
+        grace.start()
+        self.addCleanup(grace.stop)
+
+    def chat_thread(self, stops: bool = True) -> threading.Thread:
+        """A chat download that ends when told to stop (after a moment, like a chat request) and zips the chat."""
+        def run():
+            while not self.coordinator._chat_should_stop():
+                time.sleep(0.01)
+            if not stops:
+                time.sleep(2.0)
+                return
+            time.sleep(0.1)
+            self.coordinator._package_live_chat(self.base, livechat_filename=self.filename)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.addCleanup(self.coordinator.chat_stop.set)
+        return thread
+
+    def test_graceful_stop_keeps_the_chat_for_the_merge(self):
+        # Stop & merge: the chat must be zipped and registered before the files are moved
+        thread = self.chat_thread()
+        self.coordinator.graceful_stop.set()
+        self.coordinator._wait_for_live_chat(thread, self.info, self.options)
+        self.assertFalse(thread.is_alive())
+        self.assertIn("live_chat", self.coordinator.file_names)
+        self.assertTrue(os.path.exists(self.base + ".live_chat.zip"))
+
+    def test_graceful_stop_snapshots_a_chat_that_does_not_stop(self):
+        thread = self.chat_thread(stops=False)
+        self.coordinator.graceful_stop.set()
+        started = time.monotonic()
+        self.coordinator._wait_for_live_chat(thread, self.info, self.options)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn("live_chat", self.coordinator.file_names)
+        with zipfile.ZipFile(self.base + ".live_chat.zip") as z:
+            self.assertEqual(z.read("out.live_chat.json"), b'{"a": 1}\n')
+
+    def test_cancel_does_not_wait_for_the_chat(self):
+        thread = self.chat_thread(stops=False)
+        self.coordinator.kill_this.set()
+        started = time.monotonic()
+        self.coordinator._wait_for_live_chat(thread, self.info, self.options)
+        self.assertLess(time.monotonic() - started, 0.3)
+        self.assertNotIn("live_chat", self.coordinator.file_names)
+
+    def test_cancel_while_stopping_the_chat_returns_promptly(self):
+        # Stop & merge, then Cancel while the chat download is slow to stop
+        thread = self.chat_thread(stops=False)
+        self.coordinator.graceful_stop.set()
+        threading.Timer(0.2, self.coordinator.kill_this.set).start()
+        started = time.monotonic()
+        with mock.patch.object(download_Live, "LIVE_CHAT_STOP_GRACE", 5.0):
+            self.coordinator._wait_for_live_chat(thread, self.info, self.options)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertNotIn("live_chat", self.coordinator.file_names)
+
+    def test_timeout_stops_the_chat(self):
+        thread = self.chat_thread()
+        self.coordinator._wait_for_live_chat(thread, self.info, dict(self.options, stop_chat_when_done=0.01))
+        self.assertTrue(self.coordinator.chat_stop.is_set())
+        self.assertIn("live_chat", self.coordinator.file_names)
+
+
 if __name__ == "__main__":
     unittest.main()

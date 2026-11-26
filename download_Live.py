@@ -174,6 +174,15 @@ REFRESH_403_AFTER_SECONDS: float = 30.0
 RECOVERY_HANDOFF_DELAY: float = 300.0
 # Wait for in-flight requests before handing a private stream over to recovery
 PRIVATE_DRAIN_WAIT: float = 5.0
+# A stream URL that is about to expire without having been refreshed (refreshes failing: rate
+# limiting, YouTube's bot check) is handed to stream recovery this many seconds before it expires
+# while segments remain, so they are downloaded with more threads before it stops working; with
+# nothing left to download, the download finishes (and is merged) this many seconds before expiry
+EXPIRY_RECOVERY_MARGIN: float = 600.0
+EXPIRY_FINISH_MARGIN: float = 120.0
+# Queued segments at least this far behind the head count as a backlog for that hand-off (the
+# newest few are only waiting for the live loop's next submission)
+EXPIRY_BACKLOG_SEGMENTS: int = 5
 # How long the live chat thread gets to stop after its timeout before it is abandoned
 LIVE_CHAT_STOP_GRACE: float = 10.0
 # How often a live chat that ended early checks for a newer info.json refresh (see _next_live_chat_info)
@@ -1136,6 +1145,12 @@ class StreamDownloaderBase:
             self.close()
             raise
         self.url_checked: float = time.time()
+        # Consecutive URL refreshes that gave no URL for this format (see refresh_url)
+        self.failed_url_refreshes: int = 0
+        # Whether the refresh being processed gave a URL for this format (see _use_refreshed_url)
+        self._refresh_found_url: bool = False
+        # The URL whose backlog was handed to recovery before it expired (once per URL, see _on_url_expiring)
+        self._expiry_recovery_url: Optional[str] = None
         self._schedule_next_refresh()
         self._stats()["latest_sequence"] = self.latest_sequence
 
@@ -1734,8 +1749,13 @@ class StreamDownloaderBase:
             result, error = refresh.collect()
 
         if self.following_manifest_thread is None and (error is not None or result is not None):
+            self._refresh_found_url = False
             if self._process_refresh_result(result, error, follow_manifest):
                 return RefreshOutcome.NEW_MANIFEST
+            # Refreshes that gave no URL for this format (failed, rate limited, stream ended); see
+            # _url_expiring. A URL that was found but not used yet (see _refreshed_url_usable) doesn't
+            # count: it is used without a check once the current URL is close to expiry.
+            self.failed_url_refreshes = 0 if self._refresh_found_url else self.failed_url_refreshes + 1
 
         self.url_checked = time.time()
         self._schedule_next_refresh()
@@ -1789,6 +1809,9 @@ class StreamDownloaderBase:
         except getUrls.LivestreamError:
             self.logger.debug("Livestream has ended.")
             self.live_status = "post_live"
+        except getUrls.RateLimitException as e:
+            # Expected now and then (the coordinator backs off); no traceback for each attempt
+            self.logger.warning(f"({self.format}) URL refresh failed: {e}")
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -1820,6 +1843,7 @@ class StreamDownloaderBase:
             # Never expected (the selector matches the kind), but never mix kinds in one download
             self.logger.warning(f"Ignoring refreshed URL of {self.format}: {stream_url.url_kind} URL, downloading {self.stream_url.url_kind}")
             return
+        self._refresh_found_url = True
         if str(stream_url) != str(self.stream_url) and not self._refreshed_url_usable(stream_url):
             return
         if stream_url.protocol != self.stream_url.protocol:
@@ -2462,6 +2486,12 @@ class DownloadStream(StreamDownloaderBase):
 
         self._retry_dvr_window()
         self._before_evaluate()
+
+        if self._url_expiring():
+            # Checked before an in-progress refresh (which may be waiting out a rate limit back-off)
+            # and before optimistic requests, which would keep requests in flight on every loop
+            return self._on_url_expiring()
+
         self._submit_optimistic()
 
         if self._refresh_result is RefreshOutcome.IN_PROGRESS:
@@ -2568,14 +2598,91 @@ class DownloadStream(StreamDownloaderBase):
             self.logger.warning(f"{self.format} - Stream is now private and segments remain. Current stream protocol does not support stream recovery, ending...")
         return LoopAction.BREAK
 
-    def _handoff_to_recovery(self) -> None:
+    def _url_expiry_left(self) -> Optional[float]:
+        """Seconds until the current stream URL expires (None if it has no expire time)."""
+        expire = self.get_expire_time(self.stream_url)
+        return None if expire is None else float(expire) - time.time()
+
+    def _has_backlog(self) -> bool:
+        """
+        Segments worth handing to stream recovery: queued well behind the head (not the few the
+        last response just reported, which the live loop is about to request) or out of retries.
+        """
+        behind = self.latest_sequence - EXPIRY_BACKLOG_SEGMENTS
+        return bool(self._exhausted) or (bool(self._queue) and self._queue[0] <= behind)
+
+    def _url_expiring(self) -> bool:
+        """
+        The current URL is about to expire and the last refresh didn't give a new one. URLs are
+        normally refreshed URL_REFRESH_EXPIRY_MARGIN before they expire, so the refreshes have been
+        failing: rate limiting, YouTube's bot check, a broken extraction. A URL that was close to
+        expiry from the start (e.g. an old info.json) is refreshed first.
+        Within EXPIRY_RECOVERY_MARGIN when a backlog can still be handed to recovery (once per URL),
+        otherwise within EXPIRY_FINISH_MARGIN.
+        """
+        left = self._url_expiry_left()
+        if left is None or self.failed_url_refreshes < 1 or left > EXPIRY_RECOVERY_MARGIN:
+            return False
+        return left <= EXPIRY_FINISH_MARGIN or self._recovery_useful()
+
+    def _recovery_useful(self) -> bool:
+        # Without recovery (direct mode, DASH/m3u8 URLs) there is nothing to gain by stopping early
+        return (self._can_hand_over_to_recovery() and self._expiry_recovery_url != str(self.stream_url)
+                and self._has_backlog())
+
+    def _can_hand_over_to_recovery(self) -> bool:
+        return self.supports_recovery_handoff and self.stream_url.url_kind == YoutubeURL.URL_KIND_ADAPTIVE
+
+    def _on_url_expiring(self) -> LoopAction:
+        """
+        With a backlog: download it with stream recovery (more threads, every known URL) while the
+        URL still works, then carry on recording, as a refresh may still succeed in the meantime.
+        Shortly before expiry: finish, so everything downloaded is merged (instead of failing with
+        TimeoutError at expiry). In-flight requests are finished first (no new ones are started).
+        """
+        if self.future_to_seg:
+            self.smart_sleep(min(PRIVATE_DRAIN_WAIT, 1.0))
+            return LoopAction.CONTINUE
+        left = max(0.0, self._url_expiry_left() or 0.0)
+        if self._recovery_useful():
+            self._expiry_recovery_url = str(self.stream_url)
+            self.logger.warning(f"({self.format}) The stream URL expires in {math.ceil(left / 60):.0f} minutes and couldn't be "
+                                f"refreshed, moving the remaining segments to stream recovery")
+            self._handoff_to_recovery(delay=0.0)
+            self._after_recovery()
+            if (self._url_expiry_left() or 0.0) > EXPIRY_FINISH_MARGIN and not self._graceful_stop_requested():
+                return LoopAction.CONTINUE
+            left = max(0.0, self._url_expiry_left() or 0.0)
+        self.logger.warning(f"({self.format}) The stream URL expires in {left:.0f}s and couldn't be refreshed, "
+                            f"finishing with the segments downloaded so far")
+        return LoopAction.BREAK
+
+    def _after_recovery(self) -> None:
+        """Continue the live download after stream recovery wrote into the database."""
+        self._exhausted = {seg for seg in self._exhausted if not self.store.has(seg)}
+        try:
+            # Recovery followed the stream head; learn where it is now
+            self.update_latest_segment(client=self.client)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            self.logger.debug(f"({self.format}) Unable to check the stream head after recovery: {e}")
+
+    def _handoff_to_recovery(self, delay: Optional[float] = None) -> None:
         """
         Download the remaining segments with StreamRecovery into the SAME database. The store is
         closed while recovery has the database open, then reopened so finalize() merges everything.
+        delay: seconds to wait first (default RECOVERY_HANDOFF_DELAY, but never past the point where
+            the URL has EXPIRY_RECOVERY_MARGIN left).
         """
+        if delay is None:
+            delay = RECOVERY_HANDOFF_DELAY
+            left = self._url_expiry_left()
+            if left is not None:
+                delay = max(0.0, min(delay, left - EXPIRY_RECOVERY_MARGIN))
         self.store.close()
         try:
-            remaining = RECOVERY_HANDOFF_DELAY
+            remaining = delay
             while remaining > 0:
                 self.logger.debug(f"Waiting {math.ceil(remaining / 60):.0f} minutes before starting stream recovery to improve chances of success")
                 step = min(60.0, remaining)
@@ -3730,22 +3837,42 @@ class LiveStreamDownloader:
         Wait for the live chat download after the media finished, for at most --stop-chat-when-done
         seconds. The timeout is enforced here (by setting chat_stop) because the chat download only
         checks for it between chat requests, and a request could hang.
+        A graceful stop ends the wait too, but the chat is still stopped and zipped first so it is
+        merged and moved with the rest. Only a cancellation (kill) returns straight away.
         """
         if not (live_chat_thread and live_chat_thread.is_alive()):
             return
         self.logger.info("Media downloads finished, waiting for live chat to end...")
         timeout = options.get('stop_chat_when_done', None)
         deadline = time.monotonic() + timeout if timeout else None
-        while live_chat_thread.is_alive() and not (self.kill_all.is_set() or self.kill_this.is_set() or self.graceful_stop.is_set()):
+        while live_chat_thread.is_alive():
+            if self.kill_all.is_set() or self.kill_this.is_set():
+                return
+            if self.graceful_stop.is_set():
+                self.logger.info("Stop requested, stopping the live chat download and keeping the chat downloaded so far")
+                self._stop_live_chat(live_chat_thread, info_dict, options)
+                return
             live_chat_thread.join(3.0)
             if deadline is not None and time.monotonic() > deadline:
                 self.logger.warning(f"Stopping chat download for {info_dict.get('id', 'N/A')}, timeout ({timeout}s) exceeded")
-                self.chat_stop.set()
-                live_chat_thread.join(LIVE_CHAT_STOP_GRACE)
-                if live_chat_thread.is_alive():
-                    self.logger.warning("Live chat downloader did not stop, keeping the chat downloaded so far")
-                    self._package_live_chat(base_output_path(options, info_dict), snapshot=True)
-                break
+                self._stop_live_chat(live_chat_thread, info_dict, options)
+                return
+
+    def _stop_live_chat(self, live_chat_thread: threading.Thread, info_dict: dict, options: dict) -> None:
+        """
+        Tell the chat download to stop and give it LIVE_CHAT_STOP_GRACE seconds to finish and zip the
+        chat; if it doesn't, zip what it has written so far (see _package_live_chat's snapshot).
+        """
+        self.chat_stop.set()
+        deadline = time.monotonic() + LIVE_CHAT_STOP_GRACE
+        while live_chat_thread.is_alive() and (remaining := deadline - time.monotonic()) > 0:
+            if self.kill_all.is_set() or self.kill_this.is_set():
+                # Cancelled: nothing is merged, so the chat isn't waited for
+                return
+            live_chat_thread.join(min(remaining, 0.5))
+        if live_chat_thread.is_alive():
+            self.logger.warning("Live chat downloader did not stop, keeping the chat downloaded so far")
+            self._package_live_chat(base_output_path(options, info_dict), snapshot=True)
 
     def _package_live_chat(self, base_output: str, livechat_filename: Optional[str] = None, snapshot: bool = False,
                            refresh: bool = False) -> Optional[dict]:
@@ -4057,7 +4184,9 @@ class LiveStreamDownloader:
             ydl_opts['proxy'] = proxy
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.process_ie_result(info_dict)
+            # Processes a copy: this runs alongside the stream downloads, which use info_dict, and
+            # the live stream's date must not be added to its title again (see process_keeping_title)
+            info = YoutubeURL.process_keeping_title(ydl, info_dict, update_original=False)
             self._collect_info_json(info, options, created_files, expected=ydl_opts["writeinfojson"])
             if ydl_opts["writedescription"]:
                 self._write_description(ydl, info, info_dict, created_files)
